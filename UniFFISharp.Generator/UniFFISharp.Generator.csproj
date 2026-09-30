@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <RootNamespace>UniFFISharp.Generator</RootNamespace>
+    <AssemblyName>UniFFISharp.Generator</AssemblyName>
+    <PackageId>UniFFISharp.Generator</PackageId>
+    <Description>Roslyn source generator for UniFFISharp extracting UniFFI metadata via AsmResolver.</Description>
+    <NoWarn>$(NoWarn);RS1036;RS2008</NoWarn>
+    <IsPackable>false</IsPackable>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" PrivateAssets="all" />
+    <PackageReference Include="AsmResolver" Version="6.0.1" GeneratePathProperty="true" PrivateAssets="all" />
+    <PackageReference Include="AsmResolver.PE" Version="6.0.1" GeneratePathProperty="true" PrivateAssets="all" />
+    <PackageReference Include="AsmResolver.PE.File" Version="6.0.1" GeneratePathProperty="true" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Embed AsmResolver assemblies as embedded resources -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgAsmResolver)\lib\netstandard2.0\AsmResolver.dll" Condition="Exists('$(PkgAsmResolver)\lib\netstandard2.0\AsmResolver.dll')">
+      <LogicalName>AsmResolver.dll</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgAsmResolver_PE)\lib\netstandard2.0\AsmResolver.PE.dll" Condition="Exists('$(PkgAsmResolver_PE)\lib\netstandard2.0\AsmResolver.PE.dll')">
+      <LogicalName>AsmResolver.PE.dll</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgAsmResolver_PE_File)\lib\netstandard2.0\AsmResolver.PE.File.dll" Condition="Exists('$(PkgAsmResolver_PE_File)\lib\netstandard2.0\AsmResolver.PE.File.dll')">
+      <LogicalName>AsmResolver.PE.File.dll</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="AddSourceGeneratorToPackage" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <None Include="$(OutputPath)$(AssemblyName).dll"
+            Pack="true"
+            PackagePath="analyzers/dotnet/cs"
+            Visible="false" />
+      <None Include="$(OutputPath)AsmResolver*.dll"
+            Pack="true"
+            PackagePath="analyzers/dotnet/cs"
+            Visible="false" />
+    </ItemGroup>
+  </Target>
+
+</Project>

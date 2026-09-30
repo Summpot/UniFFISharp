@@ -1,0 +1,131 @@
+name: Build & Publish UniFFISharp
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package Version (leave empty to use version in csproj)"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Create GitHub Release and attach nupkg"
+        required: false
+        default: true
+        type: boolean
+      publish_nuget:
+        description: "Publish NuGet package to NuGet.org via Trusted Publishing"
+        required: false
+        default: true
+        type: boolean
+      nuget_user:
+        description: "NuGet.org username for Trusted Publishing"
+        required: false
+        default: "Summpot"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build, Pack & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          dotnet-quality: "preview"
+
+      - name: Determine Version
+        id: get_version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF#refs/tags/v}"
+          else
+            VER=""
+          fi
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VER"
+
+      - name: Build Solution
+        run: |
+          dotnet build UniFFISharp.slnx -c Release
+
+      - name: Pack NuGet Package
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          VERSION_ARG=""
+          if [ -n "${{ steps.get_version.outputs.version }}" ]; then
+            VERSION_ARG="-p:Version=${{ steps.get_version.outputs.version }}"
+          fi
+          echo "Packing UniFFISharp with args: $VERSION_ARG"
+          dotnet pack UniFFISharp/UniFFISharp.csproj -c Release $VERSION_ARG -o release-assets/
+
+      - name: Create GitHub Release
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VER="${{ steps.get_version.outputs.version }}"
+          if [ -z "$VER" ]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          else
+            if [[ "$VER" =~ ^v ]]; then
+              TAG_NAME="$VER"
+            else
+              TAG_NAME="v$VER"
+            fi
+          fi
+          RELEASE_TITLE="UniFFISharp $TAG_NAME"
+
+          echo "=== Release Assets to upload ==="
+          ls -lh release-assets/
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists, uploading assets..."
+            gh release upload "$TAG_NAME" release-assets/*.nupkg --clobber
+          else
+            echo "Creating release $TAG_NAME..."
+            gh release create "$TAG_NAME" release-assets/*.nupkg \
+              --target "${{ github.sha }}" \
+              --title "$RELEASE_TITLE" \
+              --generate-notes
+          fi
+
+      - name: NuGet login (Trusted Publishing OIDC)
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_nuget }}
+        id: nuget-login
+        uses: NuGet/login@v1
+        continue-on-error: true
+        with:
+          user: ${{ secrets.NUGET_USER || inputs.nuget_user || 'Summpot' }}
+
+      - name: Publish NuGet to NuGet.org
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_nuget }}
+        shell: bash
+        run: |
+          API_KEY="${{ steps.nuget-login.outputs.NUGET_API_KEY || secrets.NUGET_API_KEY }}"
+          if [ -n "$API_KEY" ]; then
+            echo "=== Publishing NuGet packages to NuGet.org ==="
+            dotnet nuget push "release-assets/*.nupkg" \
+              --api-key "$API_KEY" \
+              --source "https://api.nuget.org/v3/index.json" \
+              --skip-duplicate
+          else
+            echo "Warning: No NuGet API key available from Trusted Publishing or secrets."
+          fi

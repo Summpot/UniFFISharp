@@ -1,0 +1,32 @@
+<Project>
+
+  <ItemGroup>
+    <CompilerVisibleProperty Include="UniFFIRustLibrary" />
+    <CompilerVisibleProperty Include="UniFFIRustStaticLibrary" />
+    <CompilerVisibleProperty Include="UniFFILinkMode" />
+    <CompilerVisibleProperty Include="UniFFINamespace" />
+    <CompilerVisibleProperty Include="UniFFICargoProject" />
+    <CompilerVisibleProperty Include="UniFFICrateName" />
+    <CompilerVisibleProperty Include="UniFFISharpCargoProject" />
+    <CompilerVisibleProperty Include="UniFFISharpCrateName" />
+    <CompilerVisibleProperty Include="UniFFISharpNamespace" />
+    <CompilerVisibleProperty Include="PublishAot" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="UniFFI" />
+  </ItemGroup>
+
+  <!-- If UniFFIRustLibrary is specified as a property, automatically add it to AdditionalFiles with UniFFI metadata -->
+  <ItemGroup Condition="'$(UniFFIRustLibrary)' != '' and '$(UniFFILinkMode)' != 'Static' and '$(PublishAot)' != 'true'">
+    <AdditionalFiles Include="$(UniFFIRustLibrary)" UniFFI="true" Visible="false" />
+  </ItemGroup>
+
+  <!-- If UniFFIRustStaticLibrary is specified as a property, automatically add it to AdditionalFiles with UniFFI metadata -->
+  <ItemGroup Condition="'$(UniFFIRustStaticLibrary)' != ''">
+    <AdditionalFiles Include="$(UniFFIRustStaticLibrary)" UniFFI="true" Visible="false" />
+  </ItemGroup>
+
+  <!-- Analyzer reference for NuGet package consumption -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\UniFFISharp.Generator.dll')">
+    <Analyzer Include="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\UniFFISharp.Generator.dll" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>UniFFISharp</RootNamespace>
+    <AssemblyName>UniFFISharp</AssemblyName>
+    <PackageId>UniFFISharp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Summpot</Authors>
+    <Description>Zero-CLI, zero-boilerplate UniFFI binding generator and runtime for Rust + C# interoperability.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Summpot/UniFFISharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Summpot/UniFFISharp</RepositoryUrl>
+    <PackageTags>uniffi;rust;csharp;interop;ffi;generator;sourcegenerator</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UniFFISharp.Generator\UniFFISharp.Generator.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="build\UniFFISharp.props" Pack="true" PackagePath="build/UniFFISharp.props;buildTransitive/UniFFISharp.props" />
+    <None Include="build\UniFFISharp.targets" Pack="true" PackagePath="build/UniFFISharp.targets;buildTransitive/UniFFISharp.targets" />
+    <None Include="..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\UniFFISharp.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\AsmResolver*.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+
+</Project>

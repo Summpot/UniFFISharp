@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="UniFFISharp/UniFFISharp.csproj" />
+    <Project Path="UniFFISharp.Generator/UniFFISharp.Generator.csproj" />
+  </Folder>
+</Solution>
