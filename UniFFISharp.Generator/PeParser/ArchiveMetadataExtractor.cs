@@ -25,9 +25,34 @@ public static class ArchiveMetadataExtractor
         return true;
     }
 
+    public static bool IsArchive(Stream stream)
+    {
+        if (stream == null || stream.Length < 8) return false;
+        long origPos = stream.Position;
+        byte[] magic = new byte[8];
+        int read = ReadFully(stream, magic, 0, 8);
+        stream.Position = origPos;
+        if (read < 8) return false;
+        return IsArchive(magic);
+    }
+
+    public static ComponentInterface? Extract(string filePath)
+    {
+        if (!File.Exists(filePath)) return null;
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return Extract(stream);
+    }
+
     public static ComponentInterface? Extract(byte[] fileBytes)
     {
-        if (!IsArchive(fileBytes))
+        if (fileBytes == null || fileBytes.Length < 8) return null;
+        using var ms = new MemoryStream(fileBytes, false);
+        return Extract(ms);
+    }
+
+    public static ComponentInterface? Extract(Stream stream)
+    {
+        if (!IsArchive(stream))
         {
             return null;
         }
@@ -35,27 +60,32 @@ public static class ArchiveMetadataExtractor
         var aggregator = new MetadataAggregator();
         var ci = aggregator.ComponentInterface;
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
+        byte[] headerBuf = new byte[60];
 
         // Find member offsets containing UNIFFI_META symbols
-        var targetMemberOffsets = FindUniffiMemberOffsets(fileBytes);
+        var targetMemberOffsets = FindUniffiMemberOffsets(stream);
         if (targetMemberOffsets.Count == 0)
         {
             // Fallback: scan all members in the archive
-            targetMemberOffsets = new HashSet<uint>(GetAllMemberOffsets(fileBytes));
+            targetMemberOffsets = new HashSet<long>(GetAllMemberOffsets(stream));
         }
 
-        foreach (uint memberOffset in targetMemberOffsets)
+        foreach (long memberOffset in targetMemberOffsets)
         {
-            if (memberOffset + 60 > fileBytes.Length) continue;
+            if (memberOffset + 60 > stream.Length) continue;
 
-            string sizeStr = Encoding.ASCII.GetString(fileBytes, (int)memberOffset + 48, 10).Trim();
+            stream.Position = memberOffset;
+            if (ReadFully(stream, headerBuf, 0, 60) < 60) continue;
+
+            string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
             if (!int.TryParse(sizeStr, out int memberSize) || memberSize <= 0) continue;
 
-            int objStart = (int)memberOffset + 60;
-            if (objStart + memberSize > fileBytes.Length) continue;
+            long objStart = memberOffset + 60;
+            if (objStart + memberSize > stream.Length) continue;
 
             byte[] objBytes = new byte[memberSize];
-            Array.Copy(fileBytes, objStart, objBytes, 0, memberSize);
+            stream.Position = objStart;
+            if (ReadFully(stream, objBytes, 0, memberSize) < memberSize) continue;
 
             // Extract symbols from COFF or ELF object file
             var extractedSymbols = ExtractFromObject(objBytes);
@@ -105,34 +135,43 @@ public static class ArchiveMetadataExtractor
         return ci;
     }
 
-    internal static HashSet<uint> FindUniffiMemberOffsets(byte[] archive)
+    internal static HashSet<long> FindUniffiMemberOffsets(Stream stream)
     {
-        var result = new HashSet<uint>();
-        int pos = 8; // skip !<arch>\n
+        var result = new HashSet<long>();
+        long pos = 8; // skip !<arch>\n
+        byte[] headerBuf = new byte[60];
 
-        while (pos + 60 <= archive.Length)
+        while (pos + 60 <= stream.Length)
         {
-            string name = Encoding.ASCII.GetString(archive, pos, 16).Trim();
-            string sizeStr = Encoding.ASCII.GetString(archive, pos + 48, 10).Trim();
+            stream.Position = pos;
+            if (ReadFully(stream, headerBuf, 0, 60) < 60) break;
+
+            string name = Encoding.ASCII.GetString(headerBuf, 0, 16).Trim();
+            string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
             if (!int.TryParse(sizeStr, out int size)) break;
 
-            int bodyPos = pos + 60;
-            if (bodyPos + size > archive.Length) break;
+            long bodyPos = pos + 60;
+            if (bodyPos + size > stream.Length) break;
 
             if (name == "/")
             {
-                if (pos == 8)
+                byte[] linkerData = new byte[size];
+                stream.Position = bodyPos;
+                if (ReadFully(stream, linkerData, 0, size) == size)
                 {
-                    // 1st Linker member: big-endian
-                    ParseFirstLinkerMember(archive, bodyPos, size, result);
-                }
-                else
-                {
-                    // 2nd Linker member: little-endian
-                    ParseSecondLinkerMember(archive, bodyPos, size, result);
-                    if (result.Count > 0)
+                    if (pos == 8)
                     {
-                        return result;
+                        // 1st Linker member: big-endian
+                        ParseFirstLinkerMember(linkerData, 0, size, result);
+                    }
+                    else
+                    {
+                        // 2nd Linker member: little-endian
+                        ParseSecondLinkerMember(linkerData, 0, size, result);
+                        if (result.Count > 0)
+                        {
+                            return result;
+                        }
                     }
                 }
             }
@@ -144,7 +183,19 @@ public static class ArchiveMetadataExtractor
         return result;
     }
 
-    private static void ParseFirstLinkerMember(byte[] archive, int bodyPos, int size, HashSet<uint> result)
+    internal static HashSet<uint> FindUniffiMemberOffsets(byte[] archive)
+    {
+        using var ms = new MemoryStream(archive, false);
+        var longOffsets = FindUniffiMemberOffsets(ms);
+        var res = new HashSet<uint>();
+        foreach (var o in longOffsets)
+        {
+            res.Add((uint)o);
+        }
+        return res;
+    }
+
+    private static void ParseFirstLinkerMember(byte[] archive, int bodyPos, int size, HashSet<long> result)
     {
         if (size < 4) return;
         uint numSymbols = BinaryPrimitives.ReadUInt32BigEndian(archive.AsSpan(bodyPos, 4));
@@ -176,7 +227,7 @@ public static class ArchiveMetadataExtractor
         }
     }
 
-    private static void ParseSecondLinkerMember(byte[] archive, int bodyPos, int size, HashSet<uint> result)
+    private static void ParseSecondLinkerMember(byte[] archive, int bodyPos, int size, HashSet<long> result)
     {
         if (size < 4) return;
         uint numMembers = BitConverter.ToUInt32(archive, bodyPos);
@@ -224,25 +275,53 @@ public static class ArchiveMetadataExtractor
         }
     }
 
-    internal static List<uint> GetAllMemberOffsets(byte[] archive)
+    internal static List<long> GetAllMemberOffsets(Stream stream)
     {
-        var offsets = new List<uint>();
-        int pos = 8;
-        while (pos + 60 <= archive.Length)
+        var offsets = new List<long>();
+        long pos = 8;
+        byte[] headerBuf = new byte[60];
+        while (pos + 60 <= stream.Length)
         {
-            string name = Encoding.ASCII.GetString(archive, pos, 16).Trim();
-            string sizeStr = Encoding.ASCII.GetString(archive, pos + 48, 10).Trim();
+            stream.Position = pos;
+            if (ReadFully(stream, headerBuf, 0, 60) < 60) break;
+
+            string name = Encoding.ASCII.GetString(headerBuf, 0, 16).Trim();
+            string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
             if (!int.TryParse(sizeStr, out int size)) break;
 
             if (name != "/" && name != "//")
             {
-                offsets.Add((uint)pos);
+                offsets.Add(pos);
             }
 
             pos += 60 + size;
             if (pos % 2 != 0) pos++;
         }
         return offsets;
+    }
+
+    internal static List<uint> GetAllMemberOffsets(byte[] archive)
+    {
+        using var ms = new MemoryStream(archive, false);
+        var longOffsets = GetAllMemberOffsets(ms);
+        var res = new List<uint>();
+        foreach (var o in longOffsets)
+        {
+            res.Add((uint)o);
+        }
+        return res;
+    }
+
+    private static int ReadFully(Stream stream, byte[] buffer, int offset, int count)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            int bytesRead = stream.Read(buffer, offset + totalRead, count - totalRead);
+            if (bytesRead <= 0) break;
+            totalRead += bytesRead;
+        }
+        return totalRead;
     }
 
     internal static List<(string Name, byte[] Data)> ExtractFromObject(byte[] objBytes)

@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using UniFFISharp.Generator.Metadata;
 
@@ -20,6 +21,15 @@ public static class ElfMetadataExtractor
                data[1] == (byte)'E' &&
                data[2] == (byte)'L' &&
                data[3] == (byte)'F';
+    }
+
+    public static ComponentInterface? Extract(string filePath)
+    {
+        if (!File.Exists(filePath)) return null;
+        var fi = new FileInfo(filePath);
+        if (fi.Length > int.MaxValue) return null;
+        byte[] fileBytes = File.ReadAllBytes(filePath);
+        return Extract(fileBytes);
     }
 
     public static ComponentInterface? Extract(byte[] fileBytes)

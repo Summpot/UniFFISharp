@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using AsmResolver.PE;
@@ -16,11 +16,10 @@ public static class PeMetadataExtractor
             return null;
         }
 
-        byte[] fileBytes = File.ReadAllBytes(dllPath);
         if (dllPath.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) ||
             dllPath.EndsWith(".a", StringComparison.OrdinalIgnoreCase))
         {
-            return ArchiveMetadataExtractor.Extract(fileBytes);
+            return ArchiveMetadataExtractor.Extract(dllPath);
         }
 
         // If a corresponding .lib or .a static archive exists alongside the dynamic library,
@@ -30,8 +29,7 @@ public static class PeMetadataExtractor
         {
             try
             {
-                var archiveBytes = File.ReadAllBytes(libCandidate);
-                var archiveCi = ArchiveMetadataExtractor.Extract(archiveBytes);
+                var archiveCi = ArchiveMetadataExtractor.Extract(libCandidate);
                 if (archiveCi != null && (archiveCi.Functions.Count > 0 || archiveCi.Records.Count > 0 || archiveCi.Objects.Count > 0))
                 {
                     return archiveCi;
@@ -48,8 +46,7 @@ public static class PeMetadataExtractor
         {
             try
             {
-                var archiveBytes = File.ReadAllBytes(aCandidate);
-                var archiveCi = ArchiveMetadataExtractor.Extract(archiveBytes);
+                var archiveCi = ArchiveMetadataExtractor.Extract(aCandidate);
                 if (archiveCi != null && (archiveCi.Functions.Count > 0 || archiveCi.Records.Count > 0 || archiveCi.Objects.Count > 0))
                 {
                     return archiveCi;
@@ -61,7 +58,50 @@ public static class PeMetadataExtractor
             }
         }
 
-        return Extract(fileBytes);
+        // Read minimal header to determine format
+        byte[] header = new byte[64];
+        int headerRead = 0;
+        using (var fs = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            headerRead = fs.Read(header, 0, header.Length);
+        }
+
+        if (ArchiveMetadataExtractor.IsArchive(header))
+        {
+            return ArchiveMetadataExtractor.Extract(dllPath);
+        }
+
+        if (ElfMetadataExtractor.IsElf(header))
+        {
+            return ElfMetadataExtractor.Extract(dllPath);
+        }
+
+        if (MachOMetadataExtractor.IsMachO(header))
+        {
+            return MachOMetadataExtractor.Extract(dllPath);
+        }
+
+        // PE format (.dll, .exe) parsed via AsmResolver from file
+        try
+        {
+            var peImage = PEImage.FromFile(dllPath);
+            return ExtractFromPeImage(peImage);
+        }
+        catch
+        {
+            // If File-based PE read fails or file is not standard PE, fallback to Extract(byte[]) if file size is small (< 100MB)
+            var fileInfo = new FileInfo(dllPath);
+            if (fileInfo.Length < 100 * 1024 * 1024)
+            {
+                try
+                {
+                    byte[] fileBytes = File.ReadAllBytes(dllPath);
+                    return Extract(fileBytes);
+                }
+                catch { }
+            }
+            return null;
+        }
     }
 
     public static ComponentInterface? Extract(byte[] fileBytes)
@@ -92,6 +132,11 @@ public static class PeMetadataExtractor
             return null;
         }
 
+        return ExtractFromPeImage(peImage);
+    }
+
+    private static ComponentInterface? ExtractFromPeImage(PEImage peImage)
+    {
         if (peImage.Exports == null || peImage.Exports.Entries.Count == 0)
         {
             return null;
