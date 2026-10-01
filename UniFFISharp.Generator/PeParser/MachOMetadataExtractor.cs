@@ -145,7 +145,7 @@ public static class MachOMetadataExtractor
         return data;
     }
 
-    private static List<(string Name, byte[] Data)> ExtractSymbolsMachO64(byte[] data, bool isLE)
+    internal static List<(string Name, byte[] Data)> ExtractSymbolsMachO64(byte[] data, bool isLE)
     {
         var results = new List<(string, byte[])>();
         if (data.Length < 32) return results;

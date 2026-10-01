@@ -77,17 +77,26 @@ public static class ArchiveMetadataExtractor
             stream.Position = memberOffset;
             if (ReadFully(stream, headerBuf, 0, 60) < 60) continue;
 
+            string name = Encoding.ASCII.GetString(headerBuf, 0, 16).Trim();
             string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
             if (!int.TryParse(sizeStr, out int memberSize) || memberSize <= 0) continue;
 
             long objStart = memberOffset + 60;
+            int bsdNameLen = 0;
+            if (name.StartsWith("#1/") && int.TryParse(name.Substring(3).Trim(), out int nLen) && nLen > 0 && nLen < memberSize)
+            {
+                bsdNameLen = nLen;
+                objStart += bsdNameLen;
+                memberSize -= bsdNameLen;
+            }
+
             if (objStart + memberSize > stream.Length) continue;
 
             byte[] objBytes = new byte[memberSize];
             stream.Position = objStart;
             if (ReadFully(stream, objBytes, 0, memberSize) < memberSize) continue;
 
-            // Extract symbols from COFF or ELF object file
+            // Extract symbols from COFF, ELF, or Mach-O object file
             var extractedSymbols = ExtractFromObject(objBytes);
 
             foreach (var (symName, symData) in extractedSymbols)
@@ -172,6 +181,24 @@ public static class ArchiveMetadataExtractor
                         {
                             return result;
                         }
+                    }
+                }
+            }
+            else if (name.StartsWith("__.SYMDEF") || (name.StartsWith("#1/") && pos == 8))
+            {
+                byte[] linkerData = new byte[size];
+                stream.Position = bodyPos;
+                if (ReadFully(stream, linkerData, 0, size) == size)
+                {
+                    int bsdNameLen = 0;
+                    if (name.StartsWith("#1/") && int.TryParse(name.Substring(3).Trim(), out int nLen) && nLen > 0 && nLen < size)
+                    {
+                        bsdNameLen = nLen;
+                    }
+                    ParseBsdLinkerMember(linkerData, bsdNameLen, size - bsdNameLen, result);
+                    if (result.Count > 0)
+                    {
+                        return result;
                     }
                 }
             }
@@ -275,6 +302,87 @@ public static class ArchiveMetadataExtractor
         }
     }
 
+    private static void ParseBsdLinkerMember(byte[] archive, int bodyPos, int size, HashSet<long> result)
+    {
+        if (size < 4) return;
+        uint ranlibBytes = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(bodyPos, 4));
+        int ranlibCount = (int)(ranlibBytes / 8);
+        int offsetsStart = bodyPos + 4;
+        int strSizePos = offsetsStart + ranlibCount * 8;
+
+        if (strSizePos + 4 <= bodyPos + size)
+        {
+            uint strBytes = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(strSizePos, 4));
+            int stringsStart = strSizePos + 4;
+
+            if (stringsStart + (int)strBytes <= bodyPos + size)
+            {
+                for (int i = 0; i < ranlibCount; i++)
+                {
+                    int entryPos = offsetsStart + i * 8;
+                    uint strx = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(entryPos, 4));
+                    uint off = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(entryPos + 4, 4));
+
+                    int curStr = stringsStart + (int)strx;
+                    if (curStr >= bodyPos + size) continue;
+
+                    int nextNull = Array.IndexOf<byte>(archive, 0, curStr);
+                    if (nextNull < 0 || nextNull > bodyPos + size) nextNull = bodyPos + size;
+
+                    string rawName = Encoding.ASCII.GetString(archive, curStr, nextNull - curStr);
+                    string sym = rawName.StartsWith("_") ? rawName.Substring(1) : rawName;
+
+                    if (sym.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase) &&
+                        !sym.StartsWith("__imp_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.Add(off);
+                    }
+                }
+                return;
+            }
+        }
+
+        // Try 64-bit BSD ranlib if 32-bit was invalid
+        if (size >= 16)
+        {
+            ulong ranlibBytes64 = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(bodyPos, 8));
+            int ranlibCount64 = (int)(ranlibBytes64 / 16);
+            int offsetsStart64 = bodyPos + 8;
+            int strSizePos64 = offsetsStart64 + ranlibCount64 * 16;
+
+            if (strSizePos64 + 8 <= bodyPos + size)
+            {
+                ulong strBytes64 = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(strSizePos64, 8));
+                int stringsStart64 = strSizePos64 + 8;
+
+                if (stringsStart64 + (int)strBytes64 <= bodyPos + size)
+                {
+                    for (int i = 0; i < ranlibCount64; i++)
+                    {
+                        int entryPos = offsetsStart64 + i * 16;
+                        ulong strx = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(entryPos, 8));
+                        ulong off = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(entryPos + 8, 8));
+
+                        int curStr = stringsStart64 + (int)strx;
+                        if (curStr >= bodyPos + size) continue;
+
+                        int nextNull = Array.IndexOf<byte>(archive, 0, curStr);
+                        if (nextNull < 0 || nextNull > bodyPos + size) nextNull = bodyPos + size;
+
+                        string rawName = Encoding.ASCII.GetString(archive, curStr, nextNull - curStr);
+                        string sym = rawName.StartsWith("_") ? rawName.Substring(1) : rawName;
+
+                        if (sym.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase) &&
+                            !sym.StartsWith("__imp_", StringComparison.OrdinalIgnoreCase))
+                        {
+                            result.Add((long)off);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     internal static List<long> GetAllMemberOffsets(Stream stream)
     {
         var offsets = new List<long>();
@@ -289,7 +397,7 @@ public static class ArchiveMetadataExtractor
             string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
             if (!int.TryParse(sizeStr, out int size)) break;
 
-            if (name != "/" && name != "//")
+            if (name != "/" && name != "//" && !name.StartsWith("__.SYMDEF"))
             {
                 offsets.Add(pos);
             }
@@ -336,9 +444,23 @@ public static class ArchiveMetadataExtractor
             return results;
         }
 
+        // Check if Mach-O object file
+        if (MachOMetadataExtractor.IsMachO(objBytes))
+        {
+            ExtractFromMachO(objBytes, results);
+            return results;
+        }
+
         // COFF object file
         ExtractFromCoff(objBytes, results);
         return results;
+    }
+
+    private static void ExtractFromMachO(byte[] objBytes, List<(string, byte[])> results)
+    {
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(objBytes.AsSpan(0, 4));
+        bool isLE = (magic == 0xFEEDFACF || magic == 0xFEEDFACE);
+        results.AddRange(MachOMetadataExtractor.ExtractSymbolsMachO64(objBytes, isLE));
     }
 
     private static void ExtractFromCoff(byte[] objBytes, List<(string, byte[])> results)

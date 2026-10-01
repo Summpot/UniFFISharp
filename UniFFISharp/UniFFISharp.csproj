@@ -8,7 +8,7 @@
     <RootNamespace>UniFFISharp</RootNamespace>
     <AssemblyName>UniFFISharp</AssemblyName>
     <PackageId>UniFFISharp</PackageId>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Authors>Summpot</Authors>
     <Description>Zero-CLI, zero-boilerplate UniFFI binding generator and runtime for Rust + C# interoperability.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
