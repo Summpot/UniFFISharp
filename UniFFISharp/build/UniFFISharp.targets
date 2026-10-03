@@ -1,23 +1,15 @@
 <Project>
 
-  <!-- Normalize properties from UniFFISharp prefixes if set -->
-  <PropertyGroup>
-    <UniFFICargoProject Condition="'$(UniFFICargoProject)' == '' and '$(UniFFISharpCargoProject)' != ''">$(UniFFISharpCargoProject)</UniFFICargoProject>
-    <UniFFICrateName Condition="'$(UniFFICrateName)' == '' and '$(UniFFISharpCrateName)' != ''">$(UniFFISharpCrateName)</UniFFICrateName>
-    <UniFFINamespace Condition="'$(UniFFINamespace)' == '' and '$(UniFFISharpNamespace)' != ''">$(UniFFISharpNamespace)</UniFFINamespace>
-  </PropertyGroup>
-
+  <!-- ===================================================================== -->
+  <!-- Cargo manifest                                                        -->
+  <!-- ===================================================================== -->
   <PropertyGroup Condition="'$(UniFFICargoManifestPath)' == ''">
-    <!-- If UniFFICargoProject is set, resolve it relative to project directory -->
     <_UniFFICargoProjectCandidate Condition="'$(UniFFICargoProject)' != '' and !$([System.IO.Path]::IsPathRooted('$(UniFFICargoProject)'))">$([System.IO.Path]::GetFullPath('$([System.IO.Path]::Combine("$(MSBuildProjectDirectory)", "$(UniFFICargoProject)"))'))</_UniFFICargoProjectCandidate>
     <_UniFFICargoProjectCandidate Condition="'$(UniFFICargoProject)' != '' and $([System.IO.Path]::IsPathRooted('$(UniFFICargoProject)'))">$([System.IO.Path]::GetFullPath('$(UniFFICargoProject)'))</_UniFFICargoProjectCandidate>
 
-    <!-- If candidate is a file (Cargo.toml) -->
     <UniFFICargoManifestPath Condition="'$(_UniFFICargoProjectCandidate)' != '' and Exists('$(_UniFFICargoProjectCandidate)') and !HasTrailingSlash('$(_UniFFICargoProjectCandidate)') and $([System.String]::Copy('$(_UniFFICargoProjectCandidate)').EndsWith('.toml'))">$(_UniFFICargoProjectCandidate)</UniFFICargoManifestPath>
-    <!-- If candidate is a directory containing Cargo.toml -->
     <UniFFICargoManifestPath Condition="'$(_UniFFICargoProjectCandidate)' != '' and Exists('$(_UniFFICargoProjectCandidate)\Cargo.toml')">$([System.IO.Path]::GetFullPath('$(_UniFFICargoProjectCandidate)\Cargo.toml'))</UniFFICargoManifestPath>
 
-    <!-- Convention fallback: search project directory and parent directories -->
     <UniFFICargoManifestPath Condition="'$(UniFFICargoManifestPath)' == '' and Exists('$(MSBuildProjectDirectory)\Cargo.toml')">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\Cargo.toml'))</UniFFICargoManifestPath>
     <UniFFICargoManifestPath Condition="'$(UniFFICargoManifestPath)' == '' and Exists('$(MSBuildProjectDirectory)\..\Cargo.toml')">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\Cargo.toml'))</UniFFICargoManifestPath>
     <UniFFICargoManifestPath Condition="'$(UniFFICargoManifestPath)' == '' and Exists('$(MSBuildProjectDirectory)\..\..\Cargo.toml')">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\Cargo.toml'))</UniFFICargoManifestPath>
@@ -25,33 +17,90 @@
 
   <PropertyGroup Condition="'$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
     <UniFFICargoManifestDir>$([System.IO.Path]::GetDirectoryName('$(UniFFICargoManifestPath)'))</UniFFICargoManifestDir>
-  </PropertyGroup>
-
-  <!-- ===================================================================== -->
-  <!-- 2. Crate Name & Library Name Resolution                               -->
-  <!-- ===================================================================== -->
-  <PropertyGroup Condition="'$(UniFFICrateName)' == '' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
     <_CargoTomlContent>$([System.IO.File]::ReadAllText('$(UniFFICargoManifestPath)'))</_CargoTomlContent>
-    <!-- Priority: [lib] name first, then [package] name -->
     <_CargoLibNameMatch>$([System.Text.RegularExpressions.Regex]::Match('$(_CargoTomlContent)', '\[lib\][^\[]*?name\s*=\s*"([^"]+)"', System.Text.RegularExpressions.RegexOptions.Singleline).Groups[1].Value.Trim())</_CargoLibNameMatch>
     <_CargoPackageNameMatch>$([System.Text.RegularExpressions.Regex]::Match('$(_CargoTomlContent)', '\[package\][^\[]*?name\s*=\s*"([^"]+)"', System.Text.RegularExpressions.RegexOptions.Singleline).Groups[1].Value.Trim())</_CargoPackageNameMatch>
-    <UniFFICrateName Condition="'$(_CargoLibNameMatch)' != ''">$(_CargoLibNameMatch)</UniFFICrateName>
-    <UniFFICrateName Condition="'$(_CargoLibNameMatch)' == '' and '$(_CargoPackageNameMatch)' != ''">$(_CargoPackageNameMatch)</UniFFICrateName>
   </PropertyGroup>
 
-  <!-- Rust library filename replaces '-' with '_' -->
-  <PropertyGroup Condition="'$(UniFFICrateName)' != '' and '$(UniFFICrateLibName)' == ''">
-    <UniFFICrateLibName>$(UniFFICrateName.Replace('-', '_'))</UniFFICrateLibName>
+  <!-- UniFFIPackageName is passed to cargo -p. UniFFICrateLibName is the library file stem. -->
+  <PropertyGroup>
+    <UniFFIPackageName Condition="'$(UniFFIPackageName)' == '' and '$(UniFFICrateName)' != ''">$(UniFFICrateName)</UniFFIPackageName>
+    <UniFFIPackageName Condition="'$(UniFFIPackageName)' == '' and '$(_CargoPackageNameMatch)' != ''">$(_CargoPackageNameMatch)</UniFFIPackageName>
+    <UniFFIPackageName Condition="'$(UniFFIPackageName)' == '' and '$(_CargoLibNameMatch)' != ''">$(_CargoLibNameMatch)</UniFFIPackageName>
+    <UniFFICrateName Condition="'$(UniFFICrateName)' == ''">$(UniFFIPackageName)</UniFFICrateName>
+
+    <UniFFICrateLibName Condition="'$(UniFFICrateLibName)' == '' and '$(_CargoLibNameMatch)' != ''">$(_CargoLibNameMatch)</UniFFICrateLibName>
+    <UniFFICrateLibName Condition="'$(UniFFICrateLibName)' == '' and '$(UniFFIPackageName)' != ''">$(UniFFIPackageName)</UniFFICrateLibName>
+    <UniFFICrateLibName Condition="'$(UniFFICrateLibName)' != ''">$(UniFFICrateLibName.Replace('-', '_'))</UniFFICrateLibName>
   </PropertyGroup>
 
-  <!-- ===================================================================== -->
-  <!-- 3. Cargo Target Directory & Output Path Resolution                    -->
-  <!-- ===================================================================== -->
-  <PropertyGroup Condition="'$(UniFFICargoManifestDir)' != ''">
-    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and '$(CARGO_TARGET_DIR)' != ''">$([System.IO.Path]::GetFullPath('$(CARGO_TARGET_DIR)'))</UniFFICargoTargetDir>
-    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and Exists('$(UniFFICargoManifestDir)\target')">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\target'))</UniFFICargoTargetDir>
-    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and Exists('$(UniFFICargoManifestDir)\..\target')">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\..\target'))</UniFFICargoTargetDir>
-    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == ''">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\target'))</UniFFICargoTargetDir>
+  <!-- One RID row sets the OS, the cargo target, and the Zig cc triple. -->
+  <PropertyGroup>
+    <_UniFFITargetTriple Condition="'$(TargetTriple)' != ''">$(TargetTriple)</_UniFFITargetTriple>
+  </PropertyGroup>
+  <Choose>
+    <When Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Windows</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">x86_64-pc-windows-msvc</UniFFICargoTarget>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'win-arm64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Windows</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">aarch64-pc-windows-msvc</UniFFICargoTarget>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Linux</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">x86_64-unknown-linux-gnu</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">x86_64-linux-gnu</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'linux-musl-x64' or '$(RuntimeIdentifier)' == 'alpine-x64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Linux</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">x86_64-unknown-linux-musl</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">x86_64-linux-musl</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'linux-arm64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Linux</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">aarch64-unknown-linux-gnu</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">aarch64-linux-gnu</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'linux-musl-arm64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>Linux</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">aarch64-unknown-linux-musl</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">aarch64-linux-musl</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'osx-x64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>OSX</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">x86_64-apple-darwin</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">x86_64-macos</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+    <When Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+      <PropertyGroup>
+        <_UniFFITargetOS>OSX</_UniFFITargetOS>
+        <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == ''">aarch64-apple-darwin</UniFFICargoTarget>
+        <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == ''">aarch64-macos</_UniFFITargetTriple>
+      </PropertyGroup>
+    </When>
+  </Choose>
+  <PropertyGroup>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and '$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">Windows</_UniFFITargetOS>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and '$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux'))">Linux</_UniFFITargetOS>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and '$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))">OSX</_UniFFITargetOS>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">Windows</_UniFFITargetOS>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">Linux</_UniFFITargetOS>
+    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">OSX</_UniFFITargetOS>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(UniFFICargoProfile)' == ''">
@@ -59,23 +108,11 @@
     <UniFFICargoProfile Condition="'$(Configuration)' != 'Release'">debug</UniFFICargoProfile>
   </PropertyGroup>
 
-  <!-- Resolve Target OS based on RuntimeIdentifier first, fallback to Host OS -->
-  <PropertyGroup>
-    <_UniFFITargetOS Condition="'$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">Windows</_UniFFITargetOS>
-    <_UniFFITargetOS Condition="'$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('linux'))">Linux</_UniFFITargetOS>
-    <_UniFFITargetOS Condition="'$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))">OSX</_UniFFITargetOS>
-    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">Windows</_UniFFITargetOS>
-    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">Linux</_UniFFITargetOS>
-    <_UniFFITargetOS Condition="'$(_UniFFITargetOS)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">OSX</_UniFFITargetOS>
-
-    <!-- Map RuntimeIdentifier to Cargo target when cross-compiling or targeting specific RID -->
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and '$(RuntimeIdentifier)' == 'win-x64'">x86_64-pc-windows-msvc</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and '$(RuntimeIdentifier)' == 'win-arm64'">aarch64-pc-windows-msvc</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux')">x86_64-unknown-linux-gnu</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and ('$(RuntimeIdentifier)' == 'linux-musl-x64' or '$(RuntimeIdentifier)' == 'alpine-x64')">x86_64-unknown-linux-musl</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and '$(RuntimeIdentifier)' == 'linux-arm64'">aarch64-unknown-linux-gnu</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and '$(RuntimeIdentifier)' == 'osx-x64'">x86_64-apple-darwin</UniFFICargoTarget>
-    <UniFFICargoTarget Condition="'$(UniFFICargoTarget)' == '' and '$(RuntimeIdentifier)' == 'osx-arm64'">aarch64-apple-darwin</UniFFICargoTarget>
+  <PropertyGroup Condition="'$(UniFFICargoManifestDir)' != ''">
+    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and '$(CARGO_TARGET_DIR)' != ''">$([System.IO.Path]::GetFullPath('$(CARGO_TARGET_DIR)'))</UniFFICargoTargetDir>
+    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and Exists('$(UniFFICargoManifestDir)\target')">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\target'))</UniFFICargoTargetDir>
+    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == '' and Exists('$(UniFFICargoManifestDir)\..\target')">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\..\target'))</UniFFICargoTargetDir>
+    <UniFFICargoTargetDir Condition="'$(UniFFICargoTargetDir)' == ''">$([System.IO.Path]::GetFullPath('$(UniFFICargoManifestDir)\target'))</UniFFICargoTargetDir>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(UniFFICargoTargetDir)' != '' and '$(UniFFICargoProfile)' != ''">
@@ -83,174 +120,136 @@
     <UniFFICargoOutputDir Condition="'$(UniFFICargoTarget)' == ''">$([System.IO.Path]::Combine('$(UniFFICargoTargetDir)', '$(UniFFICargoProfile)'))</UniFFICargoOutputDir>
   </PropertyGroup>
 
-  <!-- ===================================================================== -->
-  <!-- 4. Default Native Library Paths Resolution per OS                     -->
-  <!-- ===================================================================== -->
-
-  <PropertyGroup Condition="'$(UniFFICargoOutputDir)' != '' and '$(UniFFICrateLibName)' != ''">
-    <!-- Windows -->
-    <UniFFIRustLibrary Condition="'$(UniFFIRustLibrary)' == '' and '$(_UniFFITargetOS)' == 'Windows'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(UniFFICrateLibName).dll'))</UniFFIRustLibrary>
-    <UniFFIRustStaticLibrary Condition="'$(UniFFIRustStaticLibrary)' == '' and '$(_UniFFITargetOS)' == 'Windows'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(UniFFICrateLibName).lib'))</UniFFIRustStaticLibrary>
-    <UniFFIRustLibraryPdb Condition="'$(UniFFIRustLibraryPdb)' == '' and '$(_UniFFITargetOS)' == 'Windows'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(UniFFICrateLibName).pdb'))</UniFFIRustLibraryPdb>
-
-    <!-- Linux -->
-    <UniFFIRustLibrary Condition="'$(UniFFIRustLibrary)' == '' and '$(_UniFFITargetOS)' == 'Linux'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', 'lib$(UniFFICrateLibName).so'))</UniFFIRustLibrary>
-    <UniFFIRustStaticLibrary Condition="'$(UniFFIRustStaticLibrary)' == '' and '$(_UniFFITargetOS)' == 'Linux'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', 'lib$(UniFFICrateLibName).a'))</UniFFIRustStaticLibrary>
-
-    <!-- macOS -->
-    <UniFFIRustLibrary Condition="'$(UniFFIRustLibrary)' == '' and '$(_UniFFITargetOS)' == 'OSX'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', 'lib$(UniFFICrateLibName).dylib'))</UniFFIRustLibrary>
-    <UniFFIRustStaticLibrary Condition="'$(UniFFIRustStaticLibrary)' == '' and '$(_UniFFITargetOS)' == 'OSX'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', 'lib$(UniFFICrateLibName).a'))</UniFFIRustStaticLibrary>
+  <PropertyGroup>
+    <_UniFFILibPrefix Condition="'$(_UniFFITargetOS)' == 'Linux' or '$(_UniFFITargetOS)' == 'OSX'">lib</_UniFFILibPrefix>
+    <_UniFFIDynamicExt Condition="'$(_UniFFITargetOS)' == 'Windows'">dll</_UniFFIDynamicExt>
+    <_UniFFIDynamicExt Condition="'$(_UniFFITargetOS)' == 'Linux'">so</_UniFFIDynamicExt>
+    <_UniFFIDynamicExt Condition="'$(_UniFFITargetOS)' == 'OSX'">dylib</_UniFFIDynamicExt>
+    <_UniFFIStaticExt Condition="'$(_UniFFITargetOS)' == 'Windows'">lib</_UniFFIStaticExt>
+    <_UniFFIStaticExt Condition="'$(_UniFFITargetOS)' == 'Linux' or '$(_UniFFITargetOS)' == 'OSX'">a</_UniFFIStaticExt>
   </PropertyGroup>
 
-  <!-- Default UniFFILinkMode to Auto if not set -->
+  <PropertyGroup Condition="'$(UniFFICargoOutputDir)' != '' and '$(UniFFICrateLibName)' != '' and '$(_UniFFIDynamicExt)' != ''">
+    <UniFFIRustLibrary Condition="'$(UniFFIRustLibrary)' == ''">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(_UniFFILibPrefix)$(UniFFICrateLibName).$(_UniFFIDynamicExt)'))</UniFFIRustLibrary>
+    <UniFFIRustStaticLibrary Condition="'$(UniFFIRustStaticLibrary)' == ''">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(_UniFFILibPrefix)$(UniFFICrateLibName).$(_UniFFIStaticExt)'))</UniFFIRustStaticLibrary>
+    <UniFFIRustLibraryPdb Condition="'$(UniFFIRustLibraryPdb)' == '' and '$(_UniFFITargetOS)' == 'Windows'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(UniFFICrateLibName).pdb'))</UniFFIRustLibraryPdb>
+  </PropertyGroup>
+
+  <!-- UniFFILinkKind is the only static/dynamic decision. Auto follows PublishAot; explicit Dynamic stays dynamic. -->
   <PropertyGroup>
     <UniFFILinkMode Condition="'$(UniFFILinkMode)' == ''">Auto</UniFFILinkMode>
+    <UniFFILinkKind Condition="'$(UniFFILinkMode)' == 'Static' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' == 'true')">Static</UniFFILinkKind>
+    <UniFFILinkKind Condition="'$(UniFFILinkKind)' == ''">Dynamic</UniFFILinkKind>
+
+    <_UniFFIRustLibraryIsArchive Condition="'$(UniFFIRustLibrary)' != '' and ($([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.lib', System.StringComparison.OrdinalIgnoreCase)) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.a', System.StringComparison.OrdinalIgnoreCase)))">true</_UniFFIRustLibraryIsArchive>
+    <UniFFIRustStaticLibrary Condition="'$(UniFFILinkKind)' == 'Static' and '$(UniFFIRustStaticLibrary)' == '' and '$(_UniFFIRustLibraryIsArchive)' == 'true'">$(UniFFIRustLibrary)</UniFFIRustStaticLibrary>
+    <UniFFIRustLibraryPdb Condition="'$(UniFFIRustLibraryPdb)' != '' and !$([System.IO.Path]::IsPathRooted('$(UniFFIRustLibraryPdb)'))">$([System.IO.Path]::GetFullPath('$([System.IO.Path]::Combine("$(MSBuildProjectDirectory)", "$(UniFFIRustLibraryPdb)"))'))</UniFFIRustLibraryPdb>
+    <UniFFIInputLibrary Condition="'$(UniFFILinkKind)' == 'Static'">$(UniFFIRustStaticLibrary)</UniFFIInputLibrary>
+    <UniFFIInputLibrary Condition="'$(UniFFILinkKind)' == 'Dynamic'">$(UniFFIRustLibrary)</UniFFIInputLibrary>
+    <UniFFIInputLibrary Condition="'$(UniFFIInputLibrary)' != '' and !$([System.IO.Path]::IsPathRooted('$(UniFFIInputLibrary)'))">$([System.IO.Path]::GetFullPath('$([System.IO.Path]::Combine("$(MSBuildProjectDirectory)", "$(UniFFIInputLibrary)"))'))</UniFFIInputLibrary>
+    <UniFFIInputLibrary Condition="'$(UniFFIInputLibrary)' != '' and $([System.IO.Path]::IsPathRooted('$(UniFFIInputLibrary)'))">$([System.IO.Path]::GetFullPath('$(UniFFIInputLibrary)'))</UniFFIInputLibrary>
+    <UniFFIInputStampFile Condition="'$(UniFFIInputLibrary)' != ''">$([System.IO.Path]::GetFullPath('$([System.IO.Path]::Combine("$(MSBuildProjectDirectory)", "$(IntermediateOutputPath)", "uniffi.input.stamp"))'))</UniFFIInputStampFile>
   </PropertyGroup>
 
-  <!-- ===================================================================== -->
-  <!-- 5. Static Link Mode / NativeAOT & Dynamic Link Setup                  -->
-  <!-- ===================================================================== -->
-  <Choose>
-    <When Condition="'$(UniFFILinkMode)' == 'Static' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' == 'true')">
-      <PropertyGroup>
-        <DefineConstants>$(DefineConstants);UNIFFI_STATIC_LINK</DefineConstants>
-        <_UniFFIIsStaticLink>true</_UniFFIIsStaticLink>
-      </PropertyGroup>
+  <PropertyGroup Condition="'$(UniFFILinkKind)' == 'Static'">
+    <DefineConstants>$(DefineConstants);UNIFFI_STATIC_LINK</DefineConstants>
+  </PropertyGroup>
 
-      <!-- Common Windows system libraries required by Rust std when statically linking on Windows -->
-      <ItemGroup Condition="'$(_UniFFITargetOS)' == 'Windows'">
-        <NativeLibrary Include="ws2_32.lib" />
-        <NativeLibrary Include="iphlpapi.lib" />
-        <NativeLibrary Include="userenv.lib" />
-        <NativeLibrary Include="bcrypt.lib" />
-      </ItemGroup>
-    </When>
-    <Otherwise>
-      <PropertyGroup>
-        <_UniFFIIsStaticLink>false</_UniFFIIsStaticLink>
-      </PropertyGroup>
-      <!-- Dynamic linking: copy .dll / .so / .dylib and pdb to output directory if exists -->
-      <ItemGroup Condition="'$(UniFFIRustLibrary)' != '' and Exists('$(UniFFIRustLibrary)') and ($([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.dll')) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.so')) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.dylib')))">
-        <None Include="$(UniFFIRustLibrary)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
-        <None Include="$(UniFFIRustLibraryPdb)" Condition="'$(UniFFICopyPdb)' != 'false' and '$(UniFFIRustLibraryPdb)' != '' and Exists('$(UniFFIRustLibraryPdb)')" CopyToOutputDirectory="PreserveNewest" Visible="false" />
-      </ItemGroup>
-    </Otherwise>
-  </Choose>
+  <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and '$(_UniFFITargetOS)' == 'Windows'">
+    <NativeLibrary Include="ws2_32.lib" />
+    <NativeLibrary Include="iphlpapi.lib" />
+    <NativeLibrary Include="userenv.lib" />
+    <NativeLibrary Include="bcrypt.lib" />
+  </ItemGroup>
 
-  <!-- Register resolved libraries into AdditionalFiles for UniFFIGenerator -->
-  <ItemGroup Condition="'$(_UniFFIIsStaticLink)' != 'true' and '$(UniFFIRustLibrary)' != ''">
-    <AdditionalFiles Include="$(UniFFIRustLibrary)" UniFFI="true" Visible="false" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(_UniFFIIsStaticLink)' == 'true' and '$(UniFFIRustStaticLibrary)' != ''">
-    <AdditionalFiles Include="$(UniFFIRustStaticLibrary)" UniFFI="true" Visible="false" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(_UniFFIIsStaticLink)' == 'true' and '$(UniFFIRustStaticLibrary)' == '' and '$(UniFFIRustLibrary)' != '' and ($([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.lib')) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.a')))">
-    <AdditionalFiles Include="$(UniFFIRustLibrary)" UniFFI="true" Visible="false" />
+  <!-- Stamp text is "path|utcTicks". The generator reads this instead of the native binary. -->
+  <ItemGroup Condition="'$(UniFFIInputStampFile)' != ''">
+    <AdditionalFiles Include="$(UniFFIInputStampFile)" UniFFI="true" Visible="false" />
   </ItemGroup>
 
   <!-- ===================================================================== -->
-  <!-- 6. Target: Cargo Auto-Build                                           -->
+  <!-- Cargo build, then one registration of the resolved library            -->
   <!-- ===================================================================== -->
   <Target Name="UniFFIBuildCargo"
-          BeforeTargets="BeforeCompile;CoreCompile;GenerateMSBuildEditorConfigFileCore;AssignTargetPaths"
+          BeforeTargets="UniFFIEmitInput;CoreCompile"
           Condition="'$(UniFFIAutoBuildCargo)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
 
     <PropertyGroup>
       <_CargoExecutable Condition="'$(_CargoExecutable)' == ''">cargo</_CargoExecutable>
-      <_CargoSubCommand Condition="'$(_UniFFIIsStaticLink)' == 'true'">rustc</_CargoSubCommand>
-      <_CargoSubCommand Condition="'$(_UniFFIIsStaticLink)' != 'true'">build</_CargoSubCommand>
+      <_CargoSubCommand Condition="'$(UniFFILinkKind)' == 'Static'">rustc</_CargoSubCommand>
+      <_CargoSubCommand Condition="'$(UniFFILinkKind)' != 'Static'">build</_CargoSubCommand>
       <_CargoCommand>$(_CargoExecutable) $(_CargoSubCommand) --manifest-path "$(UniFFICargoManifestPath)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoProfile)' == 'release'">$(_CargoCommand) --release</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoTarget)' != ''">$(_CargoCommand) --target $(UniFFICargoTarget)</_CargoCommand>
-      <_CargoCommand Condition="'$(UniFFICrateName)' != '' and '$(UniFFICargoPackageSpecified)' != 'false'">$(_CargoCommand) --package $(UniFFICrateName)</_CargoCommand>
+      <_CargoCommand Condition="'$(UniFFIPackageName)' != '' and '$(UniFFICargoPackageSpecified)' != 'false'">$(_CargoCommand) --package "$(UniFFIPackageName)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoFeatures)' != ''">$(_CargoCommand) --features $(UniFFICargoFeatures)</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoNoDefaultFeatures)' == 'true'">$(_CargoCommand) --no-default-features</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoBuildArgs)' != ''">$(_CargoCommand) $(UniFFICargoBuildArgs)</_CargoCommand>
-      <_CargoCommand Condition="'$(_UniFFIIsStaticLink)' == 'true'">$(_CargoCommand) --crate-type staticlib</_CargoCommand>
+      <_CargoCommand Condition="'$(UniFFILinkKind)' == 'Static'">$(_CargoCommand) --crate-type staticlib</_CargoCommand>
 
-      <!-- Fallback resolution for ZigPath if not set by targets -->
-      <ZigPath Condition="'$(ZigPath)' == '' and '$(PkgVezel_Zig_Toolsets_win_x64)' != '' and Exists('$(PkgVezel_Zig_Toolsets_win_x64)\tools')">$(PkgVezel_Zig_Toolsets_win_x64)\tools</ZigPath>
-      <ZigPath Condition="'$(ZigPath)' == '' and '$(PkgVezel_Zig_Toolsets_win-x64)' != '' and Exists('$(PkgVezel_Zig_Toolsets_win-x64)\tools')">$(PkgVezel_Zig_Toolsets_win-x64)\tools</ZigPath>
-      <ZigPath Condition="'$(ZigPath)' == '' and '$(PkgVezel_Zig_Toolsets_win_arm64)' != '' and Exists('$(PkgVezel_Zig_Toolsets_win_arm64)\tools')">$(PkgVezel_Zig_Toolsets_win_arm64)\tools</ZigPath>
-      <ZigPath Condition="'$(ZigPath)' == '' and '$(PkgVezel_Zig_Toolsets_win-arm64)' != '' and Exists('$(PkgVezel_Zig_Toolsets_win-arm64)\tools')">$(PkgVezel_Zig_Toolsets_win-arm64)\tools</ZigPath>
-
-      <!-- Prepend ZigPath if available for cross-compilation tools (cc.exe) -->
+      <!-- Read here so a target that runs before cargo, such as AotAnywhere, can still set these. -->
+      <_UniFFITargetTriple Condition="'$(TargetTriple)' != ''">$(TargetTriple)</_UniFFITargetTriple>
       <_UniFFIEnvPath Condition="'$(ZigPath)' != ''">$(ZigPath);$([System.Environment]::GetEnvironmentVariable('PATH'))</_UniFFIEnvPath>
       <_UniFFIEnvPath Condition="'$(_UniFFIEnvPath)' == ''">$([System.Environment]::GetEnvironmentVariable('PATH'))</_UniFFIEnvPath>
-
-      <_UniFFITargetTriple Condition="'$(TargetTriple)' != ''">$(TargetTriple)</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and ('$(RuntimeIdentifier)' == 'linux-x64' or '$(RuntimeIdentifier)' == 'linux')">x86_64-linux-gnu</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and '$(RuntimeIdentifier)' == 'linux-arm64'">aarch64-linux-gnu</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and '$(RuntimeIdentifier)' == 'linux-musl-x64'">x86_64-linux-musl</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and '$(RuntimeIdentifier)' == 'linux-musl-arm64'">aarch64-linux-musl</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and '$(RuntimeIdentifier)' == 'osx-x64'">x86_64-macos</_UniFFITargetTriple>
-      <_UniFFITargetTriple Condition="'$(_UniFFITargetTriple)' == '' and '$(RuntimeIdentifier)' == 'osx-arm64'">aarch64-macos</_UniFFITargetTriple>
-
       <_UniFFIEnvPathEscaped Condition="'$(_UniFFIEnvPath)' != ''">$(_UniFFIEnvPath.Replace(';', '%3B'))</_UniFFIEnvPathEscaped>
     </PropertyGroup>
 
-    <Message Importance="high" Text="[UniFFISharp] Building Rust crate '$(UniFFICrateName)' via Cargo ($(_CargoCommand))..." />
+    <Message Importance="high" Text="[UniFFISharp] Building Rust package '$(UniFFIPackageName)' via Cargo ($(_CargoCommand))..." />
 
     <Exec Command="$(_CargoCommand)"
           WorkingDirectory="$(UniFFICargoManifestDir)"
           EnvironmentVariables="PATH=$(_UniFFIEnvPathEscaped);TARGET_TRIPLE=$(_UniFFITargetTriple)"
           StandardOutputImportance="Normal"
           StandardErrorImportance="Normal" />
-
   </Target>
 
-  <!-- ===================================================================== -->
-  <!-- 7. Target: Dynamically Register Output Files & Generator Inputs       -->
-  <!-- ===================================================================== -->
-  <Target Name="UniFFIRegisterOutputFiles"
-          AfterTargets="UniFFIBuildCargo"
-          BeforeTargets="AssignTargetPaths;GetCopyToOutputDirectoryItems;CoreCompile">
+  <Target Name="UniFFIEmitInput"
+          DependsOnTargets="PrepareForBuild"
+          BeforeTargets="GenerateMSBuildEditorConfigFileCore;CoreCompile;AssignTargetPaths;GetCopyToOutputDirectoryItems"
+          Condition="'$(UniFFIInputLibrary)' != ''">
 
-    <!-- Dynamic linking copy items -->
-    <ItemGroup Condition="('$(UniFFILinkMode)' == 'Dynamic' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' != 'true')) and '$(UniFFIRustLibrary)' != '' and Exists('$(UniFFIRustLibrary)')">
-      <None Include="$(UniFFIRustLibrary)">
+    <PropertyGroup>
+      <_UniFFIInputStamp Condition="Exists('$(UniFFIInputLibrary)')">$([System.IO.File]::GetLastWriteTimeUtc('$(UniFFIInputLibrary)').Ticks)</_UniFFIInputStamp>
+      <_UniFFIInputStamp Condition="'$(_UniFFIInputStamp)' == ''">0</_UniFFIInputStamp>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(UniFFIInputStampFile)"
+                      Lines="$(UniFFIInputLibrary)|$(_UniFFIInputStamp)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true"
+                      Encoding="UTF-8" />
+
+    <ItemGroup Condition="'$(UniFFILinkKind)' == 'Dynamic' and Exists('$(UniFFIInputLibrary)')">
+      <None Include="$(UniFFIInputLibrary)">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        <TargetPath>$([System.IO.Path]::GetFileName('$(UniFFIRustLibrary)'))</TargetPath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <TargetPath>$([System.IO.Path]::GetFileName('$(UniFFIInputLibrary)'))</TargetPath>
         <Visible>false</Visible>
       </None>
       <None Include="$(UniFFIRustLibraryPdb)" Condition="'$(UniFFICopyPdb)' != 'false' and '$(UniFFIRustLibraryPdb)' != '' and Exists('$(UniFFIRustLibraryPdb)')">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
         <TargetPath>$([System.IO.Path]::GetFileName('$(UniFFIRustLibraryPdb)'))</TargetPath>
         <Visible>false</Visible>
       </None>
     </ItemGroup>
 
-    <!-- Static linking / NativeAOT items -->
-    <ItemGroup Condition="('$(UniFFILinkMode)' == 'Static' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' == 'true')) and '$(UniFFIRustStaticLibrary)' != '' and Exists('$(UniFFIRustStaticLibrary)')">
-      <NativeLibrary Include="$(UniFFIRustStaticLibrary)" />
-      <DirectPInvoke Include="$([System.IO.Path]::GetFileNameWithoutExtension('$(UniFFIRustStaticLibrary)'))" />
-    </ItemGroup>
-
-    <!-- Update AdditionalFiles for Roslyn Source Generator if newly created -->
-    <ItemGroup Condition="'$(_UniFFIIsStaticLink)' != 'true' and '$(UniFFIRustLibrary)' != '' and Exists('$(UniFFIRustLibrary)')">
-      <AdditionalFiles Include="$(UniFFIRustLibrary)" UniFFI="true" Visible="false" />
-    </ItemGroup>
-    <ItemGroup Condition="'$(_UniFFIIsStaticLink)' == 'true' and '$(UniFFIRustStaticLibrary)' != '' and Exists('$(UniFFIRustStaticLibrary)')">
-      <AdditionalFiles Include="$(UniFFIRustStaticLibrary)" UniFFI="true" Visible="false" />
-    </ItemGroup>
-    <ItemGroup Condition="'$(_UniFFIIsStaticLink)' == 'true' and '$(UniFFIRustStaticLibrary)' == '' and '$(UniFFIRustLibrary)' != '' and Exists('$(UniFFIRustLibrary)') and ($([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.lib')) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.a')))">
-      <AdditionalFiles Include="$(UniFFIRustLibrary)" UniFFI="true" Visible="false" />
+    <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and Exists('$(UniFFIInputLibrary)')">
+      <NativeLibrary Include="$(UniFFIInputLibrary)" />
+      <DirectPInvoke Include="$([System.IO.Path]::GetFileNameWithoutExtension('$(UniFFIInputLibrary)'))" />
     </ItemGroup>
   </Target>
 
-  <!-- ===================================================================== -->
-  <!-- 8. Target: Cargo Clean                                                -->
-  <!-- ===================================================================== -->
   <Target Name="UniFFICleanCargo"
           AfterTargets="Clean"
           Condition="'$(UniFFICargoClean)' == 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
     <PropertyGroup>
       <_CargoExecutable Condition="'$(_CargoExecutable)' == ''">cargo</_CargoExecutable>
       <_CargoCleanCommand>$(_CargoExecutable) clean --manifest-path "$(UniFFICargoManifestPath)"</_CargoCleanCommand>
-      <_CargoCleanCommand Condition="'$(UniFFICrateName)' != '' and '$(UniFFICargoPackageSpecified)' != 'false'">$(_CargoCleanCommand) --package $(UniFFICrateName)</_CargoCleanCommand>
+      <_CargoCleanCommand Condition="'$(UniFFIPackageName)' != '' and '$(UniFFICargoPackageSpecified)' != 'false'">$(_CargoCleanCommand) --package "$(UniFFIPackageName)"</_CargoCleanCommand>
     </PropertyGroup>
 
-    <Message Importance="high" Text="[UniFFISharp] Cleaning Rust crate '$(UniFFICrateName)' via Cargo ($(_CargoCleanCommand))..." />
+    <Message Importance="high" Text="[UniFFISharp] Cleaning Rust package '$(UniFFIPackageName)' via Cargo ($(_CargoCleanCommand))..." />
     <Exec Command="$(_CargoCleanCommand)"
           WorkingDirectory="$(UniFFICargoManifestDir)"
           ContinueOnError="true" />
