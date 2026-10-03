@@ -20,6 +20,7 @@
     <_CargoTomlContent>$([System.IO.File]::ReadAllText('$(UniFFICargoManifestPath)'))</_CargoTomlContent>
     <_CargoLibNameMatch>$([System.Text.RegularExpressions.Regex]::Match('$(_CargoTomlContent)', '\[lib\][^\[]*?name\s*=\s*"([^"]+)"', System.Text.RegularExpressions.RegexOptions.Singleline).Groups[1].Value.Trim())</_CargoLibNameMatch>
     <_CargoPackageNameMatch>$([System.Text.RegularExpressions.Regex]::Match('$(_CargoTomlContent)', '\[package\][^\[]*?name\s*=\s*"([^"]+)"', System.Text.RegularExpressions.RegexOptions.Singleline).Groups[1].Value.Trim())</_CargoPackageNameMatch>
+    <_CargoHasStaticLib Condition="'$(_CargoTomlContent)' != '' and $(_CargoTomlContent.Contains('staticlib'))">true</_CargoHasStaticLib>
   </PropertyGroup>
 
   <!-- UniFFIPackageName is passed to cargo -p. UniFFICrateLibName is the library file stem. -->
@@ -135,10 +136,13 @@
     <UniFFIRustLibraryPdb Condition="'$(UniFFIRustLibraryPdb)' == '' and '$(_UniFFITargetOS)' == 'Windows'">$([System.IO.Path]::Combine('$(UniFFICargoOutputDir)', '$(UniFFICrateLibName).pdb'))</UniFFIRustLibraryPdb>
   </PropertyGroup>
 
-  <!-- UniFFILinkKind is the only static/dynamic decision. Auto follows PublishAot; explicit Dynamic stays dynamic. -->
+  <!-- UniFFILinkKind determines whether static or dynamic linking is used.
+       - 'Static': explicitly force static linking.
+       - 'Dynamic': explicitly force dynamic linking.
+       - 'Auto' (default): automatically select Static when performing an actual Native AOT publish (PublishAot=true and _IsPublishing=true); otherwise default to Dynamic for ordinary builds, debugging, and testing. -->
   <PropertyGroup>
     <UniFFILinkMode Condition="'$(UniFFILinkMode)' == ''">Auto</UniFFILinkMode>
-    <UniFFILinkKind Condition="'$(UniFFILinkMode)' == 'Static' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' == 'true')">Static</UniFFILinkKind>
+    <UniFFILinkKind Condition="'$(UniFFILinkMode)' == 'Static' or ('$(UniFFILinkMode)' == 'Auto' and '$(PublishAot)' == 'true' and ('$(_IsPublishing)' == 'true' or '$(DeployOnBuild)' == 'true'))">Static</UniFFILinkKind>
     <UniFFILinkKind Condition="'$(UniFFILinkKind)' == ''">Dynamic</UniFFILinkKind>
 
     <_UniFFIRustLibraryIsArchive Condition="'$(UniFFIRustLibrary)' != '' and ($([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.lib', System.StringComparison.OrdinalIgnoreCase)) or $([System.String]::Copy('$(UniFFIRustLibrary)').EndsWith('.a', System.StringComparison.OrdinalIgnoreCase)))">true</_UniFFIRustLibraryIsArchive>
@@ -176,8 +180,8 @@
 
     <PropertyGroup>
       <_CargoExecutable Condition="'$(_CargoExecutable)' == ''">cargo</_CargoExecutable>
-      <_CargoSubCommand Condition="'$(UniFFILinkKind)' == 'Static'">rustc</_CargoSubCommand>
-      <_CargoSubCommand Condition="'$(UniFFILinkKind)' != 'Static'">build</_CargoSubCommand>
+      <_CargoSubCommand Condition="'$(UniFFILinkKind)' == 'Static' and '$(_CargoHasStaticLib)' != 'true'">rustc</_CargoSubCommand>
+      <_CargoSubCommand Condition="'$(_CargoSubCommand)' == ''">build</_CargoSubCommand>
       <_CargoCommand>$(_CargoExecutable) $(_CargoSubCommand) --manifest-path "$(UniFFICargoManifestPath)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoProfile)' == 'release'">$(_CargoCommand) --release</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoTarget)' != ''">$(_CargoCommand) --target $(UniFFICargoTarget)</_CargoCommand>
@@ -185,7 +189,7 @@
       <_CargoCommand Condition="'$(UniFFICargoFeatures)' != ''">$(_CargoCommand) --features $(UniFFICargoFeatures)</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoNoDefaultFeatures)' == 'true'">$(_CargoCommand) --no-default-features</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoBuildArgs)' != ''">$(_CargoCommand) $(UniFFICargoBuildArgs)</_CargoCommand>
-      <_CargoCommand Condition="'$(UniFFILinkKind)' == 'Static'">$(_CargoCommand) --crate-type staticlib</_CargoCommand>
+      <_CargoCommand Condition="'$(UniFFILinkKind)' == 'Static' and '$(_CargoHasStaticLib)' != 'true'">$(_CargoCommand) --crate-type staticlib</_CargoCommand>
 
       <!-- Read here so a target that runs before cargo, such as AotAnywhere, can still set these. -->
       <_UniFFITargetTriple Condition="'$(TargetTriple)' != ''">$(TargetTriple)</_UniFFITargetTriple>
@@ -237,6 +241,17 @@
     <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and Exists('$(UniFFIInputLibrary)')">
       <NativeLibrary Include="$(UniFFIInputLibrary)" />
       <DirectPInvoke Include="$([System.IO.Path]::GetFileNameWithoutExtension('$(UniFFIInputLibrary)'))" />
+    </ItemGroup>
+
+    <!-- In static linking mode, if a dynamic library also exists, copy it to the local build output directory
+         so ordinary execution (dotnet run / test runners) under CoreCLR can still resolve P/Invoke, but avoid copying to publish directory. -->
+    <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and '$(UniFFIRustLibrary)' != '' and Exists('$(UniFFIRustLibrary)') and '$(_UniFFIRustLibraryIsArchive)' != 'true'">
+      <None Include="$(UniFFIRustLibrary)">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+        <TargetPath>$([System.IO.Path]::GetFileName('$(UniFFIRustLibrary)'))</TargetPath>
+        <Visible>false</Visible>
+      </None>
     </ItemGroup>
   </Target>
 
