@@ -1,5 +1,9 @@
 <Project>
 
+  <PropertyGroup>
+    <_UniFFIImported>true</_UniFFIImported>
+  </PropertyGroup>
+
   <!-- ===================================================================== -->
   <!-- Cargo manifest                                                        -->
   <!-- ===================================================================== -->
@@ -282,7 +286,7 @@
       <_ResolvedStaticLibPath Condition="'$(_ResolvedStaticLibPath)' == '' and '$(UniFFIInputLibrary)' != '' and Exists('$(UniFFIInputLibrary)') and '$(_UniFFIRustLibraryIsArchive)' == 'true'">$([System.IO.Path]::GetFullPath('$(UniFFIInputLibrary)'))</_ResolvedStaticLibPath>
     </PropertyGroup>
 
-    <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and '$(_ResolvedStaticLibPath)' != ''">
+    <ItemGroup Condition="'$(_ResolvedStaticLibPath)' != ''">
       <UniFFINativeDependency Include="$(_ResolvedStaticLibPath)">
         <CrateLibName>$([System.IO.Path]::GetFileNameWithoutExtension('$(_ResolvedStaticLibPath)'))</CrateLibName>
         <TargetOS>$(_UniFFITargetOS)</TargetOS>
@@ -292,6 +296,7 @@
     <!-- Support transitive project references (A -> B -> C) -->
     <MSBuild Projects="@(ProjectReference)"
              Targets="GetUniFFINativeDependencies"
+             Properties="UniFFILinkKind=Static;RuntimeIdentifier=$(RuntimeIdentifier)"
              SkipNonexistentTargets="true"
              SkipNonexistentProjects="true"
              Condition="'@(ProjectReference)' != ''">

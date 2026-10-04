@@ -1,5 +1,9 @@
 <Project>
 
+  <PropertyGroup>
+    <UniFFIIsDirectReference>true</UniFFIIsDirectReference>
+  </PropertyGroup>
+
   <ItemGroup>
     <CompilerVisibleProperty Include="UniFFINamespace" />
     <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="UniFFI" />

@@ -1,5 +1,9 @@
 <Project>
 
+  <!-- When buildTransitive supersedes build in NuGet, import the direct build targets if the current project is a direct consumer or configured UniFFI -->
+  <Import Project="$(MSBuildThisFileDirectory)..\build\UniFFISharp.targets"
+          Condition="'$(_UniFFIImported)' != 'true' and ('$(UniFFIIsDirectReference)' == 'true' or '$(UniFFICrateName)' != '' or '$(UniFFICargoProject)' != '' or '$(UniFFICargoManifestPath)' != '' or Exists('$(MSBuildProjectDirectory)\Cargo.toml'))" />
+
   <!-- ===================================================================== -->
   <!-- Transitive native static library resolution for NativeAOT publish     -->
   <!-- ===================================================================== -->
@@ -10,6 +14,7 @@
     <!-- Query all referenced projects for their UniFFI native static libraries -->
     <MSBuild Projects="@(ProjectReference)"
              Targets="GetUniFFINativeDependencies"
+             Properties="UniFFILinkKind=Static;RuntimeIdentifier=$(RuntimeIdentifier)"
              SkipNonexistentTargets="true"
              SkipNonexistentProjects="true"
              Condition="'@(ProjectReference)' != ''">
@@ -23,7 +28,7 @@
 
       <!-- Required Windows system libraries for Rust static linking -->
       <NativeLibrary Include="ws2_32.lib;iphlpapi.lib;userenv.lib;bcrypt.lib"
-                     Condition="'$(_UniFFITargetOS)' == 'Windows' or $([MSBuild]::IsOSPlatform('Windows'))" />
+                     Condition="'$(_UniFFITargetOS)' == 'Windows' or $([MSBuild]::IsOSPlatform('Windows')) or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))" />
     </ItemGroup>
 
     <Message Importance="high"
