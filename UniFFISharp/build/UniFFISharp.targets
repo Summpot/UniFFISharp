@@ -213,7 +213,7 @@
           Condition="'$(UniFFIInputLibrary)' != ''">
 
     <PropertyGroup>
-      <_UniFFIInputStamp Condition="Exists('$(UniFFIInputLibrary)')">$([System.IO.File]::GetLastWriteTimeUtc('$(UniFFIInputLibrary)').Ticks)</_UniFFIInputStamp>
+      <_UniFFIInputStamp Condition="Exists('$(UniFFIInputLibrary)')">$([System.IO.File]::GetLastWriteTime('$(UniFFIInputLibrary)').Ticks)</_UniFFIInputStamp>
       <_UniFFIInputStamp Condition="'$(_UniFFIInputStamp)' == ''">0</_UniFFIInputStamp>
     </PropertyGroup>
 
