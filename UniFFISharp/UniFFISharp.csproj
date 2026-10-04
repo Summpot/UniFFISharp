@@ -8,7 +8,7 @@
     <RootNamespace>UniFFISharp</RootNamespace>
     <AssemblyName>UniFFISharp</AssemblyName>
     <PackageId>UniFFISharp</PackageId>
-    <Version>0.2.3</Version>
+    <Version>0.2.4</Version>
     <Authors>Summpot</Authors>
     <Description>Zero-CLI, zero-boilerplate UniFFI binding generator and runtime for Rust + C# interoperability.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -24,8 +24,9 @@
 
   <ItemGroup>
     <None Include="..\README.md" Pack="true" PackagePath="\" />
-    <None Include="build\UniFFISharp.props" Pack="true" PackagePath="build/UniFFISharp.props;buildTransitive/UniFFISharp.props" />
-    <None Include="build\UniFFISharp.targets" Pack="true" PackagePath="build/UniFFISharp.targets;buildTransitive/UniFFISharp.targets" />
+    <None Include="build\UniFFISharp.props" Pack="true" PackagePath="build/UniFFISharp.props" />
+    <None Include="build\UniFFISharp.targets" Pack="true" PackagePath="build/UniFFISharp.targets" />
+    <None Include="buildTransitive\UniFFISharp.targets" Pack="true" PackagePath="buildTransitive/UniFFISharp.targets" />
     <None Include="..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\UniFFISharp.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\AsmResolver*.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>

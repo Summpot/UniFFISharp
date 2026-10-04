@@ -270,4 +270,37 @@
           ContinueOnError="true" />
   </Target>
 
+  <!-- ===================================================================== -->
+  <!-- Target for downstream projects to query native static dependencies    -->
+  <!-- ===================================================================== -->
+  <Target Name="GetUniFFINativeDependencies"
+          DependsOnTargets="UniFFIBuildCargo;UniFFIEmitInput"
+          Returns="@(UniFFINativeDependency)">
+
+    <PropertyGroup>
+      <_ResolvedStaticLibPath Condition="'$(UniFFIRustStaticLibrary)' != '' and Exists('$(UniFFIRustStaticLibrary)')">$([System.IO.Path]::GetFullPath('$(UniFFIRustStaticLibrary)'))</_ResolvedStaticLibPath>
+      <_ResolvedStaticLibPath Condition="'$(_ResolvedStaticLibPath)' == '' and '$(UniFFIInputLibrary)' != '' and Exists('$(UniFFIInputLibrary)') and '$(_UniFFIRustLibraryIsArchive)' == 'true'">$([System.IO.Path]::GetFullPath('$(UniFFIInputLibrary)'))</_ResolvedStaticLibPath>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(UniFFILinkKind)' == 'Static' and '$(_ResolvedStaticLibPath)' != ''">
+      <UniFFINativeDependency Include="$(_ResolvedStaticLibPath)">
+        <CrateLibName>$([System.IO.Path]::GetFileNameWithoutExtension('$(_ResolvedStaticLibPath)'))</CrateLibName>
+        <TargetOS>$(_UniFFITargetOS)</TargetOS>
+      </UniFFINativeDependency>
+    </ItemGroup>
+
+    <!-- Support transitive project references (A -> B -> C) -->
+    <MSBuild Projects="@(ProjectReference)"
+             Targets="GetUniFFINativeDependencies"
+             SkipNonexistentTargets="true"
+             SkipNonexistentProjects="true"
+             Condition="'@(ProjectReference)' != ''">
+      <Output TaskParameter="TargetOutputs" ItemName="_TransitiveChildNativeDeps" />
+    </MSBuild>
+
+    <ItemGroup>
+      <UniFFINativeDependency Include="@(_TransitiveChildNativeDeps)" />
+    </ItemGroup>
+  </Target>
+
 </Project>

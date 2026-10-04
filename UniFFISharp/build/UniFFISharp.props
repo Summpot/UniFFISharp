@@ -5,9 +5,4 @@
     <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="UniFFI" />
   </ItemGroup>
 
-  <!-- Analyzer reference for NuGet package consumption -->
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\UniFFISharp.Generator.dll')">
-    <Analyzer Include="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\UniFFISharp.Generator.dll" />
-  </ItemGroup>
-
 </Project>
