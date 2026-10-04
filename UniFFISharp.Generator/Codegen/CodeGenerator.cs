@@ -65,7 +65,7 @@ public static class CodeGenerator
         // 6. Objects / Interfaces
         foreach (var obj in ci.Objects)
         {
-            GenerateObject(cb, obj, crateNorm);
+            GenerateObject(cb, obj, crateNorm, ci);
         }
 
         // 7. Callback Interfaces
@@ -1592,15 +1592,20 @@ public static class CodeGenerator
         }
     }
 
-    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm)
+    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm, ComponentInterface ci)
     {
         string objName = TypeHelper.ToPascalCase(obj.Name);
         string ifaceName = "I" + objName;
         string objLower = obj.Name.ToLowerInvariant();
 
+        var streamDesc = AsyncStreamHeuristic.Detect(obj, ci);
+
         // Interface
         AppendDocComment(cb, obj.Docstring);
-        using (cb.Block($"public interface {ifaceName} : IDisposable"))
+        string ifaceInheritance = streamDesc != null
+            ? $": IDisposable, IAsyncEnumerable<{streamDesc.CSharpItemType}>"
+            : ": IDisposable";
+        using (cb.Block($"public interface {ifaceName} {ifaceInheritance}"))
         {
             foreach (var m in obj.Methods)
             {
@@ -1919,6 +1924,43 @@ public static class CodeGenerator
                             cb.AppendLine(");");
                         }
                     }
+                }
+                cb.AppendLine();
+            }
+
+            if (streamDesc != null)
+            {
+                string nextMethodName = TypeHelper.ToPascalCase(streamDesc.NextMethod.Name);
+                if (streamDesc.NextMethod.IsAsync && !nextMethodName.EndsWith("Async")) nextMethodName += "Async";
+
+                cb.AppendLine("/// <summary>");
+                cb.AppendLine($"/// Returns an async enumerator that iterates through the {streamDesc.CSharpItemType} stream.");
+                cb.AppendLine("/// </summary>");
+                cb.AppendLine("/// <param name=\"cancellationToken\">A token that may be used to cancel the read operation.</param>");
+                using (cb.Block($"public async IAsyncEnumerator<{streamDesc.CSharpItemType}> GetAsyncEnumerator(CancellationToken cancellationToken = default)"))
+                {
+                    using (cb.Block("while (!cancellationToken.IsCancellationRequested)"))
+                    {
+                        cb.AppendLine($"var item = await {nextMethodName}().WaitAsync(cancellationToken).ConfigureAwait(false);");
+                        if (streamDesc.IsValueType)
+                        {
+                            using (cb.Block("if (!item.HasValue)"))
+                            {
+                                cb.AppendLine("yield break;");
+                            }
+                            cb.AppendLine("yield return item.Value;");
+                        }
+                        else
+                        {
+                            using (cb.Block("if (item is null)"))
+                            {
+                                cb.AppendLine("yield break;");
+                            }
+                            cb.AppendLine("yield return item;");
+                        }
+                    }
+                    cb.AppendLine();
+                    cb.AppendLine("cancellationToken.ThrowIfCancellationRequested();");
                 }
                 cb.AppendLine();
             }

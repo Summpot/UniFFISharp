@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using UniFFISharp.Generator.Metadata;
 
@@ -135,6 +136,19 @@ public static class TypeHelper
             TypeKind.UInt8 or TypeKind.Int8 or TypeKind.UInt16 or TypeKind.Int16 or
             TypeKind.UInt32 or TypeKind.Int32 or TypeKind.UInt64 or TypeKind.Int64 or
             TypeKind.Float32 or TypeKind.Float64 => true,
+            _ => false
+        };
+    }
+
+    public static bool IsCSharpValueType(UniFFIType type, ComponentInterface? ci = null)
+    {
+        return type.Kind switch
+        {
+            TypeKind.UInt8 or TypeKind.Int8 or TypeKind.UInt16 or TypeKind.Int16 or
+            TypeKind.UInt32 or TypeKind.Int32 or TypeKind.UInt64 or TypeKind.Int64 or
+            TypeKind.Float32 or TypeKind.Float64 or TypeKind.Boolean or
+            TypeKind.Timestamp or TypeKind.Duration => true,
+            TypeKind.Enum => ci != null && ci.Enums.Any(e => e.Name == type.Name && e.Shape == EnumShape.Enum && e.Variants.All(v => v.Fields.Count == 0)),
             _ => false
         };
     }

@@ -8,6 +8,7 @@
 - **Auto Cargo Integration**: Automatically detects and builds Cargo projects (`cargo build` / `cargo rustc`), extracts UniFFI metadata directly from PE (`.dll`/`.lib`), ELF (`.so`/`.a`), or Mach-O (`.dylib`/`.a`) binaries using `AsmResolver`.
 - **First-class NativeAOT & Static Linking**: Seamless static linking into NativeAOT applications via `DirectPInvoke` with automatic Windows/Linux system library resolution.
 - **Async & Task Support**: Idiomatic two-way `Task` / `Task<T>` asynchronous Rust FFI.
+- **Async Streams (`IAsyncEnumerable<T>`)**: Automatic `IAsyncEnumerable<T>` generation for Rust async iterator / stream objects via method signature heuristics.
 - **Two-way Callback Interfaces**: Pass C# delegates / interface implementations to Rust.
 - **Cross-Compilation Ready**: Built-in integration with Zig toolsets for easy cross-platform compilation.
 
