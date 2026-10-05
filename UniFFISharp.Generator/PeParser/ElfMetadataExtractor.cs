@@ -25,25 +25,36 @@ public static class ElfMetadataExtractor
 
     public static ComponentInterface? Extract(string filePath)
     {
-        if (!File.Exists(filePath)) return null;
-        var fi = new FileInfo(filePath);
-        if (fi.Length > int.MaxValue) return null;
-        byte[] fileBytes = File.ReadAllBytes(filePath);
-        return Extract(fileBytes);
+        var all = ExtractAll(filePath);
+        return all.Count > 0 ? all[0] : null;
     }
 
     public static ComponentInterface? Extract(byte[] fileBytes)
     {
+        var all = ExtractAll(fileBytes);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(string filePath)
+    {
+        if (!File.Exists(filePath)) return Array.Empty<ComponentInterface>();
+        var fi = new FileInfo(filePath);
+        if (fi.Length > int.MaxValue) return Array.Empty<ComponentInterface>();
+        byte[] fileBytes = File.ReadAllBytes(filePath);
+        return ExtractAll(fileBytes);
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(byte[] fileBytes)
+    {
         if (!IsElf(fileBytes) || fileBytes.Length < 52)
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         bool is64 = fileBytes[4] == 2;
         bool isLE = fileBytes[5] == 1;
 
         var aggregator = new MetadataAggregator();
-        var ci = aggregator.ComponentInterface;
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
 
         var symbols = is64
@@ -52,7 +63,7 @@ public static class ElfMetadataExtractor
 
         foreach (var (symName, symData) in symbols)
         {
-            ci.AllExports.Add(symName);
+            aggregator.AllExports.Add(symName);
 
             if (!symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase) ||
                 symName.StartsWith("__imp_", StringComparison.OrdinalIgnoreCase))
@@ -67,7 +78,7 @@ public static class ElfMetadataExtractor
 
             if (symData == null || symData.Length == 0)
             {
-                ci.DiscoveredSymbols.Add($"{symName} (empty data)");
+                aggregator.DiscoveredSymbols.Add($"{symName} (empty data)");
                 continue;
             }
 
@@ -77,23 +88,21 @@ public static class ElfMetadataExtractor
                 object? item = metadataReader.ReadItem();
                 if (item == null)
                 {
-                    ci.DiscoveredSymbols.Add($"{symName} (item is null)");
+                    aggregator.DiscoveredSymbols.Add($"{symName} (item is null)");
                     continue;
                 }
 
-                ci.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
+                aggregator.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
 
                 aggregator.AddItem(item);
             }
             catch (Exception ex)
             {
-                ci.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
+                aggregator.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
             }
         }
 
-        aggregator.Build();
-
-        return ci;
+        return aggregator.BuildAll();
     }
 
     private static List<(string Name, byte[] Data)> ExtractSymbolsElf64(byte[] data, bool isLE)

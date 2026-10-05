@@ -72,6 +72,36 @@ ulong sum = MyRustLibMethods.Add(40, 2);
 Console.WriteLine($"Result: {sum}"); // Result: 42
 ```
 
+## Multi-Crate Support (`uniffi_reexport_scaffolding!`)
+
+UniFFISharp provides out-of-the-box support for Rust projects aggregating multiple component crates via `uniffi_reexport_scaffolding!()`.
+
+- **Multi-File Generation**: Emits an isolated `UniFFIBindings.{crateNorm}.g.cs` for each component crate.
+- **Isolated P/Invokes**: Each crate gets its own internal library handler and entry points matching its crate prefix (`uniffi_{sub_crate}_...`).
+- **Cross-Crate Types**: Automatically resolves types and converters across crate boundaries with appropriate namespace prefixes.
+
+### Configuring Namespaces
+
+Use the `<UniFFINamespace>` MSBuild property to configure root and sub-crate namespaces in a single property:
+
+```xml
+<PropertyGroup>
+  <!-- 
+    Format: [RootNamespace];[crate1=SubNamespace];[crate2=global::AbsoluteNamespace]
+    - Sub-crate namespaces without 'global::' are relative to RootNamespace.
+    - Sub-crates using 'global::' escape to an absolute namespace.
+    - Unconfigured sub-crates default to {RootNamespace}.{SubCratePascalCase}.
+  -->
+  <UniFFINamespace>MyCompany.Sdk;sub_alpha=Security;sub_legacy=global::LegacyVendor</UniFFINamespace>
+</PropertyGroup>
+```
+
+In the example above:
+- Umbrella crate maps to `MyCompany.Sdk`
+- `sub_alpha` maps to `MyCompany.Sdk.Security`
+- `sub_legacy` maps to `LegacyVendor`
+- Unconfigured sub-crates (e.g. `sub_beta`) map to `MyCompany.Sdk.SubBeta`
+
 ## License
 
 MIT OR Apache-2.0

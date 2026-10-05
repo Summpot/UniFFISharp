@@ -11,15 +11,27 @@ public static class PeMetadataExtractor
 {
     public static ComponentInterface? Extract(string dllPath)
     {
+        var all = ExtractAll(dllPath);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    public static ComponentInterface? Extract(byte[] fileBytes)
+    {
+        var all = ExtractAll(fileBytes);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(string dllPath)
+    {
         if (!File.Exists(dllPath))
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         if (dllPath.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) ||
             dllPath.EndsWith(".a", StringComparison.OrdinalIgnoreCase))
         {
-            return ArchiveMetadataExtractor.Extract(dllPath);
+            return ArchiveMetadataExtractor.ExtractAll(dllPath);
         }
 
         // If a corresponding .lib or .a static archive exists alongside the dynamic library,
@@ -29,10 +41,10 @@ public static class PeMetadataExtractor
         {
             try
             {
-                var archiveCi = ArchiveMetadataExtractor.Extract(libCandidate);
-                if (archiveCi != null && (archiveCi.Functions.Count > 0 || archiveCi.Records.Count > 0 || archiveCi.Objects.Count > 0))
+                var archiveCis = ArchiveMetadataExtractor.ExtractAll(libCandidate);
+                if (archiveCis.Count > 0)
                 {
-                    return archiveCi;
+                    return archiveCis;
                 }
             }
             catch
@@ -46,10 +58,10 @@ public static class PeMetadataExtractor
         {
             try
             {
-                var archiveCi = ArchiveMetadataExtractor.Extract(aCandidate);
-                if (archiveCi != null && (archiveCi.Functions.Count > 0 || archiveCi.Records.Count > 0 || archiveCi.Objects.Count > 0))
+                var archiveCis = ArchiveMetadataExtractor.ExtractAll(aCandidate);
+                if (archiveCis.Count > 0)
                 {
-                    return archiveCi;
+                    return archiveCis;
                 }
             }
             catch
@@ -68,17 +80,17 @@ public static class PeMetadataExtractor
 
         if (ArchiveMetadataExtractor.IsArchive(header))
         {
-            return ArchiveMetadataExtractor.Extract(dllPath);
+            return ArchiveMetadataExtractor.ExtractAll(dllPath);
         }
 
         if (ElfMetadataExtractor.IsElf(header))
         {
-            return ElfMetadataExtractor.Extract(dllPath);
+            return ElfMetadataExtractor.ExtractAll(dllPath);
         }
 
         if (MachOMetadataExtractor.IsMachO(header))
         {
-            return MachOMetadataExtractor.Extract(dllPath);
+            return MachOMetadataExtractor.ExtractAll(dllPath);
         }
 
         // PE format (.dll, .exe) parsed via AsmResolver from file
@@ -96,29 +108,29 @@ public static class PeMetadataExtractor
                 try
                 {
                     byte[] fileBytes = File.ReadAllBytes(dllPath);
-                    return Extract(fileBytes);
+                    return ExtractAll(fileBytes);
                 }
                 catch { }
             }
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
     }
 
-    public static ComponentInterface? Extract(byte[] fileBytes)
+    public static IReadOnlyList<ComponentInterface> ExtractAll(byte[] fileBytes)
     {
         if (ArchiveMetadataExtractor.IsArchive(fileBytes))
         {
-            return ArchiveMetadataExtractor.Extract(fileBytes);
+            return ArchiveMetadataExtractor.ExtractAll(fileBytes);
         }
 
         if (ElfMetadataExtractor.IsElf(fileBytes))
         {
-            return ElfMetadataExtractor.Extract(fileBytes);
+            return ElfMetadataExtractor.ExtractAll(fileBytes);
         }
 
         if (MachOMetadataExtractor.IsMachO(fileBytes))
         {
-            return MachOMetadataExtractor.Extract(fileBytes);
+            return MachOMetadataExtractor.ExtractAll(fileBytes);
         }
 
         // PE format (.dll, .exe) parsed via AsmResolver
@@ -129,21 +141,20 @@ public static class PeMetadataExtractor
         }
         catch
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         return ExtractFromPeImage(peImage);
     }
 
-    private static ComponentInterface? ExtractFromPeImage(PEImage peImage)
+    private static IReadOnlyList<ComponentInterface> ExtractFromPeImage(PEImage peImage)
     {
         if (peImage.Exports == null || peImage.Exports.Entries.Count == 0)
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         var aggregator = new MetadataAggregator();
-        var ci = aggregator.ComponentInterface;
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var export in peImage.Exports.Entries)
@@ -158,7 +169,7 @@ public static class PeMetadataExtractor
                 name = name.Substring(1);
             }
 
-            ci.AllExports.Add(name);
+            aggregator.AllExports.Add(name);
 
             if (!name.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
             {
@@ -174,7 +185,7 @@ public static class PeMetadataExtractor
             {
                 if (export.Address == null || !export.Address.CanRead)
                 {
-                    ci.DiscoveredSymbols.Add($"{name} (cannot read address)");
+                    aggregator.DiscoveredSymbols.Add($"{name} (cannot read address)");
                     continue;
                 }
 
@@ -183,7 +194,7 @@ public static class PeMetadataExtractor
 
                 if (data.Length == 0)
                 {
-                    ci.DiscoveredSymbols.Add($"{name} (len=0)");
+                    aggregator.DiscoveredSymbols.Add($"{name} (len=0)");
                     continue;
                 }
 
@@ -191,39 +202,19 @@ public static class PeMetadataExtractor
                 object? item = metadataReader.ReadItem();
                 if (item == null)
                 {
-                    ci.DiscoveredSymbols.Add($"{name} (item is null, code={data[0]})");
+                    aggregator.DiscoveredSymbols.Add($"{name} (item is null, code={data[0]})");
                     continue;
                 }
-                ci.DiscoveredSymbols.Add($"{name} (parsed {item.GetType().Name})");
+                aggregator.DiscoveredSymbols.Add($"{name} (parsed {item.GetType().Name})");
 
                 aggregator.AddItem(item);
             }
             catch (Exception ex)
             {
-                ci.DiscoveredSymbols.Add($"{name} (read/parse ex: {ex.Message})");
+                aggregator.DiscoveredSymbols.Add($"{name} (read/parse ex: {ex.Message})");
             }
         }
 
-        aggregator.Build();
-
-        if (string.IsNullOrEmpty(ci.CrateName) && (ci.Functions.Count > 0 || ci.Records.Count > 0 || ci.Objects.Count > 0))
-        {
-            // Derive crate name from functions or objects module path
-            if (ci.Functions.Count > 0)
-            {
-                ci.CrateName = ci.Functions[0].ModulePath;
-            }
-            else if (ci.Records.Count > 0)
-            {
-                ci.CrateName = ci.Records[0].ModulePath;
-            }
-            else if (ci.Objects.Count > 0)
-            {
-                ci.CrateName = ci.Objects[0].ModulePath;
-            }
-            ci.Namespace = ci.CrateName;
-        }
-
-        return ci;
+        return aggregator.BuildAll();
     }
 }

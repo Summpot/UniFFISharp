@@ -61,7 +61,7 @@ public static class TypeHelper
         return name;
     }
 
-    private static string GetExternalPrefix(UniFFIType type, string? currentCrate)
+    private static string GetExternalPrefix(UniFFIType type, string? currentCrate, Func<string, string>? namespaceResolver = null)
     {
         if (string.IsNullOrEmpty(currentCrate) || string.IsNullOrEmpty(type.ModulePath))
             return string.Empty;
@@ -70,14 +70,24 @@ public static class TypeHelper
         string curr = currentCrate!.Replace('-', '_');
         if (!string.Equals(crate, curr, StringComparison.OrdinalIgnoreCase))
         {
+            if (namespaceResolver != null)
+            {
+                string targetNs = namespaceResolver(crate);
+                string currNs = namespaceResolver(curr);
+                if (!string.Equals(targetNs, currNs, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(targetNs))
+                {
+                    return targetNs + ".";
+                }
+                return string.Empty;
+            }
             return ToPascalCase(crate) + ".";
         }
         return string.Empty;
     }
 
-    public static string ToCSharpType(UniFFIType type, string? currentCrate = null)
+    public static string ToCSharpType(UniFFIType type, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
     {
-        string prefix = GetExternalPrefix(type, currentCrate);
+        string prefix = GetExternalPrefix(type, currentCrate, namespaceResolver);
         return type.Kind switch
         {
             TypeKind.UInt8 => "byte",
@@ -97,10 +107,10 @@ public static class TypeHelper
             TypeKind.Enum => prefix + ToPascalCase(type.Name),
             TypeKind.Interface => prefix + ToPascalCase(type.Name),
             TypeKind.CallbackInterface => prefix + "I" + ToPascalCase(type.Name),
-            TypeKind.Option => ToCSharpType(type.InnerType!, currentCrate) + "?",
-            TypeKind.Sequence => $"List<{ToCSharpType(type.InnerType!, currentCrate)}>",
-            TypeKind.Map => $"Dictionary<{ToCSharpType(type.KeyType!, currentCrate)}, {ToCSharpType(type.ValueType!, currentCrate)}>",
-            TypeKind.Set => $"HashSet<{ToCSharpType(type.InnerType!, currentCrate)}>",
+            TypeKind.Option => ToCSharpType(type.InnerType!, currentCrate, namespaceResolver) + "?",
+            TypeKind.Sequence => $"List<{ToCSharpType(type.InnerType!, currentCrate, namespaceResolver)}>",
+            TypeKind.Map => $"Dictionary<{ToCSharpType(type.KeyType!, currentCrate, namespaceResolver)}, {ToCSharpType(type.ValueType!, currentCrate, namespaceResolver)}>",
+            TypeKind.Set => $"HashSet<{ToCSharpType(type.InnerType!, currentCrate, namespaceResolver)}>",
             TypeKind.Custom => prefix + ToPascalCase(type.Name),
             TypeKind.Timestamp => "DateTimeOffset",
             TypeKind.Duration => "TimeSpan",
@@ -185,9 +195,9 @@ public static class TypeHelper
         };
     }
 
-    public static string ConverterClassName(UniFFIType type, string? currentCrate = null)
+    public static string ConverterClassName(UniFFIType type, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
     {
-        string prefix = GetExternalPrefix(type, currentCrate);
+        string prefix = GetExternalPrefix(type, currentCrate, namespaceResolver);
         return type.Kind switch
         {
             TypeKind.UInt8 => "FfiConverterUInt8",
@@ -217,9 +227,9 @@ public static class TypeHelper
         };
     }
 
-    public static string ConverterInstance(UniFFIType type, string? currentCrate = null)
+    public static string ConverterInstance(UniFFIType type, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
     {
-        return $"{ConverterClassName(type, currentCrate)}.INSTANCE";
+        return $"{ConverterClassName(type, currentCrate, namespaceResolver)}.INSTANCE";
     }
 
     public static string FutureSuffix(UniFFIType? returnType)

@@ -38,27 +38,44 @@ public static class ArchiveMetadataExtractor
 
     public static ComponentInterface? Extract(string filePath)
     {
-        if (!File.Exists(filePath)) return null;
-        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        return Extract(stream);
+        var all = ExtractAll(filePath);
+        return all.Count > 0 ? all[0] : null;
     }
 
     public static ComponentInterface? Extract(byte[] fileBytes)
     {
-        if (fileBytes == null || fileBytes.Length < 8) return null;
-        using var ms = new MemoryStream(fileBytes, false);
-        return Extract(ms);
+        var all = ExtractAll(fileBytes);
+        return all.Count > 0 ? all[0] : null;
     }
 
     public static ComponentInterface? Extract(Stream stream)
     {
+        var all = ExtractAll(stream);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(string filePath)
+    {
+        if (!File.Exists(filePath)) return Array.Empty<ComponentInterface>();
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return ExtractAll(stream);
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(byte[] fileBytes)
+    {
+        if (fileBytes == null || fileBytes.Length < 8) return Array.Empty<ComponentInterface>();
+        using var ms = new MemoryStream(fileBytes, false);
+        return ExtractAll(ms);
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(Stream stream)
+    {
         if (!IsArchive(stream))
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         var aggregator = new MetadataAggregator();
-        var ci = aggregator.ComponentInterface;
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
         byte[] headerBuf = new byte[60];
 
@@ -101,7 +118,7 @@ public static class ArchiveMetadataExtractor
 
             foreach (var (symName, symData) in extractedSymbols)
             {
-                ci.AllExports.Add(symName);
+                aggregator.AllExports.Add(symName);
 
                 if (!symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
                 {
@@ -124,24 +141,22 @@ public static class ArchiveMetadataExtractor
                     object? item = metadataReader.ReadItem();
                     if (item == null)
                     {
-                        ci.DiscoveredSymbols.Add($"{symName} (item is null)");
+                        aggregator.DiscoveredSymbols.Add($"{symName} (item is null)");
                         continue;
                     }
 
-                    ci.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
+                    aggregator.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
 
                     aggregator.AddItem(item);
                 }
                 catch (Exception ex)
                 {
-                    ci.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
+                    aggregator.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
                 }
             }
         }
 
-        aggregator.Build();
-
-        return ci;
+        return aggregator.BuildAll();
     }
 
     internal static HashSet<long> FindUniffiMemberOffsets(Stream stream)

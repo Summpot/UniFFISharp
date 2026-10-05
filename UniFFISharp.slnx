@@ -3,4 +3,7 @@
     <Project Path="UniFFISharp/UniFFISharp.csproj" />
     <Project Path="UniFFISharp.Generator/UniFFISharp.Generator.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="UniFFISharp.Tests/UniFFISharp.Tests.csproj" />
+  </Folder>
 </Solution>

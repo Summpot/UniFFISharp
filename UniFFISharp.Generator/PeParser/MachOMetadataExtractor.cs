@@ -33,18 +33,30 @@ public static class MachOMetadataExtractor
 
     public static ComponentInterface? Extract(string filePath)
     {
-        if (!File.Exists(filePath)) return null;
-        var fi = new FileInfo(filePath);
-        if (fi.Length > int.MaxValue) return null;
-        byte[] fileBytes = File.ReadAllBytes(filePath);
-        return Extract(fileBytes);
+        var all = ExtractAll(filePath);
+        return all.Count > 0 ? all[0] : null;
     }
 
     public static ComponentInterface? Extract(byte[] fileBytes)
     {
+        var all = ExtractAll(fileBytes);
+        return all.Count > 0 ? all[0] : null;
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(string filePath)
+    {
+        if (!File.Exists(filePath)) return Array.Empty<ComponentInterface>();
+        var fi = new FileInfo(filePath);
+        if (fi.Length > int.MaxValue) return Array.Empty<ComponentInterface>();
+        byte[] fileBytes = File.ReadAllBytes(filePath);
+        return ExtractAll(fileBytes);
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(byte[] fileBytes)
+    {
         if (!IsMachO(fileBytes) || fileBytes.Length < 32)
         {
-            return null;
+            return Array.Empty<ComponentInterface>();
         }
 
         byte[] machOData = fileBytes;
@@ -56,7 +68,7 @@ public static class MachOMetadataExtractor
             machOData = ExtractFromFatBinary(fileBytes);
             if (machOData == null || machOData.Length < 32)
             {
-                return null;
+                return Array.Empty<ComponentInterface>();
             }
         }
 
@@ -64,14 +76,13 @@ public static class MachOMetadataExtractor
         bool isLE = (magic == MH_MAGIC_64);
 
         var aggregator = new MetadataAggregator();
-        var ci = aggregator.ComponentInterface;
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
 
         var symbols = ExtractSymbolsMachO64(machOData, isLE);
 
         foreach (var (symName, symData) in symbols)
         {
-            ci.AllExports.Add(symName);
+            aggregator.AllExports.Add(symName);
 
             if (!symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase) ||
                 symName.StartsWith("__imp_", StringComparison.OrdinalIgnoreCase))
@@ -90,23 +101,21 @@ public static class MachOMetadataExtractor
                 object? item = metadataReader.ReadItem();
                 if (item == null)
                 {
-                    ci.DiscoveredSymbols.Add($"{symName} (item is null)");
+                    aggregator.DiscoveredSymbols.Add($"{symName} (item is null)");
                     continue;
                 }
 
-                ci.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
+                aggregator.DiscoveredSymbols.Add($"{symName} (parsed {item.GetType().Name})");
 
                 aggregator.AddItem(item);
             }
             catch (Exception ex)
             {
-                ci.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
+                aggregator.DiscoveredSymbols.Add($"{symName} (read ex: {ex.Message})");
             }
         }
 
-        aggregator.Build();
-
-        return ci;
+        return aggregator.BuildAll();
     }
 
     private static byte[] ExtractFromFatBinary(byte[] data)

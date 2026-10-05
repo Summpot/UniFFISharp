@@ -4,10 +4,13 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using UniFFISharp.Generator.Codegen;
 using UniFFISharp.Generator.PeParser;
+
+[assembly: InternalsVisibleTo("UniFFISharp.Tests")]
 
 namespace UniFFISharp.Generator;
 
@@ -101,6 +104,7 @@ public class UniFFIGenerator : IIncrementalGenerator
         {
             var (stamps, customNamespace) = pair;
             var generatedCrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var nsConfig = new NamespaceConfig(customNamespace);
 
             foreach (var stamp in stamps)
             {
@@ -108,30 +112,47 @@ public class UniFFIGenerator : IIncrementalGenerator
                 if (libPath == null || !File.Exists(libPath))
                     continue;
 
-                var ci = PeMetadataExtractor.Extract(libPath);
-                if (ci == null)
+                var ciList = PeMetadataExtractor.ExtractAll(libPath);
+                if (ciList == null || ciList.Count == 0)
                     continue;
 
-                if (!string.IsNullOrWhiteSpace(customNamespace))
-                    ci.Namespace = customNamespace;
+                var validCis = ciList.Where(c => !c.IsEmpty).ToList();
+                if (validCis.Count == 0)
+                    continue;
 
-                if (ci.Functions.Count == 0 &&
-                    ci.Records.Count == 0 &&
-                    ci.Enums.Count == 0 &&
-                    ci.Objects.Count == 0 &&
-                    ci.CallbackInterfaces.Count == 0)
+                for (int i = 0; i < validCis.Count; i++)
                 {
-                    continue;
+                    bool isRoot = (i == 0);
+                    validCis[i].Namespace = nsConfig.ResolveNamespace(validCis[i].CrateName, isRoot);
                 }
 
-                string crateNorm = ci.CrateName.Replace('-', '_');
-                if (!generatedCrates.Add(crateNorm))
-                    continue;
+                var crateToNs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in validCis)
+                {
+                    crateToNs[c.CrateName.Replace('-', '_')] = c.Namespace;
+                }
 
-                string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath));
-                productionContext.AddSource(
-                    $"UniFFIBindings.{crateNorm}.g.cs",
-                    SourceText.From(source, System.Text.Encoding.UTF8));
+                Func<string, string> nsResolver = crate =>
+                {
+                    string norm = crate.Replace('-', '_');
+                    if (crateToNs.TryGetValue(norm, out var resolvedNs))
+                    {
+                        return resolvedNs;
+                    }
+                    return nsConfig.ResolveNamespace(norm, false);
+                };
+
+                foreach (var ci in validCis)
+                {
+                    string crateNorm = ci.CrateName.Replace('-', '_');
+                    if (!generatedCrates.Add(crateNorm))
+                        continue;
+
+                    string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver);
+                    productionContext.AddSource(
+                        $"UniFFIBindings.{crateNorm}.g.cs",
+                        SourceText.From(source, System.Text.Encoding.UTF8));
+                }
             }
         });
     }
@@ -156,5 +177,68 @@ public class UniFFIGenerator : IIncrementalGenerator
         int separator = stamp!.IndexOf('|');
         string path = (separator >= 0 ? stamp.Substring(0, separator) : stamp).Trim();
         return path.Length == 0 ? null : path;
+    }
+}
+
+internal sealed class NamespaceConfig
+{
+    public string RootNamespace { get; }
+    public Dictionary<string, string> CrateMappings { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public NamespaceConfig(string rawConfig)
+    {
+        RootNamespace = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawConfig)) return;
+
+        var tokens = rawConfig.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var token in tokens)
+        {
+            var trimmed = token.Trim();
+            if (trimmed.Length == 0) continue;
+
+            int eqIndex = trimmed.IndexOf('=');
+            if (eqIndex < 0)
+            {
+                if (string.IsNullOrEmpty(RootNamespace))
+                {
+                    RootNamespace = trimmed;
+                }
+            }
+            else
+            {
+                string crateKey = trimmed.Substring(0, eqIndex).Trim().Replace('-', '_');
+                string nsVal = trimmed.Substring(eqIndex + 1).Trim();
+                CrateMappings[crateKey] = nsVal;
+            }
+        }
+    }
+
+    public string ResolveNamespace(string crateName, bool isRootCrate)
+    {
+        string crateNorm = crateName.Replace('-', '_');
+        if (CrateMappings.TryGetValue(crateNorm, out var mappedVal))
+        {
+            if (mappedVal.StartsWith("global::", StringComparison.OrdinalIgnoreCase))
+            {
+                return mappedVal.Substring("global::".Length).Trim();
+            }
+            if (string.IsNullOrEmpty(mappedVal))
+            {
+                return RootNamespace;
+            }
+            if (!string.IsNullOrEmpty(RootNamespace))
+            {
+                return $"{RootNamespace}.{mappedVal.TrimStart('.')}";
+            }
+            return mappedVal.TrimStart('.');
+        }
+
+        if (isRootCrate)
+        {
+            return !string.IsNullOrEmpty(RootNamespace) ? RootNamespace : TypeHelper.ToPascalCase(crateName);
+        }
+
+        string subNs = TypeHelper.ToPascalCase(crateName);
+        return !string.IsNullOrEmpty(RootNamespace) ? $"{RootNamespace}.{subNs}" : subNs;
     }
 }

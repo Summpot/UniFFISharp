@@ -11,6 +11,11 @@ public static class CodeGenerator
 {
     public static string Generate(ComponentInterface ci, string dllFileName)
     {
+        return Generate(ci, dllFileName, null);
+    }
+
+    public static string Generate(ComponentInterface ci, string dllFileName, Func<string, string>? namespaceResolver)
+    {
         var cb = new CSharpCodeBuilder();
         string ns = string.IsNullOrEmpty(ci.Namespace) ? TypeHelper.ToPascalCase(ci.CrateName) : TypeHelper.ToPascalCase(ci.Namespace);
         string crateNorm = ci.CrateName.Replace('-', '_');
@@ -39,43 +44,45 @@ public static class CodeGenerator
         cb.AppendLine();
         cb.AppendLine($"namespace {ns};");
         cb.AppendLine();
+        cb.AppendLine($"using _UniFFILib = _UniFFILib_{crateNorm};");
+        cb.AppendLine();
 
         // 1. Built-in Converters (String, ByteArray, Timestamp, Duration)
         GenerateBuiltinConverters(cb);
 
         // 2. Composite Converters (Option, Sequence, Map, Set)
         var compositeTypes = FindCompositeTypes(ci);
-        GenerateCompositeConverters(cb, compositeTypes);
+        GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver);
 
         // 3. _UniFFILib P/Invoke class
-        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt);
+        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver);
 
         // 4. Records
         foreach (var rec in ci.Records)
         {
-            GenerateRecord(cb, rec);
+            GenerateRecord(cb, rec, crateNorm, namespaceResolver);
         }
 
         // 5. Enums
         foreach (var enm in ci.Enums)
         {
-            GenerateEnum(cb, enm);
+            GenerateEnum(cb, enm, crateNorm, namespaceResolver);
         }
 
         // 6. Objects / Interfaces
         foreach (var obj in ci.Objects)
         {
-            GenerateObject(cb, obj, crateNorm, ci);
+            GenerateObject(cb, obj, crateNorm, ci, namespaceResolver);
         }
 
         // 7. Callback Interfaces
         foreach (var cbi in ci.CallbackInterfaces)
         {
-            GenerateCallbackInterface(cb, cbi, crateNorm);
+            GenerateCallbackInterface(cb, cbi, crateNorm, namespaceResolver);
         }
 
         // 8. Top-level Functions
-        GenerateTopLevelMethods(cb, ci, ns, crateNorm);
+        GenerateTopLevelMethods(cb, ci, ns, crateNorm, namespaceResolver);
 
         return cb.ToString();
     }
@@ -281,25 +288,25 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateCompositeConverters(CSharpCodeBuilder cb, List<UniFFIType> compositeTypes)
+    private static void GenerateCompositeConverters(CSharpCodeBuilder cb, List<UniFFIType> compositeTypes, string crateNorm, Func<string, string>? namespaceResolver)
     {
         foreach (var ty in compositeTypes)
         {
             if (ty.Kind == TypeKind.Option)
             {
-                GenerateOptionalConverter(cb, ty);
+                GenerateOptionalConverter(cb, ty, crateNorm, namespaceResolver);
             }
             else if (ty.Kind == TypeKind.Sequence)
             {
-                GenerateSequenceConverter(cb, ty);
+                GenerateSequenceConverter(cb, ty, crateNorm, namespaceResolver);
             }
             else if (ty.Kind == TypeKind.Map)
             {
-                GenerateMapConverter(cb, ty);
+                GenerateMapConverter(cb, ty, crateNorm, namespaceResolver);
             }
             else if (ty.Kind == TypeKind.Set)
             {
-                GenerateSetConverter(cb, ty);
+                GenerateSetConverter(cb, ty, crateNorm, namespaceResolver);
             }
         }
     }
@@ -316,11 +323,11 @@ public static class CodeGenerator
         };
     }
 
-    private static void GenerateOptionalConverter(CSharpCodeBuilder cb, UniFFIType type)
+    private static void GenerateOptionalConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
     {
         var inner = type.InnerType!;
-        string innerCsType = TypeHelper.ToCSharpType(inner);
-        string innerConverter = TypeHelper.ConverterInstance(inner);
+        string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
+        string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
         bool isVal = IsValueType(inner);
 
@@ -362,11 +369,11 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateSequenceConverter(CSharpCodeBuilder cb, UniFFIType type)
+    private static void GenerateSequenceConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
     {
         var inner = type.InnerType!;
-        string innerCsType = TypeHelper.ToCSharpType(inner);
-        string innerConverter = TypeHelper.ConverterInstance(inner);
+        string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
+        string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
         using (cb.Block($"internal sealed class {convName} : FfiConverterRustBuffer<List<{innerCsType}>>"))
@@ -415,14 +422,14 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateMapConverter(CSharpCodeBuilder cb, UniFFIType type)
+    private static void GenerateMapConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
     {
         var key = type.KeyType!;
         var val = type.ValueType!;
-        string keyCsType = TypeHelper.ToCSharpType(key);
-        string valCsType = TypeHelper.ToCSharpType(val);
-        string keyConverter = TypeHelper.ConverterInstance(key);
-        string valConverter = TypeHelper.ConverterInstance(val);
+        string keyCsType = TypeHelper.ToCSharpType(key, crateNorm, namespaceResolver);
+        string valCsType = TypeHelper.ToCSharpType(val, crateNorm, namespaceResolver);
+        string keyConverter = TypeHelper.ConverterInstance(key, crateNorm, namespaceResolver);
+        string valConverter = TypeHelper.ConverterInstance(val, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
         using (cb.Block($"internal sealed class {convName} : FfiConverterRustBuffer<Dictionary<{keyCsType}, {valCsType}>>"))
@@ -474,11 +481,11 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateSetConverter(CSharpCodeBuilder cb, UniFFIType type)
+    private static void GenerateSetConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
     {
         var inner = type.InnerType!;
-        string innerCsType = TypeHelper.ToCSharpType(inner);
-        string innerConverter = TypeHelper.ConverterInstance(inner);
+        string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
+        string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
         using (cb.Block($"public sealed class {convName} : FfiConverterRustBuffer<HashSet<{innerCsType}>>"))
@@ -527,9 +534,9 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateLibraryClass(CSharpCodeBuilder cb, ComponentInterface ci, string crateNorm, string dllName)
+    private static void GenerateLibraryClass(CSharpCodeBuilder cb, ComponentInterface ci, string crateNorm, string dllName, Func<string, string>? namespaceResolver = null)
     {
-        using (cb.Block("internal static partial class _UniFFILib"))
+        using (cb.Block($"internal static partial class _UniFFILib_{crateNorm}"))
         {
             cb.AppendLine("#if (IOS || MACCATALYST || TVOS) && UNIFFI_STATIC_LINK");
             cb.AppendLine("    private const string DllName = \"__Internal\";");
@@ -562,12 +569,12 @@ public static class CodeGenerator
             cb.AppendLine();
 
             // Static Constructor with verification & callback registration
-            using (cb.Block("static _UniFFILib()"))
+            using (cb.Block($"static _UniFFILib_{crateNorm}()"))
             {
                 cb.AppendLine("#if NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER");
                 using (cb.Block("try"))
                 {
-                    using (cb.Block("NativeLibrary.SetDllImportResolver(typeof(_UniFFILib).Assembly, (libraryName, assembly, searchPath) =>"))
+                    using (cb.Block($"NativeLibrary.SetDllImportResolver(typeof(_UniFFILib_{crateNorm}).Assembly, (libraryName, assembly, searchPath) =>"))
                     {
                         using (cb.Block($"if (libraryName == DllName || libraryName == \"{dllName}\" || libraryName == \"{dllName}.dll\" || libraryName == \"__Internal\")"))
                         {
@@ -780,13 +787,13 @@ public static class CodeGenerator
             // Callback Interfaces VTable & P/Invokes
             foreach (var cbi in ci.CallbackInterfaces)
             {
-                GenerateCallbackLibrarySupport(cb, cbi, crateNorm);
+                GenerateCallbackLibrarySupport(cb, cbi, crateNorm, namespaceResolver);
             }
         }
         cb.AppendLine();
     }
 
-    private static void GenerateCallbackLibrarySupport(CSharpCodeBuilder cb, CallbackInterfaceMetadata cbi, string crateNorm)
+    private static void GenerateCallbackLibrarySupport(CSharpCodeBuilder cb, CallbackInterfaceMetadata cbi, string crateNorm, Func<string, string>? namespaceResolver = null)
     {
         string cbiName = TypeHelper.ToPascalCase(cbi.Name);
         string cbiLower = cbi.Name.ToLowerInvariant();
@@ -884,7 +891,7 @@ public static class CodeGenerator
                 }
                 else
                 {
-                    callArgs.Add($"{TypeHelper.ConverterInstance(p.Type)}.Lift({TypeHelper.ToCamelCase(p.Name)})");
+                    callArgs.Add($"{TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lift({TypeHelper.ToCamelCase(p.Name)})");
                 }
             }
 
@@ -953,19 +960,19 @@ public static class CodeGenerator
                                     cb.AppendLine("#else");
                                     cb.AppendLine($"var result = await {callExpr};");
                                     cb.AppendLine("#endif");
-                                    string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "result" : $"{TypeHelper.ConverterInstance(m.ReturnType)}.Lower(result)";
+                                    string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "result" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(result)";
                                     cb.AppendLine($"ret.returnValue = {loweredExpr};");
                                 }
                                 cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.SUCCESS;");
                             }
                             if (m.Throws != null)
                             {
-                                using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws)} ex)"))
+                                using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
                                 {
                                     using (cb.Block("try"))
                                     {
                                         cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.ERROR;");
-                                        cb.AppendLine($"ret.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws)}.Lower(ex);");
+                                        cb.AppendLine($"ret.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
                                     }
                                     using (cb.Block("catch"))
                                     {
@@ -1028,7 +1035,7 @@ public static class CodeGenerator
                         {
                             cb.AppendLine($"var res = {callExpr};");
                             string ffiRet = TypeHelper.ToFfiType(m.ReturnType);
-                            string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res" : $"{TypeHelper.ConverterInstance(m.ReturnType)}.Lower(res)";
+                            string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(res)";
                             using (cb.Block("unsafe"))
                             {
                                 cb.AppendLine($"*({ffiRet}*)uniffiOutReturn.ToPointer() = {loweredExpr};");
@@ -1038,10 +1045,10 @@ public static class CodeGenerator
                     }
                     if (m.Throws != null)
                     {
-                        using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws)} ex)"))
+                        using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
                         {
                             cb.AppendLine("callStatus.code = UniffiCallbackResponseStatus.ERROR;");
-                            cb.AppendLine($"callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws)}.Lower(ex);");
+                            cb.AppendLine($"callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
                         }
                     }
                     using (cb.Block("catch (Exception ex)"))
@@ -1091,7 +1098,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateCallbackInterface(CSharpCodeBuilder cb, CallbackInterfaceMetadata cbi, string crateNorm)
+    private static void GenerateCallbackInterface(CSharpCodeBuilder cb, CallbackInterfaceMetadata cbi, string crateNorm, Func<string, string>? namespaceResolver = null)
     {
         string cbiName = TypeHelper.ToPascalCase(cbi.Name);
         string ifaceName = "I" + cbiName;
@@ -1108,7 +1115,7 @@ public static class CodeGenerator
                     AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)), p.Docstring);
                 }
 
-                string retType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType) : "void";
+                string retType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver) : "void";
                 if (m.IsAsync)
                 {
                     retType = m.ReturnType != null ? $"Task<{retType}>" : "Task";
@@ -1117,7 +1124,7 @@ public static class CodeGenerator
                 foreach (var p in m.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
                 }
                 string methodName = TypeHelper.ToPascalCase(m.Name);
                 if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
@@ -1146,7 +1153,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec)
+    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec, string crateNorm, Func<string, string>? namespaceResolver = null)
     {
         string recordName = TypeHelper.ToPascalCase(rec.Name);
 
@@ -1162,7 +1169,7 @@ public static class CodeGenerator
         foreach (var field in orderedFields)
         {
             string def = field.DefaultValue != null ? $" = {field.DefaultValue}" : "";
-            paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
+            paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
         }
         cb.AppendLine($"public record {recordName}({string.Join(", ", paramDecls)});");
         cb.AppendLine();
@@ -1182,7 +1189,7 @@ public static class CodeGenerator
                 foreach (var field in rec.Fields)
                 {
                     string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
-                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(field.Type)}.AllocationSize({prop});");
+                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.AllocationSize({prop});");
                 }
                 cb.AppendLine("return size;");
             }
@@ -1193,7 +1200,7 @@ public static class CodeGenerator
                 foreach (var field in rec.Fields)
                 {
                     string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
-                    cb.AppendLine($"{TypeHelper.ConverterInstance(field.Type)}.Write({prop}, stream);");
+                    cb.AppendLine($"{TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Write({prop}, stream);");
                 }
             }
             cb.AppendLine();
@@ -1202,7 +1209,7 @@ public static class CodeGenerator
             {
                 foreach (var field in rec.Fields)
                 {
-                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(field.Type)}.Read(stream);");
+                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Read(stream);");
                 }
                 cb.AppendLine($"return new {recordName}(");
                 cb.Indent();
@@ -1219,7 +1226,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm)
+    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm, string crateNorm, Func<string, string>? namespaceResolver = null)
     {
         string enumName = TypeHelper.ToPascalCase(enm.Name);
         AppendDocComment(cb, enm.Docstring);
@@ -1345,13 +1352,13 @@ public static class CodeGenerator
                         foreach (var f in orderedFields)
                         {
                             string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
-                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
                         }
                         using (cb.Block($"public sealed class {vName} : {enumName}"))
                         {
                             foreach (var f in v.Fields)
                             {
-                                cb.AppendLine($"public {TypeHelper.ToCSharpType(f.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} {{ get; }}");
+                                cb.AppendLine($"public {TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} {{ get; }}");
                             }
                             cb.AppendLine();
                             using (cb.Block($"public {vName}({string.Join(", ", paramDecls)}) : base(\"{vName}\")"))
@@ -1387,7 +1394,7 @@ public static class CodeGenerator
                             {
                                 foreach (var f in v.Fields)
                                 {
-                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
                                 }
                                 cb.AppendLine("break;");
                             }
@@ -1419,7 +1426,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1448,7 +1455,7 @@ public static class CodeGenerator
                                     var argReads = new List<string>();
                                     foreach (var f in v.Fields)
                                     {
-                                        argReads.Add($"{TypeHelper.ConverterInstance(f.Type)}.Read(stream)");
+                                        argReads.Add($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(stream)");
                                     }
                                     cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", argReads)});");
                                 }
@@ -1485,7 +1492,7 @@ public static class CodeGenerator
                         foreach (var f in orderedFields)
                         {
                             string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
-                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
                         }
                         cb.AppendLine($"public sealed record {vName}({string.Join(", ", paramDecls)}) : {enumName};");
                     }
@@ -1513,7 +1520,7 @@ public static class CodeGenerator
                             {
                                 foreach (var f in v.Fields)
                                 {
-                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
                                 }
                                 cb.AppendLine("break;");
                             }
@@ -1545,7 +1552,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1574,7 +1581,7 @@ public static class CodeGenerator
                                     var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type)}.Read(stream);");
+                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(stream);");
                                     }
                                     var namedArgs = orderedFields.Select(f => $"{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}: _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')}");
                                     cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", namedArgs)});");
@@ -1592,7 +1599,7 @@ public static class CodeGenerator
         }
     }
 
-    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm, ComponentInterface ci)
+    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null)
     {
         string objName = TypeHelper.ToPascalCase(obj.Name);
         string ifaceName = "I" + objName;
@@ -1614,7 +1621,7 @@ public static class CodeGenerator
                 {
                     AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)), p.Docstring);
                 }
-                string retType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType) : "void";
+                string retType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver) : "void";
                 if (m.IsAsync)
                 {
                     retType = m.ReturnType != null ? $"Task<{retType}>" : "Task";
@@ -1623,7 +1630,7 @@ public static class CodeGenerator
                 foreach (var p in m.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
                 }
                 string methodName = TypeHelper.ToPascalCase(m.Name);
                 if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
@@ -1758,20 +1765,20 @@ public static class CodeGenerator
                 foreach (var p in ctor.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
                     if (TypeHelper.IsFfiPrimitive(p.Type))
                     {
                         callArgs.Add(TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)));
                     }
                     else
                     {
-                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
+                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
                     }
                 }
 
                 string ctorLower = ctor.Name.ToLowerInvariant();
                 string ctorName = ctor.Name == "new" ? objName : TypeHelper.ToPascalCase(ctor.Name);
-                string errorHandler = ctor.Throws != null ? TypeHelper.ConverterInstance(ctor.Throws) : "NullCallStatusErrorHandler.INSTANCE";
+                string errorHandler = ctor.Throws != null ? TypeHelper.ConverterInstance(ctor.Throws, crateNorm, namespaceResolver) : "NullCallStatusErrorHandler.INSTANCE";
 
                 if (ctor.IsAsync)
                 {
@@ -1829,28 +1836,28 @@ public static class CodeGenerator
                     AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)), p.Docstring);
                 }
 
-                string rawRetType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType) : "void";
+                string rawRetType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver) : "void";
                 string retType = m.IsAsync ? (m.ReturnType != null ? $"Task<{rawRetType}>" : "Task") : rawRetType;
                 var paramDecls = new List<string>();
                 var callArgs = new List<string>();
                 foreach (var p in m.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
                     if (TypeHelper.IsFfiPrimitive(p.Type))
                     {
                         callArgs.Add(TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)));
                     }
                     else
                     {
-                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
+                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
                     }
                 }
 
                 string mLower = m.Name.ToLowerInvariant();
                 string methodName = TypeHelper.ToPascalCase(m.Name);
                 if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
-                string errorHandler = m.Throws != null ? TypeHelper.ConverterInstance(m.Throws) : "NullCallStatusErrorHandler.INSTANCE";
+                string errorHandler = m.Throws != null ? TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver) : "NullCallStatusErrorHandler.INSTANCE";
                 string argsPrefix = callArgs.Count > 0 ? ", " + string.Join(", ", callArgs) : "";
 
                 if (m.IsAsync)
@@ -1879,7 +1886,7 @@ public static class CodeGenerator
                             cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
                             cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(m.ReturnType)}.Lift(res)";
+                            string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
                             cb.AppendLine($"{errorHandler}");
                             cb.Unindent();
@@ -1918,7 +1925,7 @@ public static class CodeGenerator
                                 }
                                 else
                                 {
-                                    cb.AppendLine($"return {TypeHelper.ConverterInstance(m.ReturnType)}.Lift(res);");
+                                    cb.AppendLine($"return {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res);");
                                 }
                             }
                             cb.AppendLine(");");
@@ -1984,7 +1991,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateTopLevelMethods(CSharpCodeBuilder cb, ComponentInterface ci, string ns, string crateNorm)
+    private static void GenerateTopLevelMethods(CSharpCodeBuilder cb, ComponentInterface ci, string ns, string crateNorm, Func<string, string>? namespaceResolver = null)
     {
         string className = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
 
@@ -1998,7 +2005,7 @@ public static class CodeGenerator
                     AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)), p.Docstring);
                 }
 
-                string rawRetType = fn.ReturnType != null ? TypeHelper.ToCSharpType(fn.ReturnType) : "void";
+                string rawRetType = fn.ReturnType != null ? TypeHelper.ToCSharpType(fn.ReturnType, crateNorm, namespaceResolver) : "void";
                 string retType = fn.IsAsync ? (fn.ReturnType != null ? $"Task<{rawRetType}>" : "Task") : rawRetType;
                 var paramDecls = new List<string>();
                 var callArgs = new List<string>();
@@ -2006,21 +2013,21 @@ public static class CodeGenerator
                 foreach (var p in fn.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
                     if (TypeHelper.IsFfiPrimitive(p.Type))
                     {
                         callArgs.Add(TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)));
                     }
                     else
                     {
-                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
+                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
                     }
                 }
 
                 string fnLower = fn.Name.ToLowerInvariant();
                 string methodName = TypeHelper.ToPascalCase(fn.Name);
                 if (fn.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
-                string errorHandler = fn.Throws != null ? TypeHelper.ConverterInstance(fn.Throws) : "NullCallStatusErrorHandler.INSTANCE";
+                string errorHandler = fn.Throws != null ? TypeHelper.ConverterInstance(fn.Throws, crateNorm, namespaceResolver) : "NullCallStatusErrorHandler.INSTANCE";
 
                 if (fn.IsAsync)
                 {
@@ -2048,7 +2055,7 @@ public static class CodeGenerator
                             cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
                             cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            string liftExpr = TypeHelper.IsFfiPrimitive(fn.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(fn.ReturnType)}.Lift(res)";
+                            string liftExpr = TypeHelper.IsFfiPrimitive(fn.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(fn.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
                             cb.AppendLine($"{errorHandler}");
                             cb.Unindent();
@@ -2082,7 +2089,7 @@ public static class CodeGenerator
                             }
                             else
                             {
-                                cb.AppendLine($"return {TypeHelper.ConverterInstance(fn.ReturnType)}.Lift(res);");
+                                cb.AppendLine($"return {TypeHelper.ConverterInstance(fn.ReturnType, crateNorm, namespaceResolver)}.Lift(res);");
                             }
                         }
                     }

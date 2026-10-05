@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 
 namespace UniFFISharp.Generator.Metadata;
 
@@ -193,11 +193,17 @@ public class ComponentInterface
     public List<CallbackInterfaceMetadata> CallbackInterfaces { get; set; } = new();
     public List<string> DiscoveredSymbols { get; set; } = new();
     public List<string> AllExports { get; set; } = new();
+
+    public bool IsEmpty => Functions.Count == 0 &&
+                           Records.Count == 0 &&
+                           Enums.Count == 0 &&
+                           Objects.Count == 0 &&
+                           CallbackInterfaces.Count == 0;
 }
 
-public class MetadataAggregator
+public class SingleCrateAggregator
 {
-    private readonly ComponentInterface _ci = new();
+    private readonly ComponentInterface _ci;
     private readonly Dictionary<string, ObjectMetadata> _objectsByName = new(System.StringComparer.OrdinalIgnoreCase);
     private readonly List<ConstructorMetadata> _pendingConstructors = new();
     private readonly List<MethodMetadata> _pendingMethods = new();
@@ -205,6 +211,15 @@ public class MetadataAggregator
     private readonly List<TraitMethodMetadata> _pendingTraitMethods = new();
 
     public ComponentInterface ComponentInterface => _ci;
+
+    public SingleCrateAggregator(string crateName)
+    {
+        _ci = new ComponentInterface
+        {
+            CrateName = crateName,
+            Namespace = crateName
+        };
+    }
 
     public void AddItem(object item)
     {
@@ -308,5 +323,79 @@ public class MetadataAggregator
         }
 
         return _ci;
+    }
+}
+
+public class MetadataAggregator
+{
+    private readonly Dictionary<string, SingleCrateAggregator> _crates = new(System.StringComparer.OrdinalIgnoreCase);
+    private readonly List<SingleCrateAggregator> _orderedCrates = new();
+    private SingleCrateAggregator? _primaryCrate;
+    private readonly List<string> _discoveredSymbols = new();
+    private readonly List<string> _allExports = new();
+
+    public ComponentInterface ComponentInterface => _primaryCrate?.ComponentInterface ?? GetOrCreate("default").ComponentInterface;
+    public List<string> DiscoveredSymbols => _discoveredSymbols;
+    public List<string> AllExports => _allExports;
+
+    public static string GetCrateName(object item)
+    {
+        string raw = item switch
+        {
+            NamespaceMetadata ns => ns.CrateName,
+            FnMetadata fn => fn.ModulePath,
+            RecordMetadata rec => rec.ModulePath,
+            EnumMetadata enm => enm.ModulePath,
+            ObjectMetadata obj => obj.ModulePath,
+            ConstructorMetadata ctor => ctor.ModulePath,
+            MethodMetadata method => method.ModulePath,
+            CallbackInterfaceMetadata cbi => cbi.ModulePath,
+            TraitMethodMetadata tm => tm.ModulePath,
+            _ => string.Empty
+        };
+
+        if (string.IsNullOrEmpty(raw)) return "default";
+        return raw.Split(new[] { "::" }, System.StringSplitOptions.None)[0].Replace('-', '_');
+    }
+
+    private SingleCrateAggregator GetOrCreate(string crateNorm)
+    {
+        if (!_crates.TryGetValue(crateNorm, out var agg))
+        {
+            agg = new SingleCrateAggregator(crateNorm);
+            _crates[crateNorm] = agg;
+            _orderedCrates.Add(agg);
+            _primaryCrate ??= agg;
+        }
+        return agg;
+    }
+
+    public void AddItem(object item)
+    {
+        string crateNorm = GetCrateName(item);
+        var agg = GetOrCreate(crateNorm);
+        agg.AddItem(item);
+    }
+
+    public ComponentInterface Build()
+    {
+        var all = BuildAll();
+        return all.Count > 0 ? all[0] : new ComponentInterface();
+    }
+
+    public IReadOnlyList<ComponentInterface> BuildAll()
+    {
+        var list = new List<ComponentInterface>();
+        foreach (var agg in _orderedCrates)
+        {
+            var ci = agg.Build();
+            if (!ci.IsEmpty)
+            {
+                ci.DiscoveredSymbols = _discoveredSymbols;
+                ci.AllExports = _allExports;
+                list.Add(ci);
+            }
+        }
+        return list;
     }
 }
