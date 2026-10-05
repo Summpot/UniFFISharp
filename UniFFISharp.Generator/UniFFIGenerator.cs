@@ -89,6 +89,12 @@ public class UniFFIGenerator : IIncrementalGenerator
         var namespaceProvider = context.AnalyzerConfigOptionsProvider
             .Select((options, _) =>
             {
+                if (options.GlobalOptions.TryGetValue("build_property._UniFFINamespaceEncoded", out var encoded) &&
+                    !string.IsNullOrWhiteSpace(encoded))
+                {
+                    return encoded.Trim();
+                }
+
                 if (options.GlobalOptions.TryGetValue("build_property.UniFFINamespace", out var ns) &&
                     !string.IsNullOrWhiteSpace(ns))
                 {
@@ -190,7 +196,9 @@ internal sealed class NamespaceConfig
         RootNamespace = string.Empty;
         if (string.IsNullOrWhiteSpace(rawConfig)) return;
 
-        var tokens = rawConfig.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+        rawConfig = DecodeRawConfig(rawConfig.Trim());
+
+        var tokens = rawConfig.Split(new[] { ',', '|', ';' }, StringSplitOptions.RemoveEmptyEntries);
         foreach (var token in tokens)
         {
             var trimmed = token.Trim();
@@ -240,5 +248,57 @@ internal sealed class NamespaceConfig
 
         string subNs = TypeHelper.ToPascalCase(crateName);
         return !string.IsNullOrEmpty(RootNamespace) ? $"{RootNamespace}.{subNs}" : subNs;
+    }
+
+    private static string DecodeRawConfig(string raw)
+    {
+        if (raw.StartsWith("base64:", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var base64Part = raw.Substring("base64:".Length).Trim();
+                var bytes = Convert.FromBase64String(base64Part);
+                return System.Text.Encoding.UTF8.GetString(bytes);
+            }
+            catch
+            {
+                return raw;
+            }
+        }
+
+        if (raw.StartsWith("hex:", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var hexPart = raw.Substring("hex:".Length).Trim();
+                if (hexPart.Length % 2 == 0)
+                {
+                    var bytes = new byte[hexPart.Length / 2];
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        bytes[i] = Convert.ToByte(hexPart.Substring(i * 2, 2), 16);
+                    }
+                    return System.Text.Encoding.UTF8.GetString(bytes);
+                }
+            }
+            catch
+            {
+                return raw;
+            }
+        }
+
+        if (raw.IndexOf('%') >= 0)
+        {
+            try
+            {
+                return Uri.UnescapeDataString(raw);
+            }
+            catch
+            {
+                return raw;
+            }
+        }
+
+        return raw;
     }
 }

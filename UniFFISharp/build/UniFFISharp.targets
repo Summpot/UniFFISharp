@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <_UniFFIImported>true</_UniFFIImported>
+    <_UniFFINamespaceEncoded Condition="'$(UniFFINamespace)' != ''">$([System.Uri]::EscapeDataString('$(UniFFINamespace)'))</_UniFFINamespaceEncoded>
   </PropertyGroup>
 
   <!-- ===================================================================== -->

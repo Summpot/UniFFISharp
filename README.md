@@ -82,17 +82,21 @@ UniFFISharp provides out-of-the-box support for Rust projects aggregating multip
 
 ### Configuring Namespaces
 
-Use the `<UniFFINamespace>` MSBuild property to configure root and sub-crate namespaces in a single property:
+Use the `<UniFFINamespace>` MSBuild property to configure root and sub-crate namespaces in a single property separated by commas `,`, semicolons `;`, or pipes `|`:
 
 ```xml
 <PropertyGroup>
   <!-- 
-    Format: [RootNamespace];[crate1=SubNamespace];[crate2=global::AbsoluteNamespace]
+    Format: [RootNamespace], [crate1=SubNamespace], [crate2=global::AbsoluteNamespace]
     - Sub-crate namespaces without 'global::' are relative to RootNamespace.
     - Sub-crates using 'global::' escape to an absolute namespace.
     - Unconfigured sub-crates default to {RootNamespace}.{SubCratePascalCase}.
+    - Delimiters: Comma ',', semicolon ';', or pipe '|' are supported.
+      (UniFFISharp automatically URL-encodes MSBuild properties to prevent Roslyn 
+       EditorConfig from truncating semicolons or hashes).
+    - Advanced: 'base64:...' and 'hex:...' prefixes are also supported.
   -->
-  <UniFFINamespace>MyCompany.Sdk;sub_alpha=Security;sub_legacy=global::LegacyVendor</UniFFINamespace>
+  <UniFFINamespace>MyCompany.Sdk, sub_alpha=Security, sub_legacy=global::LegacyVendor</UniFFINamespace>
 </PropertyGroup>
 ```
 
