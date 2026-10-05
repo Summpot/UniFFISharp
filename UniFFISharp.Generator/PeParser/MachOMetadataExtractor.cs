@@ -97,7 +97,7 @@ public static class MachOMetadataExtractor
 
             try
             {
-                var metadataReader = new MetadataReader(symData);
+                var metadataReader = new MetadataReader(symData.Array!, symData.Offset, symData.Count);
                 object? item = metadataReader.ReadItem();
                 if (item == null)
                 {
@@ -154,9 +154,9 @@ public static class MachOMetadataExtractor
         return data;
     }
 
-    internal static List<(string Name, byte[] Data)> ExtractSymbolsMachO64(byte[] data, bool isLE)
+    internal static List<(string Name, ArraySegment<byte> Data)> ExtractSymbolsMachO64(byte[] data, bool isLE)
     {
-        var results = new List<(string, byte[])>();
+        var results = new List<(string, ArraySegment<byte>)>();
         if (data.Length < 32) return results;
 
         uint ncmds = ReadUInt32(data, 16, isLE);
@@ -230,9 +230,7 @@ public static class MachOMetadataExtractor
 
                         if (dataPos >= 0 && dataPos + dataLen <= data.Length && dataLen > 0)
                         {
-                            byte[] symData = new byte[dataLen];
-                            Array.Copy(data, dataPos, symData, 0, dataLen);
-                            results.Add((symName, symData));
+                            results.Add((symName, new ArraySegment<byte>(data, dataPos, dataLen)));
                         }
                     }
                 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -106,7 +106,9 @@ public static class _UniFFIAsync
         try
         {
             await PollFuture(rustFuture, pollFunc).ConfigureAwait(false);
-            var result = UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
+            var status = new UniffiRustCallStatus();
+            var result = completeFunc(rustFuture, ref status);
+            if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);
             return liftFunc(result);
         }
         finally
@@ -126,7 +128,9 @@ public static class _UniFFIAsync
         try
         {
             await PollFuture(rustFuture, pollFunc).ConfigureAwait(false);
-            UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
+            var status = new UniffiRustCallStatus();
+            completeFunc(rustFuture, ref status);
+            if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);
         }
         finally
         {

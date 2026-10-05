@@ -188,8 +188,11 @@ public static class CodeGenerator
             {
                 using (cb.Block("try"))
                 {
-                    cb.AppendLine("var bytes = value.AsStream().ReadBytes(Convert.ToInt32(value.len));");
-                    cb.AppendLine("return Encoding.UTF8.GetString(bytes);");
+                    cb.AppendLine("if (value.len == 0 || value.data == IntPtr.Zero) return string.Empty;");
+                    using (cb.Block("unsafe"))
+                    {
+                        cb.AppendLine("return Encoding.UTF8.GetString((byte*)value.data.ToPointer(), (int)value.len);");
+                    }
                 }
                 using (cb.Block("finally"))
                 {
@@ -200,9 +203,18 @@ public static class CodeGenerator
             using (cb.Block("public override RustBuffer Lower(string value)"))
             {
                 cb.AppendLine("value ??= string.Empty;");
-                cb.AppendLine("byte[] bytes = Encoding.UTF8.GetBytes(value);");
-                cb.AppendLine("var rbuf = _UniFFILib.Alloc(bytes.Length);");
-                cb.AppendLine("rbuf.AsWriteableStream().WriteBytes(bytes);");
+                cb.AppendLine("int byteCount = Encoding.UTF8.GetByteCount(value);");
+                cb.AppendLine("var rbuf = _UniFFILib.Alloc(byteCount);");
+                using (cb.Block("if (byteCount > 0)"))
+                {
+                    using (cb.Block("unsafe"))
+                    {
+                        using (cb.Block("fixed (char* pChars = value)"))
+                        {
+                            cb.AppendLine("Encoding.UTF8.GetBytes(pChars, value.Length, (byte*)rbuf.data.ToPointer(), byteCount);");
+                        }
+                    }
+                }
                 cb.AppendLine("return rbuf;");
             }
             cb.AppendLine();
@@ -257,7 +269,7 @@ public static class CodeGenerator
             {
                 cb.AppendLine("long seconds = stream.ReadInt64();");
                 cb.AppendLine("uint nanos = stream.ReadUInt32();");
-                cb.AppendLine("return DateTimeOffset.UnixEpoch.AddSeconds(seconds).AddTicks(nanos / 100);");
+                cb.AppendLine("return new DateTimeOffset(DateTimeOffset.UnixEpoch.Ticks + seconds * TimeSpan.TicksPerSecond + (long)(nanos / 100), TimeSpan.Zero);");
             }
         }
         cb.AppendLine();
@@ -548,23 +560,26 @@ public static class CodeGenerator
             // Alloc / Free helpers
             using (cb.Block("public static RustBuffer Alloc(int size)"))
             {
-                using (cb.Block("return UniffiHelpers.RustCall((ref UniffiRustCallStatus status) =>"))
-                {
-                    cb.AppendLine($"var buf = ffi_{crateNorm}_rustbuffer_alloc((ulong)size, ref status);");
-                    cb.AppendLine("if (buf.data == IntPtr.Zero) throw new AllocationException($\"RustBuffer.Alloc returned null data pointer (size={size})\");");
-                    cb.AppendLine("return buf;");
-                }
-                cb.AppendLine(");");
+                cb.AppendLine("var status = new UniffiRustCallStatus();");
+                cb.AppendLine($"var buf = ffi_{crateNorm}_rustbuffer_alloc((ulong)size, ref status);");
+                cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
+                cb.AppendLine("if (buf.data == IntPtr.Zero) ThrowNullBuffer(size);");
+                cb.AppendLine("return buf;");
             }
             cb.AppendLine();
 
             using (cb.Block("public static void Free(RustBuffer buffer)"))
             {
-                using (cb.Block("UniffiHelpers.RustCall((ref UniffiRustCallStatus status) =>"))
-                {
-                    cb.AppendLine($"ffi_{crateNorm}_rustbuffer_free(buffer, ref status);");
-                }
-                cb.AppendLine(");");
+                cb.AppendLine("var status = new UniffiRustCallStatus();");
+                cb.AppendLine($"ffi_{crateNorm}_rustbuffer_free(buffer, ref status);");
+                cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
+            }
+            cb.AppendLine();
+
+            cb.AppendLine("[System.Diagnostics.CodeAnalysis.DoesNotReturn]");
+            using (cb.Block("private static void ThrowNullBuffer(int size)"))
+            {
+                cb.AppendLine("throw new AllocationException(\"RustBuffer.Alloc returned null data pointer (size=\" + size + \")\");");
             }
             cb.AppendLine();
 
@@ -870,6 +885,11 @@ public static class CodeGenerator
         for (int i = 0; i < cbi.Methods.Count; i++)
         {
             cb.AppendLine($"private static CallbackDelegate_{cbiName}_{i}? _methodDelegate_{cbiName}_{i};");
+            if (cbi.Methods[i].IsAsync)
+            {
+                string delegateType = $"ForeignFutureCompleteDelegate_{cbiName}_{i}";
+                cb.AppendLine($"private static readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, {delegateType}> _cbCache_{cbiName}_{i} = new();");
+            }
         }
         cb.AppendLine();
 
@@ -930,7 +950,7 @@ public static class CodeGenerator
                             cb.AppendLine($"earlyRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
                         }
                         using (cb.Block("catch")) { }
-                        cb.AppendLine($"var earlyCb = Marshal.GetDelegateForFunctionPointer<{delegateType}>(uniffiFutureCallback);");
+                        cb.AppendLine($"var earlyCb = _cbCache_{cbiName}_{i}.GetOrAdd(uniffiFutureCallback, static p => Marshal.GetDelegateForFunctionPointer<{delegateType}>(p));");
                         cb.AppendLine("futureHandle.InvokeCallbackOnce(() => earlyCb(uniffiCallbackData, earlyRet));");
                         cb.AppendLine("futureHandle.Dispose();");
                         cb.AppendLine("return;");
@@ -1000,7 +1020,7 @@ public static class CodeGenerator
                                 using (cb.Block("catch")) { }
                             }
                             cb.AppendLine();
-                            cb.AppendLine($"var cb = Marshal.GetDelegateForFunctionPointer<{delegateType}>(uniffiFutureCallback);");
+                            cb.AppendLine($"var cb = _cbCache_{cbiName}_{i}.GetOrAdd(uniffiFutureCallback, static p => Marshal.GetDelegateForFunctionPointer<{delegateType}>(p));");
                             cb.AppendLine("futureHandle.InvokeCallbackOnce(() => cb(uniffiCallbackData, ret));");
                         }
                         using (cb.Block("finally"))
@@ -1661,22 +1681,19 @@ public static class CodeGenerator
 
             using (cb.Block("protected void FreeRustArcPtr()"))
             {
-                using (cb.Block("UniffiHelpers.RustCall((ref UniffiRustCallStatus status) =>"))
-                {
-                    cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_free_{objLower}(_pointer, ref status);");
-                }
-                cb.AppendLine(");");
+                cb.AppendLine("var status = new UniffiRustCallStatus();");
+                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_free_{objLower}(_pointer, ref status);");
+                cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
             }
             cb.AppendLine();
 
             using (cb.Block("protected IntPtr CloneRustArcPtr()"))
             {
                 cb.AppendLine($"if (_pointer == IntPtr.Zero) throw new ObjectDisposedException(nameof({objName}));");
-                using (cb.Block("return UniffiHelpers.RustCall((ref UniffiRustCallStatus status) =>"))
-                {
-                    cb.AppendLine($"return _UniFFILib.uniffi_{crateNorm}_fn_clone_{objLower}(_pointer, ref status);");
-                }
-                cb.AppendLine(");");
+                cb.AppendLine("var status = new UniffiRustCallStatus();");
+                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_clone_{objLower}(_pointer, ref status);");
+                cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
+                cb.AppendLine("return res;");
             }
             cb.AppendLine();
 
@@ -1749,7 +1766,18 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
-            cb.AppendLine("internal IntPtr ClonePointer() => CallWithPointer(thisPtr => thisPtr);");
+            using (cb.Block("internal IntPtr ClonePointer()"))
+            {
+                cb.AppendLine("IncrementCallCounter();");
+                using (cb.Block("try"))
+                {
+                    cb.AppendLine("return CloneRustArcPtr();");
+                }
+                using (cb.Block("finally"))
+                {
+                    cb.AppendLine("DecrementCallCounter();");
+                }
+            }
             cb.AppendLine();
 
             // Constructors
@@ -1805,11 +1833,9 @@ public static class CodeGenerator
                     callArgs.Add("ref status");
                     using (cb.Block($"public {objName}({string.Join(", ", paramDecls)})"))
                     {
-                        using (cb.Block($"_pointer = UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                        {
-                            cb.AppendLine($"return _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
-                        }
-                        cb.AppendLine(");");
+                        cb.AppendLine("var status = new UniffiRustCallStatus();");
+                        cb.AppendLine($"_pointer = _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
+                        cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                     }
                 }
                 else
@@ -1817,11 +1843,9 @@ public static class CodeGenerator
                     callArgs.Add("ref status");
                     using (cb.Block($"public static {objName} {ctorName}({string.Join(", ", paramDecls)})"))
                     {
-                        using (cb.Block($"var ptr = UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                        {
-                            cb.AppendLine($"return _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
-                        }
-                        cb.AppendLine(");");
+                        cb.AppendLine("var status = new UniffiRustCallStatus();");
+                        cb.AppendLine($"var ptr = _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
+                        cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                         cb.AppendLine($"return CreateInternal(ptr);");
                     }
                 }
@@ -1866,7 +1890,16 @@ public static class CodeGenerator
                     string suffix = TypeHelper.FutureSuffix(m.ReturnType);
                     using (cb.Block($"public async {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
-                        cb.AppendLine($"ulong futureHandle = CallWithPointer(thisPtr => _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(thisPtr{argsPrefix}));");
+                        cb.AppendLine("IncrementCallCounter();");
+                        cb.AppendLine("ulong futureHandle;");
+                        using (cb.Block("try"))
+                        {
+                            cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix});");
+                        }
+                        using (cb.Block("finally"))
+                        {
+                            cb.AppendLine("DecrementCallCounter();");
+                        }
                         if (m.ReturnType == null)
                         {
                             cb.AppendLine("await _UniFFIAsync.UniffiRustCallAsync(");
@@ -1899,27 +1932,19 @@ public static class CodeGenerator
                 {
                     using (cb.Block($"public {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
-                        if (m.ReturnType == null)
+                        cb.AppendLine("IncrementCallCounter();");
+                        using (cb.Block("try"))
                         {
-                            using (cb.Block("CallWithPointer(thisPtr =>"))
+                            cb.AppendLine("var status = new UniffiRustCallStatus();");
+                            if (m.ReturnType == null)
                             {
-                                using (cb.Block($"UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                                {
-                                    cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(thisPtr{argsPrefix}, ref status);");
-                                }
-                                cb.AppendLine(");");
+                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                             }
-                            cb.AppendLine(");");
-                        }
-                        else
-                        {
-                            using (cb.Block("return CallWithPointer(thisPtr =>"))
+                            else
                             {
-                                using (cb.Block($"var res = UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                                {
-                                    cb.AppendLine($"return _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(thisPtr{argsPrefix}, ref status);");
-                                }
-                                cb.AppendLine(");");
+                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                                 if (TypeHelper.IsFfiPrimitive(m.ReturnType))
                                 {
                                     cb.AppendLine("return res;");
@@ -1929,7 +1954,10 @@ public static class CodeGenerator
                                     cb.AppendLine($"return {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res);");
                                 }
                             }
-                            cb.AppendLine(");");
+                        }
+                        using (cb.Block("finally"))
+                        {
+                            cb.AppendLine("DecrementCallCounter();");
                         }
                     }
                 }
@@ -2069,21 +2097,16 @@ public static class CodeGenerator
                     callArgs.Add("ref status");
                     using (cb.Block($"public static {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
+                        cb.AppendLine("var status = new UniffiRustCallStatus();");
                         if (fn.ReturnType == null)
                         {
-                            using (cb.Block($"UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                            {
-                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
-                            }
-                            cb.AppendLine(");");
+                            cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
+                            cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                         }
                         else
                         {
-                            using (cb.Block($"var res = UniffiHelpers.RustCallWithError({errorHandler}, (ref UniffiRustCallStatus status) =>"))
-                            {
-                                cb.AppendLine($"return _UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
-                            }
-                            cb.AppendLine(");");
+                            cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
+                            cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                             if (TypeHelper.IsFfiPrimitive(fn.ReturnType))
                             {
                                 cb.AppendLine("return res;");

@@ -127,8 +127,7 @@ public static class ArchiveMetadataExtractor
             stream.Position = objStart;
             if (ReadFully(stream, objBytes, 0, memberSize) < memberSize) continue;
 
-            // Extract symbols from COFF, ELF, or Mach-O object file
-            List<(string, byte[])> extractedSymbols;
+            List<(string, ArraySegment<byte>)> extractedSymbols;
             try
             {
                 extractedSymbols = ExtractFromObject(objBytes);
@@ -159,7 +158,7 @@ public static class ArchiveMetadataExtractor
 
                 try
                 {
-                    var metadataReader = new MetadataReader(symData);
+                    var metadataReader = new MetadataReader(symData.Array!, symData.Offset, symData.Count);
                     object? item = metadataReader.ReadItem();
                     if (item == null)
                     {
@@ -485,9 +484,9 @@ public static class ArchiveMetadataExtractor
         return totalRead;
     }
 
-    internal static List<(string Name, byte[] Data)> ExtractFromObject(byte[] objBytes)
+    internal static List<(string Name, ArraySegment<byte> Data)> ExtractFromObject(byte[] objBytes)
     {
-        var results = new List<(string, byte[])>();
+        var results = new List<(string, ArraySegment<byte>)>();
         if (objBytes.Length < 20) return results;
 
         // Check if ELF object file (0x7F 'E' 'L' 'F')
@@ -509,14 +508,14 @@ public static class ArchiveMetadataExtractor
         return results;
     }
 
-    private static void ExtractFromMachO(byte[] objBytes, List<(string, byte[])> results)
+    private static void ExtractFromMachO(byte[] objBytes, List<(string, ArraySegment<byte>)> results)
     {
         uint magic = BinaryPrimitives.ReadUInt32LittleEndian(objBytes.AsSpan(0, 4));
         bool isLE = (magic == 0xFEEDFACF || magic == 0xFEEDFACE);
         results.AddRange(MachOMetadataExtractor.ExtractSymbolsMachO64(objBytes, isLE));
     }
 
-    private static void ExtractFromCoff(byte[] objBytes, List<(string, byte[])> results)
+    private static void ExtractFromCoff(byte[] objBytes, List<(string, ArraySegment<byte>)> results)
     {
         if (objBytes.Length < 20) return;
 
@@ -589,10 +588,7 @@ public static class ArchiveMetadataExtractor
                         long availLong = Math.Min((long)sec.rawDataSize - (long)symValue, (long)objBytes.Length - dataStart);
                         if (availLong > 0)
                         {
-                            int available = (int)Math.Min(availLong, 10 * 1024 * 1024);
-                            byte[] symData = new byte[available];
-                            Array.Copy(objBytes, (int)dataStart, symData, 0, available);
-                            results.Add((symName, symData));
+                            results.Add((symName, new ArraySegment<byte>(objBytes, (int)dataStart, (int)availLong)));
                         }
                     }
                 }
@@ -600,7 +596,7 @@ public static class ArchiveMetadataExtractor
         }
     }
 
-    private static void ExtractFromElf(byte[] objBytes, List<(string, byte[])> results)
+    private static void ExtractFromElf(byte[] objBytes, List<(string, ArraySegment<byte>)> results)
     {
         if (objBytes.Length < 64) return;
         bool is64 = objBytes[4] == 2; // ELFCLASS64
@@ -664,9 +660,7 @@ public static class ArchiveMetadataExtractor
 
                         if (dataPos + dataLen <= objBytes.Length && dataLen > 0)
                         {
-                            byte[] symData = new byte[dataLen];
-                            Array.Copy(objBytes, dataPos, symData, 0, dataLen);
-                            results.Add((symName, symData));
+                            results.Add((symName, new ArraySegment<byte>(objBytes, dataPos, dataLen)));
                         }
                     }
                 }

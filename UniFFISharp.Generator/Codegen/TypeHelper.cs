@@ -53,38 +53,59 @@ public static class TypeHelper
     public static string EscapeStringLiteral(string value)
     {
         if (string.IsNullOrEmpty(value)) return string.Empty;
-        return value
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\r", "\\r")
-            .Replace("\n", "\\n")
-            .Replace("\t", "\\t")
-            .Replace("\0", "\\0");
+        bool needsEscape = false;
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (c == '\\' || c == '"' || c == '\r' || c == '\n' || c == '\t' || c == '\0')
+            {
+                needsEscape = true;
+                break;
+            }
+        }
+        if (!needsEscape) return value;
+
+        var sb = new StringBuilder(value.Length + 8);
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\0': sb.Append("\\0"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        return sb.ToString();
     }
 
     public static string ToPascalCase(string name)
     {
         if (string.IsNullOrEmpty(name)) return string.Empty;
-        var parts = name.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        var sb = new StringBuilder();
-        foreach (var part in parts)
+        var sb = new StringBuilder(name.Length);
+        bool newPart = true;
+        for (int i = 0; i < name.Length; i++)
         {
-            if (part.Length > 0)
+            char c = name[i];
+            if (c == '_' || c == '-' || c == ' ')
             {
-                var cleanPart = new StringBuilder();
-                foreach (char c in part)
-                {
-                    cleanPart.Append(char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == ':' ? c : '_');
-                }
-                string cp = cleanPart.ToString();
-                if (cp.Length > 0)
-                {
-                    sb.Append(char.ToUpperInvariant(cp[0]));
-                    if (cp.Length > 1)
-                    {
-                        sb.Append(cp.Substring(1));
-                    }
-                }
+                newPart = true;
+                continue;
+            }
+
+            char clean = (char.IsLetterOrDigit(c) || c == '.' || c == ':') ? c : '_';
+            if (newPart)
+            {
+                sb.Append(char.ToUpperInvariant(clean));
+                newPart = false;
+            }
+            else
+            {
+                sb.Append(clean);
             }
         }
         string result = sb.ToString();
@@ -117,7 +138,9 @@ public static class TypeHelper
         if (string.IsNullOrEmpty(currentCrate) || string.IsNullOrEmpty(type.ModulePath))
             return string.Empty;
 
-        string crate = type.ModulePath.Split(new[] { "::" }, StringSplitOptions.None)[0].Replace('-', '_');
+        int idx = type.ModulePath.IndexOf("::", StringComparison.Ordinal);
+        string cratePart = idx >= 0 ? type.ModulePath.Substring(0, idx) : type.ModulePath;
+        string crate = cratePart.Replace('-', '_');
         string curr = currentCrate!.Replace('-', '_');
         if (!string.Equals(crate, curr, StringComparison.OrdinalIgnoreCase))
         {
@@ -209,7 +232,7 @@ public static class TypeHelper
             TypeKind.UInt32 or TypeKind.Int32 or TypeKind.UInt64 or TypeKind.Int64 or
             TypeKind.Float32 or TypeKind.Float64 or TypeKind.Boolean or
             TypeKind.Timestamp or TypeKind.Duration => true,
-            TypeKind.Enum => ci != null && ci.Enums.Any(e => e.Name == type.Name && e.Shape == EnumShape.Enum && e.Variants.All(v => v.Fields.Count == 0)),
+            TypeKind.Enum => ci != null && ci.IsFlatEnum(type.Name),
             _ => false
         };
     }

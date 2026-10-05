@@ -76,7 +76,7 @@ public static class ElfMetadataExtractor
                 continue;
             }
 
-            if (symData == null || symData.Length == 0)
+            if (symData.Count == 0)
             {
                 aggregator.DiscoveredSymbols.Add($"{symName} (empty data)");
                 continue;
@@ -84,7 +84,7 @@ public static class ElfMetadataExtractor
 
             try
             {
-                var metadataReader = new MetadataReader(symData);
+                var metadataReader = new MetadataReader(symData.Array!, symData.Offset, symData.Count);
                 object? item = metadataReader.ReadItem();
                 if (item == null)
                 {
@@ -105,9 +105,9 @@ public static class ElfMetadataExtractor
         return aggregator.BuildAll();
     }
 
-    private static List<(string Name, byte[] Data)> ExtractSymbolsElf64(byte[] data, bool isLE)
+    private static List<(string Name, ArraySegment<byte> Data)> ExtractSymbolsElf64(byte[] data, bool isLE)
     {
-        var results = new List<(string, byte[])>();
+        var results = new List<(string, ArraySegment<byte>)>();
         if (data.Length < 64) return results;
 
         ulong shoff = ReadUInt64(data, 40, isLE);
@@ -177,9 +177,7 @@ public static class ElfMetadataExtractor
 
                         if (dataPos >= 0 && dataPos + dataLen <= data.Length && dataLen > 0)
                         {
-                            byte[] symData = new byte[dataLen];
-                            Array.Copy(data, dataPos, symData, 0, dataLen);
-                            results.Add((symName, symData));
+                            results.Add((symName, new ArraySegment<byte>(data, dataPos, dataLen)));
                         }
                     }
                 }
@@ -189,9 +187,9 @@ public static class ElfMetadataExtractor
         return results;
     }
 
-    private static List<(string Name, byte[] Data)> ExtractSymbolsElf32(byte[] data, bool isLE)
+    private static List<(string Name, ArraySegment<byte> Data)> ExtractSymbolsElf32(byte[] data, bool isLE)
     {
-        var results = new List<(string, byte[])>();
+        var results = new List<(string, ArraySegment<byte>)>();
         if (data.Length < 52) return results;
 
         uint shoff = ReadUInt32(data, 32, isLE);
@@ -260,9 +258,7 @@ public static class ElfMetadataExtractor
 
                         if (dataPos >= 0 && dataPos + dataLen <= data.Length && dataLen > 0)
                         {
-                            byte[] symData = new byte[dataLen];
-                            Array.Copy(data, dataPos, symData, 0, dataLen);
-                            results.Add((symName, symData));
+                            results.Add((symName, new ArraySegment<byte>(data, dataPos, dataLen)));
                         }
                     }
                 }

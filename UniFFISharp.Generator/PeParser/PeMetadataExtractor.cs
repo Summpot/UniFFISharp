@@ -190,7 +190,8 @@ public static class PeMetadataExtractor
                 }
 
                 var reader = export.Address.CreateReader();
-                byte[] data = reader.ReadToEnd();
+                uint maxProbe = Math.Min(reader.RemainingLength, 64 * 1024);
+                byte[] data = reader.ReadBytes((int)maxProbe);
 
                 if (data.Length == 0)
                 {
@@ -198,8 +199,20 @@ public static class PeMetadataExtractor
                     continue;
                 }
 
-                var metadataReader = new MetadataReader(data);
-                object? item = metadataReader.ReadItem();
+                object? item;
+                try
+                {
+                    var metadataReader = new MetadataReader(data);
+                    item = metadataReader.ReadItem();
+                }
+                catch (InvalidOperationException) when (maxProbe < reader.RemainingLength + maxProbe)
+                {
+                    var fullReader = export.Address.CreateReader();
+                    data = fullReader.ReadToEnd();
+                    var metadataReader = new MetadataReader(data);
+                    item = metadataReader.ReadItem();
+                }
+
                 if (item == null)
                 {
                     aggregator.DiscoveredSymbols.Add($"{name} (item is null, code={data[0]})");

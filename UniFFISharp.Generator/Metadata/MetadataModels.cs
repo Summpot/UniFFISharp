@@ -199,6 +199,37 @@ public class ComponentInterface
                            Enums.Count == 0 &&
                            Objects.Count == 0 &&
                            CallbackInterfaces.Count == 0;
+
+    private HashSet<string>? _flatEnumNames;
+
+    public bool IsFlatEnum(string name)
+    {
+        if (_flatEnumNames == null)
+        {
+            var set = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var e in Enums)
+            {
+                if (e.Shape == EnumShape.Enum)
+                {
+                    bool allEmpty = true;
+                    foreach (var v in e.Variants)
+                    {
+                        if (v.Fields.Count > 0)
+                        {
+                            allEmpty = false;
+                            break;
+                        }
+                    }
+                    if (allEmpty)
+                    {
+                        set.Add(e.Name);
+                    }
+                }
+            }
+            _flatEnumNames = set;
+        }
+        return _flatEnumNames.Contains(name);
+    }
 }
 
 public class SingleCrateAggregator
@@ -355,7 +386,9 @@ public class MetadataAggregator
         };
 
         if (string.IsNullOrEmpty(raw)) return "default";
-        return raw.Split(new[] { "::" }, System.StringSplitOptions.None)[0].Replace('-', '_');
+        int idx = raw.IndexOf("::", System.StringComparison.Ordinal);
+        string crate = idx >= 0 ? raw.Substring(0, idx) : raw;
+        return crate.Replace('-', '_');
     }
 
     private SingleCrateAggregator GetOrCreate(string crateNorm)

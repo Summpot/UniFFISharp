@@ -22,15 +22,7 @@ public struct RustBuffer
         {
             throw new ArgumentException("Data pointer cannot be null when length is greater than zero.", nameof(data));
         }
-        if (length == 0)
-        {
-            return new BigEndianStream(Stream.Null);
-        }
-
-        unsafe
-        {
-            return new BigEndianStream(new UnmanagedMemoryStream((byte*)data.ToPointer(), length));
-        }
+        return new BigEndianStream(data, length);
     }
 
     public BigEndianStream AsStream()
@@ -47,44 +39,19 @@ public struct RustBuffer
         {
             throw new OverflowException("RustBuffer length exceeds maximum supported stream length.");
         }
-        if (len == 0)
-        {
-            return new BigEndianStream(Stream.Null);
-        }
-
-        unsafe
-        {
-            return new BigEndianStream(
-                new UnmanagedMemoryStream((byte*)data.ToPointer(), Convert.ToInt64(len))
-            );
-        }
+        return new BigEndianStream(data, (long)len);
     }
 
     public BigEndianStream AsWriteableStream()
     {
-        if (capacity > 0 && data == IntPtr.Zero)
-        {
-            throw new ArgumentException("RustBuffer data pointer cannot be null when capacity is greater than zero.");
-        }
         if (capacity > (ulong)long.MaxValue)
         {
             throw new OverflowException("RustBuffer capacity exceeds maximum supported stream length.");
         }
-        if (capacity == 0)
+        if (capacity > 0 && data == IntPtr.Zero)
         {
-            return new BigEndianStream(Stream.Null);
+            throw new ArgumentException("RustBuffer data pointer cannot be null when capacity is greater than zero.");
         }
-
-        unsafe
-        {
-            return new BigEndianStream(
-                new UnmanagedMemoryStream(
-                    (byte*)data.ToPointer(),
-                    Convert.ToInt64(capacity),
-                    Convert.ToInt64(capacity),
-                    FileAccess.Write
-                )
-            );
-        }
+        return new BigEndianStream(data, (long)capacity);
     }
 }

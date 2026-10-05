@@ -7,33 +7,44 @@ namespace UniFFISharp.Generator.Metadata;
 public class MetadataReader
 {
     private readonly byte[] _data;
+    private readonly int _start;
+    private readonly int _end;
     private int _pos;
     public const int MaxTypeNestingDepth = 64;
     private static readonly Encoding Utf8Strict = new UTF8Encoding(false, true);
 
-    public MetadataReader(byte[] data)
+    public MetadataReader(byte[] data) : this(data, 0, data?.Length ?? 0)
     {
-        _data = data ?? throw new ArgumentNullException(nameof(data));
-        _pos = 0;
     }
 
-    public int Position => _pos;
+    public MetadataReader(byte[] data, int offset, int length)
+    {
+        _data = data ?? throw new ArgumentNullException(nameof(data));
+        if (offset < 0 || offset > data.Length) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (length < 0 || offset + length > data.Length) throw new ArgumentOutOfRangeException(nameof(length));
+        _start = offset;
+        _pos = offset;
+        _end = offset + length;
+    }
+
+    public int Position => _pos - _start;
 
     public byte PeekUInt8()
     {
-        if (_pos >= _data.Length) throw new InvalidOperationException("End of metadata buffer reached.");
+        if (_pos >= _end) throw new InvalidOperationException("End of metadata buffer reached.");
         return _data[_pos];
     }
 
+
     public byte ReadUInt8()
     {
-        if (_pos >= _data.Length) throw new InvalidOperationException("End of metadata buffer reached.");
+        if (_pos >= _end) throw new InvalidOperationException("End of metadata buffer reached.");
         return _data[_pos++];
     }
 
     public ushort ReadUInt16()
     {
-        if (_pos + 2 > _data.Length) throw new InvalidOperationException("End of metadata buffer reached.");
+        if (_pos + 2 > _end) throw new InvalidOperationException("End of metadata buffer reached.");
         ushort val = (ushort)(_data[_pos] | (_data[_pos + 1] << 8));
         _pos += 2;
         return val;
@@ -41,7 +52,7 @@ public class MetadataReader
 
     public uint ReadUInt32()
     {
-        if (_pos + 4 > _data.Length) throw new InvalidOperationException("End of metadata buffer reached.");
+        if (_pos + 4 > _end) throw new InvalidOperationException("End of metadata buffer reached.");
         uint val = (uint)(_data[_pos] | (_data[_pos + 1] << 8) | (_data[_pos + 2] << 16) | (_data[_pos + 3] << 24));
         _pos += 4;
         return val;
@@ -52,7 +63,7 @@ public class MetadataReader
     public string ReadString()
     {
         int length = ReadUInt8();
-        if (_pos + length > _data.Length) throw new InvalidOperationException("String length exceeds buffer.");
+        if (_pos + length > _end) throw new InvalidOperationException("String length exceeds buffer.");
         string str = Utf8Strict.GetString(_data, _pos, length);
         _pos += length;
         return str;
@@ -66,7 +77,7 @@ public class MetadataReader
     public string ReadLongString()
     {
         int length = ReadUInt16();
-        if (_pos + length > _data.Length) throw new InvalidOperationException("Long string length exceeds buffer.");
+        if (_pos + length > _end) throw new InvalidOperationException("Long string length exceeds buffer.");
         string str = Utf8Strict.GetString(_data, _pos, length);
         _pos += length;
         return str;
@@ -447,7 +458,7 @@ public class MetadataReader
 
     public object? ReadItem()
     {
-        if (_pos >= _data.Length) return null;
+        if (_pos >= _end) return null;
         byte code = ReadUInt8();
 
         switch (code)
@@ -469,7 +480,7 @@ public class MetadataReader
                 var inputs = ReadInputs();
                 var (ret, throws) = ReadReturnType();
                 string? doc = ReadOptionalLongString();
-                ushort checksum = Checksum.Calculate(_data, _pos);
+                ushort checksum = Checksum.Calculate(_data, _start, _pos - _start);
                 return new FnMetadata
                 {
                     ModulePath = modulePath,
@@ -492,7 +503,7 @@ public class MetadataReader
                 var inputs = ReadInputs();
                 var (_, throws) = ReadReturnType();
                 string? doc = ReadOptionalLongString();
-                ushort checksum = Checksum.Calculate(_data, _pos);
+                ushort checksum = Checksum.Calculate(_data, _start, _pos - _start);
                 return new ConstructorMetadata
                 {
                     ModulePath = modulePath,
@@ -515,7 +526,7 @@ public class MetadataReader
                 var inputs = ReadInputs();
                 var (ret, throws) = ReadReturnType();
                 string? doc = ReadOptionalLongString();
-                ushort checksum = Checksum.Calculate(_data, _pos);
+                ushort checksum = Checksum.Calculate(_data, _start, _pos - _start);
                 return new MethodMetadata
                 {
                     ModulePath = modulePath,
@@ -614,7 +625,7 @@ public class MetadataReader
                 var inputs = ReadInputs();
                 var (ret, throws) = ReadReturnType();
                 string? doc = ReadOptionalLongString();
-                ushort checksum = Checksum.Calculate(_data, _pos);
+                ushort checksum = Checksum.Calculate(_data, _start, _pos - _start);
                 return new TraitMethodMetadata
                 {
                     ModulePath = modulePath,
