@@ -11,7 +11,7 @@
     <Version>0.2.7</Version>
     <Authors>Summpot</Authors>
     <Description>Zero-CLI, zero-boilerplate UniFFI binding generator and runtime for Rust + C# interoperability.</Description>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/Summpot/UniFFISharp</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Summpot/UniFFISharp</RepositoryUrl>
     <PackageTags>uniffi;rust;csharp;interop;ffi;generator;sourcegenerator</PackageTags>

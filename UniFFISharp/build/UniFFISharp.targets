@@ -183,15 +183,18 @@
           BeforeTargets="UniFFIEmitInput;CoreCompile"
           Condition="'$(UniFFIAutoBuildCargo)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
 
+    <Error Condition="'$(UniFFIPackageName)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(UniFFIPackageName)', '^[A-Za-z0-9_-]+$'))"
+           Text="[UniFFISharp] Invalid crate name '$(UniFFIPackageName)'. Package names must contain only alphanumeric characters, dashes, and underscores." />
+
     <PropertyGroup>
       <_CargoExecutable Condition="'$(_CargoExecutable)' == ''">cargo</_CargoExecutable>
       <_CargoSubCommand Condition="'$(UniFFILinkKind)' == 'Static' and '$(_CargoHasStaticLib)' != 'true'">rustc</_CargoSubCommand>
       <_CargoSubCommand Condition="'$(_CargoSubCommand)' == ''">build</_CargoSubCommand>
       <_CargoCommand>$(_CargoExecutable) $(_CargoSubCommand) --manifest-path "$(UniFFICargoManifestPath)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoProfile)' == 'release'">$(_CargoCommand) --release</_CargoCommand>
-      <_CargoCommand Condition="'$(UniFFICargoTarget)' != ''">$(_CargoCommand) --target $(UniFFICargoTarget)</_CargoCommand>
+      <_CargoCommand Condition="'$(UniFFICargoTarget)' != ''">$(_CargoCommand) --target "$(UniFFICargoTarget)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFIPackageName)' != '' and '$(UniFFICargoPackageSpecified)' != 'false'">$(_CargoCommand) --package "$(UniFFIPackageName)"</_CargoCommand>
-      <_CargoCommand Condition="'$(UniFFICargoFeatures)' != ''">$(_CargoCommand) --features $(UniFFICargoFeatures)</_CargoCommand>
+      <_CargoCommand Condition="'$(UniFFICargoFeatures)' != ''">$(_CargoCommand) --features "$(UniFFICargoFeatures)"</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoNoDefaultFeatures)' == 'true'">$(_CargoCommand) --no-default-features</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFICargoBuildArgs)' != ''">$(_CargoCommand) $(UniFFICargoBuildArgs)</_CargoCommand>
       <_CargoCommand Condition="'$(UniFFILinkKind)' == 'Static' and '$(_CargoHasStaticLib)' != 'true'">$(_CargoCommand) --crate-type staticlib</_CargoCommand>

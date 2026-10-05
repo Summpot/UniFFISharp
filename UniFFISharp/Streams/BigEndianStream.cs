@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.IO;
 using System.Text;
@@ -29,7 +29,11 @@ public class BigEndianStream
 
     public void CheckRemaining(int bytesToRead)
     {
-        if (_stream.Position + bytesToRead > _stream.Length)
+        if (bytesToRead < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bytesToRead), "Bytes to read cannot be negative.");
+        }
+        if (_stream.Length - _stream.Position < bytesToRead)
         {
             throw new StreamUnderflowException();
         }
@@ -198,6 +202,7 @@ public class BigEndianStream
     public string ReadString()
     {
         int length = ReadInt32();
+        if (length < 0) throw new StreamUnderflowException("Negative string length prefix encountered.");
         if (length == 0) return string.Empty;
         CheckRemaining(length);
         byte[] buffer = new byte[length];
@@ -207,6 +212,7 @@ public class BigEndianStream
 
     public byte[] ReadBytes(int length)
     {
+        if (length < 0) throw new ArgumentOutOfRangeException(nameof(length), "Read length cannot be negative.");
         if (length == 0) return Array.Empty<byte>();
         CheckRemaining(length);
         byte[] buffer = new byte[length];

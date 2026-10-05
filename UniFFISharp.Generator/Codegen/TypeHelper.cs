@@ -21,6 +21,47 @@ public static class TypeHelper
         "virtual", "void", "volatile", "while"
     };
 
+    public static string SanitizeIdentifier(string name, string fallback = "UniffiItem")
+    {
+        if (string.IsNullOrWhiteSpace(name)) return fallback;
+
+        var sb = new StringBuilder(name.Length);
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            if (char.IsLetterOrDigit(c) || c == '_')
+            {
+                sb.Append(c);
+            }
+            else
+            {
+                sb.Append('_');
+            }
+        }
+
+        string result = sb.ToString().Trim('_');
+        if (string.IsNullOrEmpty(result)) return fallback;
+
+        if (char.IsDigit(result[0]))
+        {
+            result = "_" + result;
+        }
+
+        return EscapeIdentifier(result);
+    }
+
+    public static string EscapeStringLiteral(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n")
+            .Replace("\t", "\\t")
+            .Replace("\0", "\\0");
+    }
+
     public static string ToPascalCase(string name)
     {
         if (string.IsNullOrEmpty(name)) return string.Empty;
@@ -30,26 +71,36 @@ public static class TypeHelper
         {
             if (part.Length > 0)
             {
-                sb.Append(char.ToUpperInvariant(part[0]));
-                if (part.Length > 1)
+                var cleanPart = new StringBuilder();
+                foreach (char c in part)
                 {
-                    sb.Append(part.Substring(1));
+                    cleanPart.Append(char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == ':' ? c : '_');
+                }
+                string cp = cleanPart.ToString();
+                if (cp.Length > 0)
+                {
+                    sb.Append(char.ToUpperInvariant(cp[0]));
+                    if (cp.Length > 1)
+                    {
+                        sb.Append(cp.Substring(1));
+                    }
                 }
             }
         }
-        return sb.ToString();
+        string result = sb.ToString();
+        if (string.IsNullOrEmpty(result)) return "Item";
+        if (char.IsDigit(result[0])) result = "_" + result;
+        return EscapeIdentifier(result);
     }
 
     public static string ToCamelCase(string name)
     {
         string pascal = ToPascalCase(name);
         if (string.IsNullOrEmpty(pascal)) return string.Empty;
-        string camel = char.ToLowerInvariant(pascal[0]) + pascal.Substring(1);
-        if (ReservedKeywords.Contains(camel))
-        {
-            return "@" + camel;
-        }
-        return camel;
+        bool hasAt = pascal.StartsWith("@");
+        string clean = hasAt ? pascal.Substring(1) : pascal;
+        string camel = char.ToLowerInvariant(clean[0]) + clean.Substring(1);
+        return EscapeIdentifier(camel);
     }
 
     public static string EscapeIdentifier(string name)

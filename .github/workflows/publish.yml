@@ -49,15 +49,21 @@ jobs:
       - name: Determine Version
         id: get_version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            VER="${{ inputs.version }}"
-          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [ -n "$INPUT_VERSION" ]; then
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+(\.[0-9]+)*(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+              echo "::error::Invalid version format: $INPUT_VERSION"
+              exit 1
+            fi
+            VER="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VER="${GITHUB_REF#refs/tags/v}"
           else
             VER=""
           fi
-          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VER"
 
       - name: Build Solution
@@ -66,11 +72,13 @@ jobs:
 
       - name: Pack NuGet Package
         shell: bash
+        env:
+          RESOLVED_VERSION: ${{ steps.get_version.outputs.version }}
         run: |
           mkdir -p release-assets
           VERSION_ARG=""
-          if [ -n "${{ steps.get_version.outputs.version }}" ]; then
-            VERSION_ARG="-p:Version=${{ steps.get_version.outputs.version }}"
+          if [ -n "$RESOLVED_VERSION" ]; then
+            VERSION_ARG="-p:Version=$RESOLVED_VERSION"
           fi
           echo "Packing UniFFISharp with args: $VERSION_ARG"
           dotnet pack UniFFISharp/UniFFISharp.csproj -c Release $VERSION_ARG -o release-assets/
@@ -79,9 +87,11 @@ jobs:
         if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_release }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESOLVED_VERSION: ${{ steps.get_version.outputs.version }}
+          TARGET_SHA: ${{ github.sha }}
         shell: bash
         run: |
-          VER="${{ steps.get_version.outputs.version }}"
+          VER="$RESOLVED_VERSION"
           if [ -z "$VER" ]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
@@ -102,7 +112,7 @@ jobs:
           else
             echo "Creating release $TAG_NAME..."
             gh release create "$TAG_NAME" release-assets/*.nupkg \
-              --target "${{ github.sha }}" \
+              --target "$TARGET_SHA" \
               --title "$RELEASE_TITLE" \
               --generate-notes
           fi
@@ -117,9 +127,12 @@ jobs:
 
       - name: Publish NuGet to NuGet.org
         if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.publish_nuget }}
+        env:
+          LOGIN_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          SECRET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         shell: bash
         run: |
-          API_KEY="${{ steps.nuget-login.outputs.NUGET_API_KEY || secrets.NUGET_API_KEY }}"
+          API_KEY="${LOGIN_API_KEY:-$SECRET_API_KEY}"
           if [ -n "$API_KEY" ]; then
             echo "=== Publishing NuGet packages to NuGet.org ==="
             dotnet nuget push "release-assets/*.nupkg" \

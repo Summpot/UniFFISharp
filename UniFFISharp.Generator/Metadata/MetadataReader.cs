@@ -8,6 +8,8 @@ public class MetadataReader
 {
     private readonly byte[] _data;
     private int _pos;
+    public const int MaxTypeNestingDepth = 64;
+    private static readonly Encoding Utf8Strict = new UTF8Encoding(false, true);
 
     public MetadataReader(byte[] data)
     {
@@ -51,7 +53,7 @@ public class MetadataReader
     {
         int length = ReadUInt8();
         if (_pos + length > _data.Length) throw new InvalidOperationException("String length exceeds buffer.");
-        string str = Encoding.UTF8.GetString(_data, _pos, length);
+        string str = Utf8Strict.GetString(_data, _pos, length);
         _pos += length;
         return str;
     }
@@ -65,7 +67,7 @@ public class MetadataReader
     {
         int length = ReadUInt16();
         if (_pos + length > _data.Length) throw new InvalidOperationException("Long string length exceeds buffer.");
-        string str = Encoding.UTF8.GetString(_data, _pos, length);
+        string str = Utf8Strict.GetString(_data, _pos, length);
         _pos += length;
         return str;
     }
@@ -78,53 +80,57 @@ public class MetadataReader
 
     public string? ReadLiteral(UniFFIType? type)
     {
-        byte kind = ReadUInt8();
-        switch (kind)
+        while (true)
         {
-            case 0: // LIT_STR
+            byte kind = ReadUInt8();
+            switch (kind)
             {
-                string s = ReadString();
-                return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r") + "\"";
-            }
-            case 1: // LIT_INT
-            {
-                string s = ReadString();
-                if (type != null)
+                case 0: // LIT_STR
                 {
-                    if (type.Kind == TypeKind.UInt64) return s + "UL";
-                    if (type.Kind == TypeKind.Int64) return s + "L";
-                    if (type.Kind == TypeKind.UInt32) return s + "U";
+                    string s = ReadString();
+                    return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r") + "\"";
                 }
-                return s;
-            }
-            case 2: // LIT_FLOAT
-            {
-                string s = ReadString();
-                if (type != null && type.Kind == TypeKind.Float32)
+                case 1: // LIT_INT
                 {
-                    return s + "f";
+                    string s = ReadString();
+                    if (type != null)
+                    {
+                        if (type.Kind == TypeKind.UInt64) return s + "UL";
+                        if (type.Kind == TypeKind.Int64) return s + "L";
+                        if (type.Kind == TypeKind.UInt32) return s + "U";
+                    }
+                    return s;
                 }
-                return s;
+                case 2: // LIT_FLOAT
+                {
+                    string s = ReadString();
+                    if (type != null && type.Kind == TypeKind.Float32)
+                    {
+                        return s + "f";
+                    }
+                    return s;
+                }
+                case 3: // LIT_BOOL
+                {
+                    return ReadBool() ? "true" : "false";
+                }
+                case 4: // LIT_NONE
+                {
+                    return "null";
+                }
+                case 5: // LIT_SOME
+                {
+                    type = type?.InnerType;
+                    continue;
+                }
+                case 6: // LIT_EMPTY_SEQ
+                case 7: // LIT_EMPTY_MAP
+                {
+                    return "null";
+                }
+                default:
+                    return null;
             }
-            case 3: // LIT_BOOL
-            {
-                return ReadBool() ? "true" : "false";
-            }
-            case 4: // LIT_NONE
-            {
-                return "null";
-            }
-            case 5: // LIT_SOME
-            {
-                return ReadLiteral(type?.InnerType);
-            }
-            case 6: // LIT_EMPTY_SEQ
-            case 7: // LIT_EMPTY_MAP
-            {
-                return "null";
-            }
-            default:
-                return null;
         }
     }
 
@@ -153,25 +159,31 @@ public class MetadataReader
 
     public void SkipLiteral()
     {
-        byte kind = ReadUInt8();
-        switch (kind)
+        while (true)
         {
-            case 0: // LIT_STR
-            case 1: // LIT_INT
-            case 2: // LIT_FLOAT
-                ReadString();
-                break;
-            case 3: // LIT_BOOL
-                ReadBool();
-                break;
-            case 4: // LIT_NONE
-            case 6: // LIT_EMPTY_SEQ
-            case 7: // LIT_EMPTY_MAP
-            case 8: // LIT_EMPTY_SET
-                break;
-            case 5: // LIT_SOME
-                SkipLiteral();
-                break;
+            byte kind = ReadUInt8();
+            if (kind == 5) // LIT_SOME
+            {
+                continue;
+            }
+            switch (kind)
+            {
+                case 0: // LIT_STR
+                case 1: // LIT_INT
+                case 2: // LIT_FLOAT
+                    ReadString();
+                    return;
+                case 3: // LIT_BOOL
+                    ReadBool();
+                    return;
+                case 4: // LIT_NONE
+                case 6: // LIT_EMPTY_SEQ
+                case 7: // LIT_EMPTY_MAP
+                case 8: // LIT_EMPTY_SET
+                    return;
+                default:
+                    return;
+            }
         }
     }
 
@@ -195,48 +207,146 @@ public class MetadataReader
         }
     }
 
-    public UniFFIType ReadType()
+    private enum FrameKind
     {
-        byte code = ReadUInt8();
-        return code switch
-        {
-            0 => UniFFIType.Primitive(TypeKind.UInt8),
-            1 => UniFFIType.Primitive(TypeKind.UInt16),
-            2 => UniFFIType.Primitive(TypeKind.UInt32),
-            3 => UniFFIType.Primitive(TypeKind.UInt64),
-            4 => UniFFIType.Primitive(TypeKind.Int8),
-            5 => UniFFIType.Primitive(TypeKind.Int16),
-            6 => UniFFIType.Primitive(TypeKind.Int32),
-            7 => UniFFIType.Primitive(TypeKind.Int64),
-            8 => UniFFIType.Primitive(TypeKind.Float32),
-            9 => UniFFIType.Primitive(TypeKind.Float64),
-            10 => UniFFIType.Primitive(TypeKind.Boolean),
-            11 => UniFFIType.Primitive(TypeKind.String),
-            12 => new UniFFIType { Kind = TypeKind.Option, InnerType = ReadType() },
-            13 => new UniFFIType { Kind = TypeKind.Record, ModulePath = ReadString(), Name = ReadString() },
-            14 => new UniFFIType { Kind = TypeKind.Enum, ModulePath = ReadString(), Name = ReadString() },
-            16 => new UniFFIType { Kind = TypeKind.Interface, ModulePath = ReadString(), Name = ReadString() },
-            17 => ReadVecType(),
-            18 => new UniFFIType { Kind = TypeKind.Map, KeyType = ReadType(), ValueType = ReadType() },
-            19 => UniFFIType.Primitive(TypeKind.Timestamp),
-            20 => UniFFIType.Primitive(TypeKind.Duration),
-            21 => new UniFFIType { Kind = TypeKind.CallbackInterface, ModulePath = ReadString(), Name = ReadString() },
-            22 => new UniFFIType { Kind = TypeKind.Custom, ModulePath = ReadString(), Name = ReadString(), InnerType = ReadType() },
-            24 => ReadTraitInterfaceType(),
-            26 => new UniFFIType { Kind = TypeKind.Option, InnerType = ReadType() }, // Box<T> treats as inner
-            27 => new UniFFIType { Kind = TypeKind.Set, InnerType = ReadType() },
-            _ => throw new InvalidOperationException($"Unexpected UniFFI type code: {code}")
-        };
+        Option,
+        Sequence,
+        Custom,
+        Box,
+        Set,
+        MapKey,
+        MapValue
     }
 
-    private UniFFIType ReadVecType()
+    private sealed class TypeFrame
     {
-        var inner = ReadType();
-        if (inner.Kind == TypeKind.UInt8)
+        public FrameKind Kind;
+        public string? ModulePath;
+        public string? Name;
+        public UniFFIType? KeyType;
+    }
+
+    public UniFFIType ReadType()
+    {
+        var stack = new Stack<TypeFrame>();
+        UniFFIType? result = null;
+
+        while (result == null)
         {
-            return UniFFIType.Primitive(TypeKind.Bytes);
+            byte code = ReadUInt8();
+            UniFFIType? currentType = null;
+
+            switch (code)
+            {
+                case 0:  currentType = UniFFIType.Primitive(TypeKind.UInt8); break;
+                case 1:  currentType = UniFFIType.Primitive(TypeKind.UInt16); break;
+                case 2:  currentType = UniFFIType.Primitive(TypeKind.UInt32); break;
+                case 3:  currentType = UniFFIType.Primitive(TypeKind.UInt64); break;
+                case 4:  currentType = UniFFIType.Primitive(TypeKind.Int8); break;
+                case 5:  currentType = UniFFIType.Primitive(TypeKind.Int16); break;
+                case 6:  currentType = UniFFIType.Primitive(TypeKind.Int32); break;
+                case 7:  currentType = UniFFIType.Primitive(TypeKind.Int64); break;
+                case 8:  currentType = UniFFIType.Primitive(TypeKind.Float32); break;
+                case 9:  currentType = UniFFIType.Primitive(TypeKind.Float64); break;
+                case 10: currentType = UniFFIType.Primitive(TypeKind.Boolean); break;
+                case 11: currentType = UniFFIType.Primitive(TypeKind.String); break;
+                case 13: currentType = new UniFFIType { Kind = TypeKind.Record, ModulePath = ReadString(), Name = ReadString() }; break;
+                case 14: currentType = new UniFFIType { Kind = TypeKind.Enum, ModulePath = ReadString(), Name = ReadString() }; break;
+                case 16: currentType = new UniFFIType { Kind = TypeKind.Interface, ModulePath = ReadString(), Name = ReadString() }; break;
+                case 19: currentType = UniFFIType.Primitive(TypeKind.Timestamp); break;
+                case 20: currentType = UniFFIType.Primitive(TypeKind.Duration); break;
+                case 21: currentType = new UniFFIType { Kind = TypeKind.CallbackInterface, ModulePath = ReadString(), Name = ReadString() }; break;
+                case 24: currentType = ReadTraitInterfaceType(); break;
+
+                case 12: // Option
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.Option });
+                    break;
+                case 17: // Vec
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.Sequence });
+                    break;
+                case 18: // Map
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.MapKey });
+                    break;
+                case 22: // Custom
+                {
+                    string mod = ReadString();
+                    string name = ReadString();
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.Custom, ModulePath = mod, Name = name });
+                    break;
+                }
+                case 26: // Box (treated as Option)
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.Box });
+                    break;
+                case 27: // Set
+                    PushFrame(stack, new TypeFrame { Kind = FrameKind.Set });
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected UniFFI type code: {code}");
+            }
+
+            if (currentType != null)
+            {
+                result = UnwindStack(stack, currentType);
+            }
         }
-        return new UniFFIType { Kind = TypeKind.Sequence, InnerType = inner };
+
+        return result;
+    }
+
+    private static void PushFrame(Stack<TypeFrame> stack, TypeFrame frame)
+    {
+        if (stack.Count >= MaxTypeNestingDepth)
+        {
+            throw new InvalidOperationException($"Type nesting depth exceeded limit ({MaxTypeNestingDepth}).");
+        }
+        stack.Push(frame);
+    }
+
+    private static UniFFIType? UnwindStack(Stack<TypeFrame> stack, UniFFIType completed)
+    {
+        while (stack.Count > 0)
+        {
+            var frame = stack.Pop();
+            switch (frame.Kind)
+            {
+                case FrameKind.Option:
+                case FrameKind.Box:
+                    completed = new UniFFIType { Kind = TypeKind.Option, InnerType = completed };
+                    break;
+                case FrameKind.Sequence:
+                    completed = completed.Kind == TypeKind.UInt8
+                        ? UniFFIType.Primitive(TypeKind.Bytes)
+                        : new UniFFIType { Kind = TypeKind.Sequence, InnerType = completed };
+                    break;
+                case FrameKind.Custom:
+                    completed = new UniFFIType
+                    {
+                        Kind = TypeKind.Custom,
+                        ModulePath = frame.ModulePath!,
+                        Name = frame.Name!,
+                        InnerType = completed
+                    };
+                    break;
+                case FrameKind.Set:
+                    completed = new UniFFIType { Kind = TypeKind.Set, InnerType = completed };
+                    break;
+                case FrameKind.MapKey:
+                    frame.Kind = FrameKind.MapValue;
+                    frame.KeyType = completed;
+                    stack.Push(frame);
+                    return null;
+                case FrameKind.MapValue:
+                    completed = new UniFFIType
+                    {
+                        Kind = TypeKind.Map,
+                        KeyType = frame.KeyType!,
+                        ValueType = completed
+                    };
+                    break;
+            }
+        }
+
+        return completed;
     }
 
     private UniFFIType ReadTraitInterfaceType()

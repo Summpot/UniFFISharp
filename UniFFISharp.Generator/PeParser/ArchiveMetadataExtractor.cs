@@ -15,6 +15,12 @@ public static class ArchiveMetadataExtractor
 {
     private static readonly byte[] ArchiveMagic = Encoding.ASCII.GetBytes("!<arch>\n");
 
+    /// <summary>
+    /// Maximum allowed symbols or members in an archive linker member to prevent excessive memory allocation.
+    /// Default is 1,000,000.
+    /// </summary>
+    public static int MaxArchiveSymbols { get; set; } = 1_000_000;
+
     public static bool IsArchive(byte[] data)
     {
         if (data == null || data.Length < 8) return false;
@@ -80,11 +86,19 @@ public static class ArchiveMetadataExtractor
         byte[] headerBuf = new byte[60];
 
         // Find member offsets containing UNIFFI_META symbols
-        var targetMemberOffsets = FindUniffiMemberOffsets(stream);
-        if (targetMemberOffsets.Count == 0)
+        HashSet<long> targetMemberOffsets;
+        try
         {
-            // Fallback: scan all members in the archive
-            targetMemberOffsets = new HashSet<long>(GetAllMemberOffsets(stream));
+            targetMemberOffsets = FindUniffiMemberOffsets(stream);
+            if (targetMemberOffsets.Count == 0)
+            {
+                // Fallback: scan all members in the archive
+                targetMemberOffsets = new HashSet<long>(GetAllMemberOffsets(stream));
+            }
+        }
+        catch
+        {
+            targetMemberOffsets = new HashSet<long>();
         }
 
         foreach (long memberOffset in targetMemberOffsets)
@@ -114,7 +128,15 @@ public static class ArchiveMetadataExtractor
             if (ReadFully(stream, objBytes, 0, memberSize) < memberSize) continue;
 
             // Extract symbols from COFF, ELF, or Mach-O object file
-            var extractedSymbols = ExtractFromObject(objBytes);
+            List<(string, byte[])> extractedSymbols;
+            try
+            {
+                extractedSymbols = ExtractFromObject(objBytes);
+            }
+            catch
+            {
+                continue;
+            }
 
             foreach (var (symName, symData) in extractedSymbols)
             {
@@ -242,8 +264,10 @@ public static class ArchiveMetadataExtractor
         if (size < 4) return;
         uint numSymbols = BinaryPrimitives.ReadUInt32BigEndian(archive.AsSpan(bodyPos, 4));
         int offsetsStart = bodyPos + 4;
-        int stringsStart = offsetsStart + (int)numSymbols * 4;
+        long requiredOffsetBytes = (long)numSymbols * 4L;
+        if (requiredOffsetBytes > size - 4 || numSymbols > (uint)MaxArchiveSymbols) return;
 
+        int stringsStart = (int)(offsetsStart + requiredOffsetBytes);
         if (stringsStart > bodyPos + size) return;
 
         var offsets = new uint[numSymbols];
@@ -273,10 +297,13 @@ public static class ArchiveMetadataExtractor
     {
         if (size < 4) return;
         uint numMembers = BitConverter.ToUInt32(archive, bodyPos);
-        int memberOffsetsStart = bodyPos + 4;
-        int numSymbolsPos = memberOffsetsStart + (int)numMembers * 4;
+        long memberOffsetsBytes = (long)numMembers * 4L;
+        if (memberOffsetsBytes > size - 4 || numMembers > (uint)MaxArchiveSymbols) return;
 
-        if (numSymbolsPos + 4 > bodyPos + size) return;
+        int memberOffsetsStart = bodyPos + 4;
+        long numSymbolsPosLong = (long)memberOffsetsStart + memberOffsetsBytes;
+        if (numSymbolsPosLong + 4 > bodyPos + size) return;
+        int numSymbolsPos = (int)numSymbolsPosLong;
 
         var memberOffsets = new uint[numMembers];
         for (int i = 0; i < numMembers; i++)
@@ -285,10 +312,13 @@ public static class ArchiveMetadataExtractor
         }
 
         uint numSymbols = BitConverter.ToUInt32(archive, numSymbolsPos);
-        int indicesStart = numSymbolsPos + 4;
-        int stringsStart = indicesStart + (int)numSymbols * 2;
+        long indicesBytes = (long)numSymbols * 2L;
+        if (indicesBytes > (bodyPos + size) - (numSymbolsPos + 4) || numSymbols > (uint)MaxArchiveSymbols) return;
 
-        if (stringsStart > bodyPos + size) return;
+        int indicesStart = numSymbolsPos + 4;
+        long stringsStartLong = (long)indicesStart + indicesBytes;
+        if (stringsStartLong > bodyPos + size) return;
+        int stringsStart = (int)stringsStartLong;
 
         var symbolIndices = new ushort[numSymbols];
         for (int i = 0; i < numSymbols; i++)
@@ -321,16 +351,19 @@ public static class ArchiveMetadataExtractor
     {
         if (size < 4) return;
         uint ranlibBytes = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(bodyPos, 4));
+        if (ranlibBytes > (uint)Math.Max(0, size - 4)) return;
         int ranlibCount = (int)(ranlibBytes / 8);
+        if (ranlibCount > MaxArchiveSymbols) return;
         int offsetsStart = bodyPos + 4;
-        int strSizePos = offsetsStart + ranlibCount * 8;
+        long strSizePosLong = (long)offsetsStart + (long)ranlibCount * 8L;
 
-        if (strSizePos + 4 <= bodyPos + size)
+        if (strSizePosLong + 4 <= bodyPos + size)
         {
+            int strSizePos = (int)strSizePosLong;
             uint strBytes = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(strSizePos, 4));
             int stringsStart = strSizePos + 4;
 
-            if (stringsStart + (int)strBytes <= bodyPos + size)
+            if ((long)stringsStart + (long)strBytes <= bodyPos + size)
             {
                 for (int i = 0; i < ranlibCount; i++)
                 {
@@ -338,8 +371,9 @@ public static class ArchiveMetadataExtractor
                     uint strx = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(entryPos, 4));
                     uint off = BinaryPrimitives.ReadUInt32LittleEndian(archive.AsSpan(entryPos + 4, 4));
 
-                    int curStr = stringsStart + (int)strx;
-                    if (curStr >= bodyPos + size) continue;
+                    long curStrLong = (long)stringsStart + (long)strx;
+                    if (curStrLong >= bodyPos + size) continue;
+                    int curStr = (int)curStrLong;
 
                     int nextNull = Array.IndexOf<byte>(archive, 0, curStr);
                     if (nextNull < 0 || nextNull > bodyPos + size) nextNull = bodyPos + size;
@@ -361,25 +395,29 @@ public static class ArchiveMetadataExtractor
         if (size >= 16)
         {
             ulong ranlibBytes64 = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(bodyPos, 8));
-            int ranlibCount64 = (int)(ranlibBytes64 / 16);
+            if (ranlibBytes64 > (ulong)Math.Max(0, size - 8)) return;
+            ulong ranlibCount64 = ranlibBytes64 / 16;
+            if (ranlibCount64 > (ulong)MaxArchiveSymbols) return;
             int offsetsStart64 = bodyPos + 8;
-            int strSizePos64 = offsetsStart64 + ranlibCount64 * 16;
+            long strSizePos64Long = (long)offsetsStart64 + (long)ranlibCount64 * 16L;
 
-            if (strSizePos64 + 8 <= bodyPos + size)
+            if (strSizePos64Long + 8 <= bodyPos + size)
             {
+                int strSizePos64 = (int)strSizePos64Long;
                 ulong strBytes64 = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(strSizePos64, 8));
                 int stringsStart64 = strSizePos64 + 8;
 
-                if (stringsStart64 + (int)strBytes64 <= bodyPos + size)
+                if ((long)stringsStart64 + (long)strBytes64 <= bodyPos + size)
                 {
-                    for (int i = 0; i < ranlibCount64; i++)
+                    for (int i = 0; i < (int)ranlibCount64; i++)
                     {
                         int entryPos = offsetsStart64 + i * 16;
                         ulong strx = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(entryPos, 8));
                         ulong off = BinaryPrimitives.ReadUInt64LittleEndian(archive.AsSpan(entryPos + 8, 8));
 
-                        int curStr = stringsStart64 + (int)strx;
-                        if (curStr >= bodyPos + size) continue;
+                        long curStrLong = (long)stringsStart64 + (long)strx;
+                        if (curStrLong >= bodyPos + size) continue;
+                        int curStr = (int)curStrLong;
 
                         int nextNull = Array.IndexOf<byte>(archive, 0, curStr);
                         if (nextNull < 0 || nextNull > bodyPos + size) nextNull = bodyPos + size;
@@ -487,8 +525,9 @@ public static class ArchiveMetadataExtractor
         uint numSyms = BitConverter.ToUInt32(objBytes, 12);
         ushort optHeaderSize = BitConverter.ToUInt16(objBytes, 16);
 
-        int secHeadersStart = 20 + optHeaderSize;
-        if (secHeadersStart + numSections * 40 > objBytes.Length) return;
+        long secHeadersStartLong = 20L + (long)optHeaderSize;
+        if (secHeadersStartLong + (long)numSections * 40L > objBytes.Length) return;
+        int secHeadersStart = (int)secHeadersStartLong;
 
         var secHeaders = new (string name, uint rawDataPtr, uint rawDataSize)[numSections];
         for (int i = 0; i < numSections; i++)
@@ -500,23 +539,28 @@ public static class ArchiveMetadataExtractor
             secHeaders[i] = (secName, rawDataPtr, rawDataSize);
         }
 
-        if (symTableOffset + numSyms * 18 > objBytes.Length) return;
+        long symTableEnd = (long)symTableOffset + (long)numSyms * 18L;
+        if (symTableEnd > objBytes.Length || numSyms > (uint)MaxArchiveSymbols) return;
 
-        int strTableOffset = (int)symTableOffset + (int)numSyms * 18;
+        long strTableOffsetLong = symTableEnd;
 
         for (int i = 0; i < numSyms; i++)
         {
-            int entryOffset = (int)symTableOffset + i * 18;
+            long entryOffsetLong = (long)symTableOffset + (long)i * 18L;
+            if (entryOffsetLong + 18 > objBytes.Length) break;
+            int entryOffset = (int)entryOffsetLong;
+
             uint nameZero = BitConverter.ToUInt32(objBytes, entryOffset);
             string symName;
             if (nameZero == 0)
             {
                 uint strOffset = BitConverter.ToUInt32(objBytes, entryOffset + 4);
-                if (strTableOffset + (int)strOffset < objBytes.Length)
+                long fullStrOffset = strTableOffsetLong + (long)strOffset;
+                if (fullStrOffset >= 0 && fullStrOffset < objBytes.Length)
                 {
-                    int nullPos = Array.IndexOf<byte>(objBytes, 0, strTableOffset + (int)strOffset);
+                    int nullPos = Array.IndexOf<byte>(objBytes, 0, (int)fullStrOffset);
                     if (nullPos < 0) nullPos = objBytes.Length;
-                    symName = Encoding.ASCII.GetString(objBytes, strTableOffset + (int)strOffset, nullPos - (strTableOffset + (int)strOffset));
+                    symName = Encoding.ASCII.GetString(objBytes, (int)fullStrOffset, nullPos - (int)fullStrOffset);
                 }
                 else
                 {
@@ -539,13 +583,15 @@ public static class ArchiveMetadataExtractor
                 if (secNum > 0 && secNum <= secHeaders.Length)
                 {
                     var sec = secHeaders[secNum - 1];
-                    if (sec.rawDataPtr + symValue < objBytes.Length)
+                    long dataStart = (long)sec.rawDataPtr + (long)symValue;
+                    if (dataStart < objBytes.Length && symValue <= sec.rawDataSize)
                     {
-                        int available = (int)Math.Min(sec.rawDataSize - symValue, objBytes.Length - (sec.rawDataPtr + symValue));
-                        if (available > 0)
+                        long availLong = Math.Min((long)sec.rawDataSize - (long)symValue, (long)objBytes.Length - dataStart);
+                        if (availLong > 0)
                         {
+                            int available = (int)Math.Min(availLong, 10 * 1024 * 1024);
                             byte[] symData = new byte[available];
-                            Array.Copy(objBytes, (int)sec.rawDataPtr + (int)symValue, symData, 0, available);
+                            Array.Copy(objBytes, (int)dataStart, symData, 0, available);
                             results.Add((symName, symData));
                         }
                     }
