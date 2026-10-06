@@ -180,7 +180,7 @@ public static class CodeGenerator
     private static void GenerateBuiltinConverters(CSharpCodeBuilder cb)
     {
         // String
-        using (cb.Block("internal sealed class FfiConverterString : FfiConverter<string, RustBuffer>"))
+        using (cb.Block("internal sealed partial class FfiConverterString : FfiConverter<string, RustBuffer>"))
         {
             cb.AppendLine("public static readonly FfiConverterString INSTANCE = new();");
             cb.AppendLine();
@@ -225,7 +225,7 @@ public static class CodeGenerator
         cb.AppendLine();
 
         // ByteArray
-        using (cb.Block("internal sealed class FfiConverterByteArray : FfiConverterRustBuffer<byte[]>"))
+        using (cb.Block("internal sealed partial class FfiConverterByteArray : FfiConverterRustBuffer<byte[]>"))
         {
             cb.AppendLine("public static readonly FfiConverterByteArray INSTANCE = new();");
             cb.AppendLine();
@@ -251,7 +251,7 @@ public static class CodeGenerator
         cb.AppendLine();
 
         // Timestamp
-        using (cb.Block("internal sealed class FfiConverterTimestamp : FfiConverterRustBuffer<DateTimeOffset>"))
+        using (cb.Block("internal sealed partial class FfiConverterTimestamp : FfiConverterRustBuffer<DateTimeOffset>"))
         {
             cb.AppendLine("public static readonly FfiConverterTimestamp INSTANCE = new();");
             cb.AppendLine();
@@ -275,7 +275,7 @@ public static class CodeGenerator
         cb.AppendLine();
 
         // Duration
-        using (cb.Block("internal sealed class FfiConverterDuration : FfiConverterRustBuffer<TimeSpan>"))
+        using (cb.Block("internal sealed partial class FfiConverterDuration : FfiConverterRustBuffer<TimeSpan>"))
         {
             cb.AppendLine("public static readonly FfiConverterDuration INSTANCE = new();");
             cb.AppendLine();
@@ -343,7 +343,7 @@ public static class CodeGenerator
         string convName = TypeHelper.ConverterClassName(type);
         bool isVal = IsValueType(inner);
 
-        using (cb.Block($"internal sealed class {convName} : FfiConverterRustBuffer<{innerCsType}?>"))
+        using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<{innerCsType}?>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
             cb.AppendLine();
@@ -388,7 +388,7 @@ public static class CodeGenerator
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
-        using (cb.Block($"internal sealed class {convName} : FfiConverterRustBuffer<List<{innerCsType}>>"))
+        using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<List<{innerCsType}>>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
             cb.AppendLine();
@@ -444,7 +444,7 @@ public static class CodeGenerator
         string valConverter = TypeHelper.ConverterInstance(val, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
-        using (cb.Block($"internal sealed class {convName} : FfiConverterRustBuffer<Dictionary<{keyCsType}, {valCsType}>>"))
+        using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<Dictionary<{keyCsType}, {valCsType}>>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
             cb.AppendLine();
@@ -500,7 +500,7 @@ public static class CodeGenerator
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
-        using (cb.Block($"public sealed class {convName} : FfiConverterRustBuffer<HashSet<{innerCsType}>>"))
+        using (cb.Block($"public sealed partial class {convName} : FfiConverterRustBuffer<HashSet<{innerCsType}>>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
             cb.AppendLine();
@@ -815,7 +815,7 @@ public static class CodeGenerator
         string cbiLower = TypeHelper.SanitizeIdentifier(cbi.Name.ToLowerInvariant());
 
         // 1. VTable Struct (UniFFI 0.32 layout: uniffi_free, uniffi_clone first, then method pointers)
-        using (cb.Block($"[StructLayout(LayoutKind.Sequential)] public struct UniFfiVTable{cbiName}"))
+        using (cb.Block($"[StructLayout(LayoutKind.Sequential)] public partial struct UniFfiVTable{cbiName}"))
         {
             cb.AppendLine("public IntPtr uniffiFree;");
             cb.AppendLine("public IntPtr uniffiClone;");
@@ -863,7 +863,7 @@ public static class CodeGenerator
                 string delegateType = $"ForeignFutureCompleteDelegate_{cbiName}_{i}";
 
                 cb.AppendLine("[StructLayout(LayoutKind.Sequential)]");
-                using (cb.Block($"public struct {resultStruct}"))
+                using (cb.Block($"public partial struct {resultStruct}"))
                 {
                     if (ffiRet != null)
                     {
@@ -1126,7 +1126,7 @@ public static class CodeGenerator
 
         // Interface definition
         AppendDocComment(cb, cbi.Docstring);
-        using (cb.Block($"public interface {ifaceName}"))
+        using (cb.Block($"public partial interface {ifaceName}"))
         {
             foreach (var m in cbi.Methods)
             {
@@ -1155,7 +1155,7 @@ public static class CodeGenerator
         cb.AppendLine();
 
         // Converter
-        using (cb.Block($"public sealed class FfiConverterType{cbiName} : FfiConverter<{ifaceName}, ulong>"))
+        using (cb.Block($"public sealed partial class FfiConverterType{cbiName} : FfiConverter<{ifaceName}, ulong>"))
         {
             cb.AppendLine($"public static readonly FfiConverterType{cbiName} INSTANCE = new();");
             cb.AppendLine($"public static readonly ConcurrentHandleMap<{ifaceName}> handleMap = new();");
@@ -1192,11 +1192,11 @@ public static class CodeGenerator
             string def = field.DefaultValue != null ? $" = {field.DefaultValue}" : "";
             paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
         }
-        cb.AppendLine($"public record {recordName}({string.Join(", ", paramDecls)});");
+        cb.AppendLine($"public partial record {recordName}({string.Join(", ", paramDecls)});");
         cb.AppendLine();
 
         // Record Converter
-        using (cb.Block($"public sealed class FfiConverterType{recordName} : FfiConverterRustBuffer<{recordName}>"))
+        using (cb.Block($"public sealed partial class FfiConverterType{recordName} : FfiConverterRustBuffer<{recordName}>"))
         {
             cb.AppendLine($"public static readonly FfiConverterType{recordName} INSTANCE = new();");
             cb.AppendLine();
@@ -1267,7 +1267,7 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
-            using (cb.Block($"public sealed class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>"))
+            using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>"))
             {
                 cb.AppendLine($"public static readonly FfiConverterType{enumName} INSTANCE = new();");
                 cb.AppendLine();
@@ -1286,7 +1286,7 @@ public static class CodeGenerator
         else if (enm.Shape == EnumShape.ErrorFlat)
         {
             // Flat error enum
-            using (cb.Block($"public class {enumName} : UniffiException"))
+            using (cb.Block($"public partial class {enumName} : UniffiException"))
             {
                 cb.AppendLine($"public {enumName}(string message) : base(message) {{ }}");
                 cb.AppendLine();
@@ -1294,12 +1294,12 @@ public static class CodeGenerator
                 {
                     string vName = TypeHelper.ToPascalCase(v.Name);
                     AppendDocComment(cb, v.Docstring);
-                    cb.AppendLine($"public class {vName} : {enumName} {{ public {vName}(string message) : base(message) {{ }} }}");
+                    cb.AppendLine($"public partial class {vName} : {enumName} {{ public {vName}(string message) : base(message) {{ }} }}");
                 }
             }
             cb.AppendLine();
 
-            using (cb.Block($"public sealed class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
+            using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
             {
                 cb.AppendLine($"public static readonly FfiConverterType{enumName} INSTANCE = new();");
                 cb.AppendLine();
@@ -1354,7 +1354,7 @@ public static class CodeGenerator
         else if (enm.Shape == EnumShape.ErrorComplex)
         {
             // Complex error enum
-            using (cb.Block($"public abstract class {enumName} : UniffiException"))
+            using (cb.Block($"public abstract partial class {enumName} : UniffiException"))
             {
                 cb.AppendLine($"private {enumName}(string message = \"\") : base(message) {{ }}");
                 cb.AppendLine();
@@ -1364,7 +1364,7 @@ public static class CodeGenerator
                     string vName = TypeHelper.ToPascalCase(v.Name);
                     if (v.Fields.Count == 0)
                     {
-                        cb.AppendLine($"public sealed class {vName} : {enumName} {{ public {vName}() : base(\"{vName}\") {{ }} }}");
+                        cb.AppendLine($"public sealed partial class {vName} : {enumName} {{ public {vName}() : base(\"{vName}\") {{ }} }}");
                     }
                     else
                     {
@@ -1375,7 +1375,7 @@ public static class CodeGenerator
                             string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
                             paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
                         }
-                        using (cb.Block($"public sealed class {vName} : {enumName}"))
+                        using (cb.Block($"public sealed partial class {vName} : {enumName}"))
                         {
                             foreach (var f in v.Fields)
                             {
@@ -1395,7 +1395,7 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
-            using (cb.Block($"public sealed class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
+            using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
             {
                 cb.AppendLine($"public static readonly FfiConverterType{enumName} INSTANCE = new();");
                 cb.AppendLine();
@@ -1494,7 +1494,7 @@ public static class CodeGenerator
         else
         {
             // Tagged union record enum
-            using (cb.Block($"public abstract record {enumName}"))
+            using (cb.Block($"public abstract partial record {enumName}"))
             {
                 cb.AppendLine($"private {enumName}() {{ }}");
                 cb.AppendLine();
@@ -1504,7 +1504,7 @@ public static class CodeGenerator
                     string vName = TypeHelper.ToPascalCase(v.Name);
                     if (v.Fields.Count == 0)
                     {
-                        cb.AppendLine($"public sealed record {vName}() : {enumName};");
+                        cb.AppendLine($"public sealed partial record {vName}() : {enumName};");
                     }
                     else
                     {
@@ -1515,13 +1515,13 @@ public static class CodeGenerator
                             string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
                             paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
                         }
-                        cb.AppendLine($"public sealed record {vName}({string.Join(", ", paramDecls)}) : {enumName};");
+                        cb.AppendLine($"public sealed partial record {vName}({string.Join(", ", paramDecls)}) : {enumName};");
                     }
                 }
             }
             cb.AppendLine();
 
-            using (cb.Block($"public sealed class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>"))
+            using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>"))
             {
                 cb.AppendLine($"public static readonly FfiConverterType{enumName} INSTANCE = new();");
                 cb.AppendLine();
@@ -1633,7 +1633,7 @@ public static class CodeGenerator
         string ifaceInheritance = streamDesc != null
             ? $": IDisposable, IAsyncEnumerable<{streamDesc.CSharpItemType}>"
             : ": IDisposable";
-        using (cb.Block($"public interface {ifaceName} {ifaceInheritance}"))
+        using (cb.Block($"public partial interface {ifaceName} {ifaceInheritance}"))
         {
             foreach (var m in obj.Methods)
             {
@@ -1662,7 +1662,7 @@ public static class CodeGenerator
 
         // Class
         AppendDocComment(cb, obj.Docstring);
-        using (cb.Block($"public class {objName} : {ifaceName}"))
+        using (cb.Block($"public partial class {objName} : {ifaceName}"))
         {
             cb.AppendLine("protected IntPtr _pointer;");
             cb.AppendLine("private int _wasDestroyed = 0;");
@@ -2007,7 +2007,7 @@ public static class CodeGenerator
         cb.AppendLine();
 
         // Object Converter
-        using (cb.Block($"public sealed class FfiConverterType{objName} : FfiConverter<{objName}, IntPtr>"))
+        using (cb.Block($"public sealed partial class FfiConverterType{objName} : FfiConverter<{objName}, IntPtr>"))
         {
             cb.AppendLine($"public static readonly FfiConverterType{objName} INSTANCE = new();");
             cb.AppendLine();
@@ -2024,7 +2024,7 @@ public static class CodeGenerator
     {
         string className = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
 
-        using (cb.Block($"public static class {className}"))
+        using (cb.Block($"public static partial class {className}"))
         {
             foreach (var fn in ci.Functions)
             {

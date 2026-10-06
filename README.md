@@ -10,6 +10,7 @@
 - **Async & Task Support**: Idiomatic two-way `Task` / `Task<T>` asynchronous Rust FFI.
 - **Async Streams (`IAsyncEnumerable<T>`)**: Automatic `IAsyncEnumerable<T>` generation for Rust async iterator / stream objects via method signature heuristics.
 - **Two-way Callback Interfaces**: Pass C# delegates / interface implementations to Rust.
+- **Extensible Partial Types**: All generated records, object classes/interfaces, tagged unions, and error classes are declared as `partial` for easy custom extension.
 - **Cross-Compilation Ready**: Built-in integration with Zig toolsets for easy cross-platform compilation.
 
 ## Quickstart
