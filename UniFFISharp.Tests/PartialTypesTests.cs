@@ -37,6 +37,11 @@ public class PartialTypesTests
         {
             Name = "session_manager"
         };
+        obj.Constructors.Add(new ConstructorMetadata
+        {
+            Name = "new",
+            Inputs = new List<FnParamMetadata>()
+        });
         obj.Methods.Add(new MethodMetadata
         {
             Name = "get_user_count",

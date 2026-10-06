@@ -47,7 +47,7 @@ public static class TypeHelper
             result = "_" + result;
         }
 
-        return EscapeIdentifier(result);
+        return result;
     }
 
     public static string EscapeStringLiteral(string value)

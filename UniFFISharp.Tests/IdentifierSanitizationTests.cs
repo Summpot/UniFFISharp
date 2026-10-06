@@ -32,7 +32,11 @@ public class IdentifierSanitizationTests
         string raw = "class";
         string sanitized = TypeHelper.SanitizeIdentifier(raw);
 
-        Assert.Equal("@class", sanitized);
+        Assert.Equal("class", sanitized);
+
+        string rawNew = "new";
+        string sanitizedNew = TypeHelper.SanitizeIdentifier(rawNew);
+        Assert.Equal("new", sanitizedNew);
     }
 
     [Fact]
@@ -105,6 +109,53 @@ public class IdentifierSanitizationTests
 
         string generatedCode = CodeGenerator.Generate(ci, "libtest.dll");
         Assert.NotNull(generatedCode);
+
+        // Verify syntax validity using Roslyn CSharpSyntaxTree
+        var syntaxTree = CSharpSyntaxTree.ParseText(generatedCode);
+        var diagnostics = syntaxTree.GetDiagnostics();
+        var errors = new List<string>();
+        foreach (var diag in diagnostics)
+        {
+            if (diag.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
+            {
+                errors.Add(diag.ToString());
+            }
+        }
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void TestCodeGeneratorWithConstructorNamedNewProducesCleanPInvokeAndValidSyntax()
+    {
+        var ci = new ComponentInterface
+        {
+            CrateName = "pixeval_mako",
+            Objects = new List<ObjectMetadata>
+            {
+                new ObjectMetadata
+                {
+                    Name = "MakoClient",
+                    Constructors = new List<ConstructorMetadata>
+                    {
+                        new ConstructorMetadata
+                        {
+                            Name = "new",
+                            Inputs = new List<FnParamMetadata>()
+                        }
+                    }
+                }
+            }
+        };
+
+        string generatedCode = CodeGenerator.Generate(ci, "libmako.dll");
+        Assert.NotNull(generatedCode);
+
+        // Verify that no invalid "@new" appears in EntryPoint, extern method name, or call site
+        Assert.DoesNotContain("@new", generatedCode);
+        Assert.Contains("EntryPoint = \"uniffi_pixeval_mako_fn_constructor_makoclient_new\"", generatedCode);
+        Assert.Contains("public static extern IntPtr uniffi_pixeval_mako_fn_constructor_makoclient_new(", generatedCode);
+        Assert.Contains("_UniFFILib.uniffi_pixeval_mako_fn_constructor_makoclient_new(", generatedCode);
 
         // Verify syntax validity using Roslyn CSharpSyntaxTree
         var syntaxTree = CSharpSyntaxTree.ParseText(generatedCode);
