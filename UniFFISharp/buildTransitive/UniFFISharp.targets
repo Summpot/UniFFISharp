@@ -8,7 +8,7 @@
   <!-- Transitive native static library resolution for NativeAOT publish     -->
   <!-- ===================================================================== -->
   <Target Name="ResolveTransitiveUniFFINativeLibraries"
-          BeforeTargets="ComputeIlcLinkerArgs;IlcCompile;LinkNative"
+          BeforeTargets="SetupOSSpecificProps;WriteIlcRspFileForCompilation;IlcCompile;LinkNative"
           Condition="'$(PublishAot)' == 'true'">
 
     <!-- Query all referenced projects for their UniFFI native static libraries -->
@@ -24,11 +24,11 @@
     <!-- Inject resolved static libraries and DirectPInvoke into NativeAOT linker context -->
     <ItemGroup Condition="'@(_CollectedUniFFINativeLibs)' != ''">
       <NativeLibrary Include="@(_CollectedUniFFINativeLibs)" />
-      <DirectPInvoke Include="%(_CollectedUniFFINativeLibs.CrateLibName)" />
+      <DirectPInvoke Include="@(_CollectedUniFFINativeLibs->'%(CrateLibName)')" />
 
       <!-- Required Windows system libraries for Rust static linking -->
       <NativeLibrary Include="ws2_32.lib;iphlpapi.lib;userenv.lib;bcrypt.lib"
-                     Condition="'$(_UniFFITargetOS)' == 'Windows' or $([MSBuild]::IsOSPlatform('Windows')) or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))" />
+                     Condition="'$(_targetOS)' == 'win' or '$(_UniFFITargetOS)' == 'Windows' or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win')) or ('$(_targetOS)' == '' and '$(_UniFFITargetOS)' == '' and '$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))" />
     </ItemGroup>
 
     <Message Importance="high"
