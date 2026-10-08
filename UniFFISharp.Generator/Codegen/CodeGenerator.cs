@@ -11,11 +11,22 @@ public static class CodeGenerator
 {
     public static string Generate(ComponentInterface ci, string dllFileName)
     {
-        return Generate(ci, dllFileName, null);
+        return Generate(ci, dllFileName, null, (CodeGeneratorOptions?)null);
     }
 
     public static string Generate(ComponentInterface ci, string dllFileName, Func<string, string>? namespaceResolver)
     {
+        return Generate(ci, dllFileName, namespaceResolver, (CodeGeneratorOptions?)null);
+    }
+
+    public static string Generate(ComponentInterface ci, string dllFileName, Func<string, string>? namespaceResolver, Microsoft.CodeAnalysis.CSharp.LanguageVersion languageVersion)
+    {
+        return Generate(ci, dllFileName, namespaceResolver, new CodeGeneratorOptions { LanguageVersion = languageVersion });
+    }
+
+    public static string Generate(ComponentInterface ci, string dllFileName, Func<string, string>? namespaceResolver, CodeGeneratorOptions? options)
+    {
+        options ??= new CodeGeneratorOptions();
         var cb = new CSharpCodeBuilder();
         string ns = string.IsNullOrEmpty(ci.Namespace) ? TypeHelper.ToPascalCase(ci.CrateName) : TypeHelper.ToPascalCase(ci.Namespace);
         string crateNorm = TypeHelper.SanitizeIdentifier(ci.CrateName.Replace('-', '_'));
@@ -52,7 +63,7 @@ public static class CodeGenerator
 
         // 2. Composite Converters (Option, Sequence, Map, Set)
         var compositeTypes = FindCompositeTypes(ci);
-        GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver);
+        GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver, ci, options);
 
         // 3. _UniFFILib P/Invoke class
         GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver);
@@ -66,13 +77,13 @@ public static class CodeGenerator
         // 5. Enums
         foreach (var enm in ci.Enums)
         {
-            GenerateEnum(cb, enm, crateNorm, namespaceResolver);
+            GenerateEnum(cb, enm, crateNorm, namespaceResolver, options);
         }
 
         // 6. Objects / Interfaces
         foreach (var obj in ci.Objects)
         {
-            GenerateObject(cb, obj, crateNorm, ci, namespaceResolver);
+            GenerateObject(cb, obj, crateNorm, ci, namespaceResolver, options);
         }
 
         // 7. Callback Interfaces
@@ -300,13 +311,13 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateCompositeConverters(CSharpCodeBuilder cb, List<UniFFIType> compositeTypes, string crateNorm, Func<string, string>? namespaceResolver)
+    private static void GenerateCompositeConverters(CSharpCodeBuilder cb, List<UniFFIType> compositeTypes, string crateNorm, Func<string, string>? namespaceResolver, ComponentInterface ci, CodeGeneratorOptions options)
     {
         foreach (var ty in compositeTypes)
         {
             if (ty.Kind == TypeKind.Option)
             {
-                GenerateOptionalConverter(cb, ty, crateNorm, namespaceResolver);
+                GenerateOptionalConverter(cb, ty, crateNorm, namespaceResolver, ci, options);
             }
             else if (ty.Kind == TypeKind.Sequence)
             {
@@ -323,8 +334,13 @@ public static class CodeGenerator
         }
     }
 
-    private static bool IsValueType(UniFFIType ty)
+    private static bool IsValueType(UniFFIType ty, ComponentInterface? ci = null, CodeGeneratorOptions? options = null)
     {
+        if (ty.Kind == TypeKind.Enum && ci != null)
+        {
+            if (ci.IsFlatEnum(ty.Name)) return true;
+            if (options?.EffectiveUseNativeUnions == true) return true;
+        }
         return ty.Kind switch
         {
             TypeKind.UInt8 or TypeKind.Int8 or TypeKind.UInt16 or TypeKind.Int16 or
@@ -335,13 +351,13 @@ public static class CodeGenerator
         };
     }
 
-    private static void GenerateOptionalConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
+    private static void GenerateOptionalConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver, ComponentInterface ci, CodeGeneratorOptions options)
     {
         var inner = type.InnerType!;
         string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
-        bool isVal = IsValueType(inner);
+        bool isVal = IsValueType(inner, ci, options);
 
         using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<{innerCsType}?>"))
         {
@@ -1247,8 +1263,9 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm, string crateNorm, Func<string, string>? namespaceResolver = null)
+    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm, string crateNorm, Func<string, string>? namespaceResolver = null, CodeGeneratorOptions? options = null)
     {
+        options ??= new CodeGeneratorOptions();
         string enumName = TypeHelper.ToPascalCase(enm.Name);
         AppendDocComment(cb, enm.Docstring);
 
@@ -1494,32 +1511,63 @@ public static class CodeGenerator
         else
         {
             // Tagged union record enum
-            using (cb.Block($"public abstract partial record {enumName}"))
+            if (options.EffectiveUseNativeUnions)
             {
-                cb.AppendLine($"private {enumName}() {{ }}");
-                cb.AppendLine();
-                foreach (var v in enm.Variants)
+                string caseTypes = string.Join(", ", enm.Variants.Select(v => $"{enumName}.{TypeHelper.ToPascalCase(v.Name)}"));
+                using (cb.Block($"public partial union {enumName}({caseTypes})"))
                 {
-                    AppendDocComment(cb, v.Docstring);
-                    string vName = TypeHelper.ToPascalCase(v.Name);
-                    if (v.Fields.Count == 0)
+                    foreach (var v in enm.Variants)
                     {
-                        cb.AppendLine($"public sealed partial record {vName}() : {enumName};");
-                    }
-                    else
-                    {
-                        var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
-                        var paramDecls = new List<string>();
-                        foreach (var f in orderedFields)
+                        AppendDocComment(cb, v.Docstring);
+                        string vName = TypeHelper.ToPascalCase(v.Name);
+                        if (v.Fields.Count == 0)
                         {
-                            string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
-                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            cb.AppendLine($"public sealed partial record {vName}();");
                         }
-                        cb.AppendLine($"public sealed partial record {vName}({string.Join(", ", paramDecls)}) : {enumName};");
+                        else
+                        {
+                            var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+                            var paramDecls = new List<string>();
+                            foreach (var f in orderedFields)
+                            {
+                                string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
+                                paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            }
+                            cb.AppendLine($"public sealed partial record {vName}({string.Join(", ", paramDecls)});");
+                        }
                     }
                 }
+                cb.AppendLine();
             }
-            cb.AppendLine();
+            else
+            {
+                using (cb.Block($"public abstract partial record {enumName}"))
+                {
+                    cb.AppendLine($"private {enumName}() {{ }}");
+                    cb.AppendLine();
+                    foreach (var v in enm.Variants)
+                    {
+                        AppendDocComment(cb, v.Docstring);
+                        string vName = TypeHelper.ToPascalCase(v.Name);
+                        if (v.Fields.Count == 0)
+                        {
+                            cb.AppendLine($"public sealed partial record {vName}() : {enumName};");
+                        }
+                        else
+                        {
+                            var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+                            var paramDecls = new List<string>();
+                            foreach (var f in orderedFields)
+                            {
+                                string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
+                                paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            }
+                            cb.AppendLine($"public sealed partial record {vName}({string.Join(", ", paramDecls)}) : {enumName};");
+                        }
+                    }
+                }
+                cb.AppendLine();
+            }
 
             using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>"))
             {
@@ -1537,13 +1585,23 @@ public static class CodeGenerator
                         {
                             var v = enm.Variants[i];
                             string vName = TypeHelper.ToPascalCase(v.Name);
-                            using (cb.Block($"case {enumName}.{vName} v:"))
+                            if (v.Fields.Count == 0)
                             {
-                                foreach (var f in v.Fields)
+                                using (cb.Block($"case {enumName}.{vName}:"))
                                 {
-                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    cb.AppendLine("break;");
                                 }
-                                cb.AppendLine("break;");
+                            }
+                            else
+                            {
+                                using (cb.Block($"case {enumName}.{vName} v:"))
+                                {
+                                    foreach (var f in v.Fields)
+                                    {
+                                        cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    }
+                                    cb.AppendLine("break;");
+                                }
                             }
                         }
                     }
@@ -1595,7 +1653,14 @@ public static class CodeGenerator
                             {
                                 if (v.Fields.Count == 0)
                                 {
-                                    cb.AppendLine($"return new {enumName}.{vName}();");
+                                    if (options.EffectiveUseNativeUnions)
+                                    {
+                                        cb.AppendLine($"return new {enumName}(new {enumName}.{vName}());");
+                                    }
+                                    else
+                                    {
+                                        cb.AppendLine($"return new {enumName}.{vName}();");
+                                    }
                                 }
                                 else
                                 {
@@ -1605,7 +1670,14 @@ public static class CodeGenerator
                                         cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(stream);");
                                     }
                                     var namedArgs = orderedFields.Select(f => $"{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}: _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')}");
-                                    cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", namedArgs)});");
+                                    if (options.EffectiveUseNativeUnions)
+                                    {
+                                        cb.AppendLine($"return new {enumName}(new {enumName}.{vName}({string.Join(", ", namedArgs)}));");
+                                    }
+                                    else
+                                    {
+                                        cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", namedArgs)});");
+                                    }
                                 }
                             }
                         }
@@ -1620,13 +1692,14 @@ public static class CodeGenerator
         }
     }
 
-    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null)
+    private static void GenerateObject(CSharpCodeBuilder cb, ObjectMetadata obj, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null, CodeGeneratorOptions? options = null)
     {
+        options ??= new CodeGeneratorOptions();
         string objName = TypeHelper.ToPascalCase(obj.Name);
         string ifaceName = "I" + objName;
         string objLower = TypeHelper.SanitizeIdentifier(obj.Name.ToLowerInvariant());
 
-        var streamDesc = AsyncStreamHeuristic.Detect(obj, ci);
+        var streamDesc = AsyncStreamHeuristic.Detect(obj, ci, options.EffectiveUseNativeUnions);
 
         // Interface
         AppendDocComment(cb, obj.Docstring);

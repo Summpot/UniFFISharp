@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using UniFFISharp.Generator.Codegen;
 using UniFFISharp.Generator.PeParser;
@@ -104,13 +105,28 @@ public class UniFFIGenerator : IIncrementalGenerator
                 return string.Empty;
             });
 
-        var combinedProvider = stampProvider.Collect().Combine(namespaceProvider);
+        var langVersionProvider = context.ParseOptionsProvider
+            .Select((options, _) => options is CSharpParseOptions csOptions ? csOptions.LanguageVersion : LanguageVersion.Default);
+
+        var unionSupportProvider = context.CompilationProvider
+            .Select((compilation, _) => compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.UnionAttribute") != null);
+
+        var langAndSupportProvider = langVersionProvider.Combine(unionSupportProvider);
+
+        var combinedProvider = stampProvider.Collect()
+            .Combine(namespaceProvider)
+            .Combine(langAndSupportProvider);
 
         context.RegisterSourceOutput(combinedProvider, (productionContext, pair) =>
         {
-            var (stamps, customNamespace) = pair;
+            var ((stamps, customNamespace), (langVersion, hasUnionSupport)) = pair;
             var generatedCrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var nsConfig = new NamespaceConfig(customNamespace);
+            var codeGenOptions = new CodeGeneratorOptions
+            {
+                LanguageVersion = langVersion,
+                HasUnionAttributeSupport = hasUnionSupport
+            };
 
             foreach (var stamp in stamps)
             {
@@ -154,7 +170,7 @@ public class UniFFIGenerator : IIncrementalGenerator
                     if (!generatedCrates.Add(crateNorm))
                         continue;
 
-                    string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver);
+                    string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver, codeGenOptions);
                     productionContext.AddSource(
                         $"UniFFIBindings.{crateNorm}.g.cs",
                         SourceText.From(source, System.Text.Encoding.UTF8));

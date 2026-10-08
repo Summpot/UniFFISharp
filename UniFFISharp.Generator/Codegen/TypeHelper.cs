@@ -224,7 +224,7 @@ public static class TypeHelper
         };
     }
 
-    public static bool IsCSharpValueType(UniFFIType type, ComponentInterface? ci = null)
+    public static bool IsCSharpValueType(UniFFIType type, ComponentInterface? ci = null, bool useNativeUnions = false)
     {
         return type.Kind switch
         {
@@ -232,7 +232,7 @@ public static class TypeHelper
             TypeKind.UInt32 or TypeKind.Int32 or TypeKind.UInt64 or TypeKind.Int64 or
             TypeKind.Float32 or TypeKind.Float64 or TypeKind.Boolean or
             TypeKind.Timestamp or TypeKind.Duration => true,
-            TypeKind.Enum => ci != null && ci.IsFlatEnum(type.Name),
+            TypeKind.Enum => ci != null && (ci.IsFlatEnum(type.Name) || useNativeUnions),
             _ => false
         };
     }

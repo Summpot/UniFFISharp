@@ -22,7 +22,7 @@ public class AsyncStreamDescriptor
 
 public static class AsyncStreamHeuristic
 {
-    public static AsyncStreamDescriptor? Detect(ObjectMetadata obj, ComponentInterface ci)
+    public static AsyncStreamDescriptor? Detect(ObjectMetadata obj, ComponentInterface ci, bool useNativeUnions = false)
     {
         // 1. Must be an Object (guaranteed by ObjectMetadata)
         // 2. Contains a method whose name matches "next" (case-insensitive or OrigName)
@@ -43,7 +43,7 @@ public static class AsyncStreamHeuristic
 
         var itemType = nextMethod.ReturnType!.InnerType!;
         string csItemType = TypeHelper.ToCSharpType(itemType);
-        bool isValueType = TypeHelper.IsCSharpValueType(itemType, ci);
+        bool isValueType = TypeHelper.IsCSharpValueType(itemType, ci, useNativeUnions);
 
         return new AsyncStreamDescriptor(nextMethod, itemType, csItemType, isValueType);
     }
