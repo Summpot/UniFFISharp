@@ -5,6 +5,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <UniFFINamespace>MyCompany.Sdk;sub_alpha=Security;sub_legacy=global::LegacyVendor</UniFFINamespace>
     <_UniFFINamespaceEncoded>$([System.Uri]::EscapeDataString('$(UniFFINamespace)'))</_UniFFINamespaceEncoded>
   </PropertyGroup>

@@ -71,7 +71,7 @@ public static class CodeGenerator
         // 4. Records
         foreach (var rec in ci.Records)
         {
-            GenerateRecord(cb, rec, crateNorm, namespaceResolver);
+            GenerateRecord(cb, rec, crateNorm, ci, namespaceResolver);
         }
 
         // 5. Enums
@@ -230,8 +230,8 @@ public static class CodeGenerator
             }
             cb.AppendLine();
             cb.AppendLine("public override int AllocationSize(string value) => 4 + Encoding.UTF8.GetByteCount(value ?? string.Empty);");
-            cb.AppendLine("public override void Write(string value, BigEndianStream stream) => stream.WriteString(value ?? string.Empty);");
-            cb.AppendLine("public override string Read(BigEndianStream stream) => stream.ReadString();");
+            cb.AppendLine("public override void Write(string value, ref BigEndianStream stream) => stream.WriteString(value ?? string.Empty);");
+            cb.AppendLine("public override string Read(ref BigEndianStream stream) => stream.ReadString();");
         }
         cb.AppendLine();
 
@@ -243,7 +243,7 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine("public override int AllocationSize(byte[] value) => 4 + (value?.Length ?? 0);");
-            using (cb.Block("public override void Write(byte[] value, BigEndianStream stream)"))
+            using (cb.Block("public override void Write(byte[] value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
                 {
@@ -253,7 +253,7 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Length);");
                 cb.AppendLine("stream.WriteBytes(value);");
             }
-            using (cb.Block("public override byte[] Read(BigEndianStream stream)"))
+            using (cb.Block("public override byte[] Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int length = stream.ReadInt32();");
                 cb.AppendLine("return stream.ReadBytes(length);");
@@ -269,14 +269,14 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine("public override int AllocationSize(DateTimeOffset value) => 12;");
-            using (cb.Block("public override void Write(DateTimeOffset value, BigEndianStream stream)"))
+            using (cb.Block("public override void Write(DateTimeOffset value, ref BigEndianStream stream)"))
             {
                 cb.AppendLine("long seconds = value.ToUnixTimeSeconds();");
                 cb.AppendLine("uint nanos = (uint)((value.Ticks % TimeSpan.TicksPerSecond) * 100);");
                 cb.AppendLine("stream.WriteInt64(seconds);");
                 cb.AppendLine("stream.WriteUInt32(nanos);");
             }
-            using (cb.Block("public override DateTimeOffset Read(BigEndianStream stream)"))
+            using (cb.Block("public override DateTimeOffset Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("long seconds = stream.ReadInt64();");
                 cb.AppendLine("uint nanos = stream.ReadUInt32();");
@@ -293,14 +293,14 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine("public override int AllocationSize(TimeSpan value) => 12;");
-            using (cb.Block("public override void Write(TimeSpan value, BigEndianStream stream)"))
+            using (cb.Block("public override void Write(TimeSpan value, ref BigEndianStream stream)"))
             {
                 cb.AppendLine("ulong seconds = (ulong)(value.Ticks / TimeSpan.TicksPerSecond);");
                 cb.AppendLine("uint nanos = (uint)((value.Ticks % TimeSpan.TicksPerSecond) * 100);");
                 cb.AppendLine("stream.WriteUInt64(seconds);");
                 cb.AppendLine("stream.WriteUInt32(nanos);");
             }
-            using (cb.Block("public override TimeSpan Read(BigEndianStream stream)"))
+            using (cb.Block("public override TimeSpan Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("ulong seconds = stream.ReadUInt64();");
                 cb.AppendLine("uint nanos = stream.ReadUInt32();");
@@ -373,7 +373,7 @@ public static class CodeGenerator
                 cb.AppendLine($"return 1 + {innerConverter}.AllocationSize({valExpr});");
             }
             cb.AppendLine();
-            using (cb.Block($"public override void Write({innerCsType}? value, BigEndianStream stream)"))
+            using (cb.Block($"public override void Write({innerCsType}? value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
                 {
@@ -382,16 +382,16 @@ public static class CodeGenerator
                 }
                 cb.AppendLine("stream.WriteUInt8(1);");
                 string valExpr = isVal ? "value.Value" : "value!";
-                cb.AppendLine($"{innerConverter}.Write({valExpr}, stream);");
+                cb.AppendLine($"{innerConverter}.Write({valExpr}, ref stream);");
             }
             cb.AppendLine();
-            using (cb.Block($"public override {innerCsType}? Read(BigEndianStream stream)"))
+            using (cb.Block($"public override {innerCsType}? Read(ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (stream.ReadUInt8() == 0)"))
                 {
                     cb.AppendLine("return null;");
                 }
-                cb.AppendLine($"return {innerConverter}.Read(stream);");
+                cb.AppendLine($"return {innerConverter}.Read(ref stream);");
             }
         }
         cb.AppendLine();
@@ -422,7 +422,7 @@ public static class CodeGenerator
                 cb.AppendLine("return size;");
             }
             cb.AppendLine();
-            using (cb.Block($"public override void Write(List<{innerCsType}> value, BigEndianStream stream)"))
+            using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
                 {
@@ -432,17 +432,17 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Count);");
                 using (cb.Block("foreach (var item in value)"))
                 {
-                    cb.AppendLine($"{innerConverter}.Write(item, stream);");
+                    cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
                 }
             }
             cb.AppendLine();
-            using (cb.Block($"public override List<{innerCsType}> Read(BigEndianStream stream)"))
+            using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
                 cb.AppendLine($"var list = new List<{innerCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
-                    cb.AppendLine($"list.Add({innerConverter}.Read(stream));");
+                    cb.AppendLine($"list.Add({innerConverter}.Read(ref stream));");
                 }
                 cb.AppendLine("return list;");
             }
@@ -478,7 +478,7 @@ public static class CodeGenerator
                 cb.AppendLine("return size;");
             }
             cb.AppendLine();
-            using (cb.Block($"public override void Write(Dictionary<{keyCsType}, {valCsType}> value, BigEndianStream stream)"))
+            using (cb.Block($"public override void Write(Dictionary<{keyCsType}, {valCsType}> value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
                 {
@@ -488,19 +488,19 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Count);");
                 using (cb.Block("foreach (var kv in value)"))
                 {
-                    cb.AppendLine($"{keyConverter}.Write(kv.Key, stream);");
-                    cb.AppendLine($"{valConverter}.Write(kv.Value, stream);");
+                    cb.AppendLine($"{keyConverter}.Write(kv.Key, ref stream);");
+                    cb.AppendLine($"{valConverter}.Write(kv.Value, ref stream);");
                 }
             }
             cb.AppendLine();
-            using (cb.Block($"public override Dictionary<{keyCsType}, {valCsType}> Read(BigEndianStream stream)"))
+            using (cb.Block($"public override Dictionary<{keyCsType}, {valCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
                 cb.AppendLine($"var dict = new Dictionary<{keyCsType}, {valCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
-                    cb.AppendLine($"var k = {keyConverter}.Read(stream);");
-                    cb.AppendLine($"var v = {valConverter}.Read(stream);");
+                    cb.AppendLine($"var k = {keyConverter}.Read(ref stream);");
+                    cb.AppendLine($"var v = {valConverter}.Read(ref stream);");
                     cb.AppendLine("dict[k] = v;");
                 }
                 cb.AppendLine("return dict;");
@@ -534,7 +534,7 @@ public static class CodeGenerator
                 cb.AppendLine("return size;");
             }
             cb.AppendLine();
-            using (cb.Block($"public override void Write(HashSet<{innerCsType}> value, BigEndianStream stream)"))
+            using (cb.Block($"public override void Write(HashSet<{innerCsType}> value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
                 {
@@ -544,17 +544,17 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Count);");
                 using (cb.Block("foreach (var item in value)"))
                 {
-                    cb.AppendLine($"{innerConverter}.Write(item, stream);");
+                    cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
                 }
             }
             cb.AppendLine();
-            using (cb.Block($"public override HashSet<{innerCsType}> Read(BigEndianStream stream)"))
+            using (cb.Block($"public override HashSet<{innerCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
                 cb.AppendLine($"var set = new HashSet<{innerCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
-                    cb.AppendLine($"set.Add({innerConverter}.Read(stream));");
+                    cb.AppendLine($"set.Add({innerConverter}.Read(ref stream));");
                 }
                 cb.AppendLine("return set;");
             }
@@ -682,12 +682,15 @@ public static class CodeGenerator
 
             // RustBuffer FFI imports
             cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rustbuffer_alloc\", CallingConvention = CallingConvention.Cdecl)]");
+            cb.AppendLine("[SuppressGCTransition]");
             cb.AppendLine($"public static extern RustBuffer ffi_{crateNorm}_rustbuffer_alloc(ulong size, ref UniffiRustCallStatus status);");
             cb.AppendLine();
             cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rustbuffer_free\", CallingConvention = CallingConvention.Cdecl)]");
+            cb.AppendLine("[SuppressGCTransition]");
             cb.AppendLine($"public static extern void ffi_{crateNorm}_rustbuffer_free(RustBuffer buffer, ref UniffiRustCallStatus status);");
             cb.AppendLine();
             cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_uniffi_contract_version\", CallingConvention = CallingConvention.Cdecl)]");
+            cb.AppendLine("[SuppressGCTransition]");
             cb.AppendLine($"public static extern uint ffi_{crateNorm}_uniffi_contract_version();");
             cb.AppendLine();
 
@@ -707,6 +710,7 @@ public static class CodeGenerator
                 cb.AppendLine($"public static extern {completeFfi} ffi_{crateNorm}_rust_future_complete_{suffix}(ulong handle, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rust_future_free_{suffix}\", CallingConvention = CallingConvention.Cdecl)]");
+                cb.AppendLine("[SuppressGCTransition]");
                 cb.AppendLine($"public static extern void ffi_{crateNorm}_rust_future_free_{suffix}(ulong handle);");
                 cb.AppendLine();
             }
@@ -728,6 +732,7 @@ public static class CodeGenerator
                 if (fn.Checksum.HasValue)
                 {
                     cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_checksum_func_{fnLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                    cb.AppendLine("[SuppressGCTransition]");
                     cb.AppendLine($"public static extern ushort uniffi_{crateNorm}_checksum_func_{fnLower}();");
                     cb.AppendLine();
                 }
@@ -762,9 +767,11 @@ public static class CodeGenerator
                 string objLower = TypeHelper.SanitizeIdentifier(obj.Name.ToLowerInvariant());
 
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_clone_{objLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                cb.AppendLine("[SuppressGCTransition]");
                 cb.AppendLine($"public static extern IntPtr uniffi_{crateNorm}_fn_clone_{objLower}(IntPtr ptr, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_free_{objLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                cb.AppendLine("[SuppressGCTransition]");
                 cb.AppendLine($"public static extern void uniffi_{crateNorm}_fn_free_{objLower}(IntPtr ptr, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
 
@@ -1184,13 +1191,13 @@ public static class CodeGenerator
             cb.AppendLine($"public override ulong Lower({ifaceName} value) => handleMap.Insert(value);");
             cb.AppendLine($"public override {ifaceName} Lift(ulong value) => handleMap.Get(value);");
             cb.AppendLine($"public override int AllocationSize({ifaceName} value) => 8;");
-            cb.AppendLine($"public override void Write({ifaceName} value, BigEndianStream stream) => stream.WriteUInt64(Lower(value));");
-            cb.AppendLine($"public override {ifaceName} Read(BigEndianStream stream) => Lift(stream.ReadUInt64());");
+            cb.AppendLine($"public override void Write({ifaceName} value, ref BigEndianStream stream) => stream.WriteUInt64(Lower(value));");
+            cb.AppendLine($"public override {ifaceName} Read(ref BigEndianStream stream) => Lift(stream.ReadUInt64());");
         }
         cb.AppendLine();
     }
 
-    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec, string crateNorm, Func<string, string>? namespaceResolver = null)
+    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null)
     {
         string recordName = TypeHelper.ToPascalCase(rec.Name);
 
@@ -1220,33 +1227,54 @@ public static class CodeGenerator
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine();
 
-            using (cb.Block($"public override int AllocationSize({recordName} value)"))
+            int staticSize = 0;
+            var dynamicFields = new List<FieldMetadata>();
+            foreach (var field in rec.Fields)
             {
-                cb.AppendLine("int size = 0;");
-                foreach (var field in rec.Fields)
+                if (TypeHelper.TryGetFixedAllocationSize(field.Type, ci, out int fSize))
                 {
-                    string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
-                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.AllocationSize({prop});");
+                    staticSize += fSize;
                 }
-                cb.AppendLine("return size;");
+                else
+                {
+                    dynamicFields.Add(field);
+                }
+            }
+
+            if (dynamicFields.Count == 0)
+            {
+                cb.AppendLine($"public override int AllocationSize({recordName} value) => {staticSize};");
+            }
+            else
+            {
+                using (cb.Block($"public override int AllocationSize({recordName} value)"))
+                {
+                    cb.AppendLine($"int size = {staticSize};");
+                    foreach (var field in dynamicFields)
+                    {
+                        string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
+                        cb.AppendLine($"size += {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.AllocationSize({prop});");
+                    }
+                    cb.AppendLine("return size;");
+                }
             }
             cb.AppendLine();
 
-            using (cb.Block($"public override void Write({recordName} value, BigEndianStream stream)"))
+            using (cb.Block($"public override void Write({recordName} value, ref BigEndianStream stream)"))
             {
                 foreach (var field in rec.Fields)
                 {
                     string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
-                    cb.AppendLine($"{TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Write({prop}, stream);");
+                    cb.AppendLine($"{TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Write({prop}, ref stream);");
                 }
             }
             cb.AppendLine();
 
-            using (cb.Block($"public override {recordName} Read(BigEndianStream stream)"))
+            using (cb.Block($"public override {recordName} Read(ref BigEndianStream stream)"))
             {
                 foreach (var field in rec.Fields)
                 {
-                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Read(stream);");
+                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Read(ref stream);");
                 }
                 cb.AppendLine($"return new {recordName}(");
                 cb.Indent();
@@ -1291,8 +1319,8 @@ public static class CodeGenerator
                 cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
                 cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
                 cb.AppendLine($"public override int AllocationSize({enumName} value) => 4;");
-                cb.AppendLine($"public override void Write({enumName} value, BigEndianStream stream) => stream.WriteInt32((int)value);");
-                using (cb.Block($"public override {enumName} Read(BigEndianStream stream)"))
+                cb.AppendLine($"public override void Write({enumName} value, ref BigEndianStream stream) => stream.WriteInt32((int)value);");
+                using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
                     cb.AppendLine($"return ({enumName})tag;");
@@ -1328,7 +1356,7 @@ public static class CodeGenerator
                     cb.AppendLine("return 4 + FfiConverterString.INSTANCE.AllocationSize(value.Message);");
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override void Write({enumName} value, BigEndianStream stream)"))
+                using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("switch (value)"))
                     {
@@ -1339,7 +1367,7 @@ public static class CodeGenerator
                             using (cb.Block($"case {enumName}.{vName}:"))
                             {
                                 cb.AppendLine($"stream.WriteInt32({i + 1});");
-                                cb.AppendLine("FfiConverterString.INSTANCE.Write(value.Message, stream);");
+                                cb.AppendLine("FfiConverterString.INSTANCE.Write(value.Message, ref stream);");
                                 cb.AppendLine("break;");
                             }
                         }
@@ -1350,10 +1378,10 @@ public static class CodeGenerator
                     }
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override {enumName} Read(BigEndianStream stream)"))
+                using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
-                    cb.AppendLine("string msg = FfiConverterString.INSTANCE.Read(stream);");
+                    cb.AppendLine("string msg = FfiConverterString.INSTANCE.Read(ref stream);");
                     using (cb.Block("return tag switch", ";"))
                     {
                         for (int i = 0; i < enm.Variants.Count; i++)
@@ -1441,7 +1469,7 @@ public static class CodeGenerator
                     cb.AppendLine("return size;");
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override void Write({enumName} value, BigEndianStream stream)"))
+                using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("switch (value)"))
                     {
@@ -1464,7 +1492,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, ref stream);");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1473,7 +1501,7 @@ public static class CodeGenerator
                     }
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override {enumName} Read(BigEndianStream stream)"))
+                using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
                     using (cb.Block("switch (tag)"))
@@ -1493,7 +1521,7 @@ public static class CodeGenerator
                                     var argReads = new List<string>();
                                     foreach (var f in v.Fields)
                                     {
-                                        argReads.Add($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(stream)");
+                                        argReads.Add($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(ref stream)");
                                     }
                                     cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", argReads)});");
                                 }
@@ -1608,7 +1636,7 @@ public static class CodeGenerator
                     cb.AppendLine("return size;");
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override void Write({enumName} value, BigEndianStream stream)"))
+                using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("switch (value)"))
                     {
@@ -1631,7 +1659,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, ref stream);");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1640,7 +1668,7 @@ public static class CodeGenerator
                     }
                 }
                 cb.AppendLine();
-                using (cb.Block($"public override {enumName} Read(BigEndianStream stream)"))
+                using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
                     using (cb.Block("switch (tag)"))
@@ -1667,7 +1695,7 @@ public static class CodeGenerator
                                     var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(stream);");
+                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(ref stream);");
                                     }
                                     var namedArgs = orderedFields.Select(f => $"{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}: _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')}");
                                     if (options.EffectiveUseNativeUnions)
@@ -2087,8 +2115,8 @@ public static class CodeGenerator
             cb.AppendLine($"public override IntPtr Lower({objName} value) => value != null ? value.ClonePointer() : IntPtr.Zero;");
             cb.AppendLine($"public override {objName} Lift(IntPtr value) => {objName}.CreateInternal(value);");
             cb.AppendLine($"public override int AllocationSize({objName} value) => 8;");
-            cb.AppendLine($"public override void Write({objName} value, BigEndianStream stream) => stream.WriteInt64(Lower(value).ToInt64());");
-            cb.AppendLine($"public override {objName} Read(BigEndianStream stream) => Lift((IntPtr)stream.ReadInt64());");
+            cb.AppendLine($"public override void Write({objName} value, ref BigEndianStream stream) => stream.WriteInt64(Lower(value).ToInt64());");
+            cb.AppendLine($"public override {objName} Read(ref BigEndianStream stream) => Lift((IntPtr)stream.ReadInt64());");
         }
         cb.AppendLine();
     }

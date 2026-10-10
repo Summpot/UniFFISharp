@@ -347,4 +347,62 @@ public static class TypeHelper
             _ => "RustBuffer"
         };
     }
+
+    public static bool TryGetFixedAllocationSize(UniFFIType type, ComponentInterface? ci, out int size)
+    {
+        switch (type.Kind)
+        {
+            case TypeKind.UInt8:
+            case TypeKind.Int8:
+            case TypeKind.Boolean:
+                size = 1;
+                return true;
+            case TypeKind.UInt16:
+            case TypeKind.Int16:
+                size = 2;
+                return true;
+            case TypeKind.UInt32:
+            case TypeKind.Int32:
+            case TypeKind.Float32:
+                size = 4;
+                return true;
+            case TypeKind.UInt64:
+            case TypeKind.Int64:
+            case TypeKind.Float64:
+            case TypeKind.Interface:
+            case TypeKind.CallbackInterface:
+                size = 8;
+                return true;
+            case TypeKind.Timestamp:
+            case TypeKind.Duration:
+                size = 12;
+                return true;
+            case TypeKind.Enum when ci != null && ci.IsFlatEnum(type.Name):
+                size = 4;
+                return true;
+            case TypeKind.Record when ci != null:
+                var rec = ci.Records.FirstOrDefault(r => r.Name == type.Name);
+                if (rec != null)
+                {
+                    int total = 0;
+                    foreach (var field in rec.Fields)
+                    {
+                        if (TryGetFixedAllocationSize(field.Type, ci, out int fieldSize))
+                        {
+                            total += fieldSize;
+                        }
+                        else
+                        {
+                            size = 0;
+                            return false;
+                        }
+                    }
+                    size = total;
+                    return true;
+                }
+                break;
+        }
+        size = 0;
+        return false;
+    }
 }

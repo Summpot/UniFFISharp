@@ -48,7 +48,6 @@ public class RustBufferBoundaryTests
         };
 
         var stream = buf.AsStream();
-        Assert.NotNull(stream);
         Assert.Equal(0, stream.Length);
         Assert.False(stream.HasRemaining());
     }
@@ -70,19 +69,35 @@ public class RustBufferBoundaryTests
     [Fact]
     public void TestBigEndianStreamNegativeCheckRemainingThrows()
     {
-        using var ms = new MemoryStream(new byte[] { 1, 2, 3 });
-        var stream = new BigEndianStream(ms);
-
-        Assert.Throws<ArgumentOutOfRangeException>(() => stream.CheckRemaining(-1));
+        byte[] buffer = new byte[] { 1, 2, 3 };
+        unsafe
+        {
+            fixed (byte* p = buffer)
+            {
+                var stream = new BigEndianStream(p, buffer.Length);
+                bool threw = false;
+                try { stream.CheckRemaining(-1); }
+                catch (ArgumentOutOfRangeException) { threw = true; }
+                Assert.True(threw);
+            }
+        }
     }
 
     [Fact]
     public void TestBigEndianStreamNegativeReadBytesThrows()
     {
-        using var ms = new MemoryStream(new byte[] { 1, 2, 3 });
-        var stream = new BigEndianStream(ms);
-
-        Assert.Throws<ArgumentOutOfRangeException>(() => stream.ReadBytes(-5));
+        byte[] buffer = new byte[] { 1, 2, 3 };
+        unsafe
+        {
+            fixed (byte* p = buffer)
+            {
+                var stream = new BigEndianStream(p, buffer.Length);
+                bool threw = false;
+                try { stream.ReadBytes(-5); }
+                catch (ArgumentOutOfRangeException) { threw = true; }
+                Assert.True(threw);
+            }
+        }
     }
 
     [Fact]
@@ -90,9 +105,16 @@ public class RustBufferBoundaryTests
     {
         // Encoded Int32 length = -1 (0xFF, 0xFF, 0xFF, 0xFF) followed by dummy payload
         byte[] payload = new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0x41, 0x42 };
-        using var ms = new MemoryStream(payload);
-        var stream = new BigEndianStream(ms);
-
-        Assert.Throws<StreamUnderflowException>(() => stream.ReadString());
+        unsafe
+        {
+            fixed (byte* p = payload)
+            {
+                var stream = new BigEndianStream(p, payload.Length);
+                bool threw = false;
+                try { stream.ReadString(); }
+                catch (StreamUnderflowException) { threw = true; }
+                Assert.True(threw);
+            }
+        }
     }
 }

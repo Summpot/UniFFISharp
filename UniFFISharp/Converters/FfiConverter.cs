@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UniFFISharp.Exceptions;
 using UniFFISharp.Streams;
 using UniFFISharp.Types;
@@ -9,9 +9,9 @@ public abstract class FfiConverter<TCsType, TFfiType>
 {
     public abstract TCsType Lift(TFfiType value);
     public abstract TFfiType Lower(TCsType value);
-    public abstract TCsType Read(BigEndianStream stream);
+    public abstract TCsType Read(ref BigEndianStream stream);
     public abstract int AllocationSize(TCsType value);
-    public abstract void Write(TCsType value, BigEndianStream stream);
+    public abstract void Write(TCsType value, ref BigEndianStream stream);
 }
 
 public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, RustBuffer>
@@ -25,7 +25,7 @@ public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, Ru
         try
         {
             var stream = rbuf.AsWriteableStream();
-            Write(value, stream);
+            Write(value, ref stream);
             rbuf.len = Convert.ToUInt64(stream.Position);
             return rbuf;
         }
@@ -41,7 +41,7 @@ public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, Ru
         var stream = rbuf.AsStream();
         try
         {
-            var item = Read(stream);
+            var item = Read(ref stream);
             if (stream.HasRemaining())
             {
                 throw new InternalException("junk remaining in buffer after lifting, something is very wrong!!");

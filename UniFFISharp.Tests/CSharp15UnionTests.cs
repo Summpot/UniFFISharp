@@ -88,7 +88,7 @@ public class CSharp15UnionTests
 
         // Optional converter treats native union as value type (value.Value)
         Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.AllocationSize(value.Value)", code);
-        Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.Write(value.Value, stream)", code);
+        Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.Write(value.Value, ref stream)", code);
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public class CSharp15UnionTests
 
         // Optional converter treats record class as reference type (value!)
         Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.AllocationSize(value!)", code);
-        Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.Write(value!, stream)", code);
+        Assert.Contains("FfiConverterTypeFlightCommand.INSTANCE.Write(value!, ref stream)", code);
     }
 
     [Fact]
