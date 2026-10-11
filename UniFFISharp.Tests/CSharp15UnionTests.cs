@@ -157,4 +157,21 @@ public class CSharp15UnionTests
         string codeNotSupported = CodeGenerator.Generate(ci, "drone.dll", null, optionsWithoutSupport);
         Assert.Contains("public abstract partial record FlightCommand", codeNotSupported);
     }
+
+    [Fact]
+    public void TestExplicitOverrideFalseDisablesNativeUnionsEvenWithPreviewAndSupport()
+    {
+        var ci = CreateTestComponentInterface();
+        var options = new CodeGeneratorOptions
+        {
+            LanguageVersion = LanguageVersion.Preview,
+            HasUnionAttributeSupport = true,
+            UseNativeUnions = false
+        };
+
+        Assert.False(options.EffectiveUseNativeUnions);
+        string code = CodeGenerator.Generate(ci, "drone.dll", null, options);
+        Assert.Contains("public abstract partial record FlightCommand", code);
+        Assert.DoesNotContain("public partial union FlightCommand", code);
+    }
 }

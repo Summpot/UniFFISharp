@@ -58,42 +58,42 @@ public static class CodeGenerator
         cb.AppendLine($"using _UniFFILib = _UniFFILib_{crateNorm};");
         cb.AppendLine();
 
-        // 1. Built-in Converters (String, ByteArray, Timestamp, Duration)
-        GenerateBuiltinConverters(cb);
+        // 1. Enums (Native unions first to keep offset minimal for partial union definitions)
+        foreach (var enm in ci.Enums.OrderBy(e => (options.EffectiveUseNativeUnions && e.Shape == EnumShape.Enum && e.Variants.Any(v => v.Fields.Count > 0)) ? 0 : 1))
+        {
+            GenerateEnum(cb, enm, crateNorm, namespaceResolver, options);
+        }
 
-        // 2. Composite Converters (Option, Sequence, Map, Set)
-        var compositeTypes = FindCompositeTypes(ci);
-        GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver, ci, options);
-
-        // 3. _UniFFILib P/Invoke class
-        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver);
-
-        // 4. Records
+        // 2. Records
         foreach (var rec in ci.Records)
         {
             GenerateRecord(cb, rec, crateNorm, ci, namespaceResolver);
         }
 
-        // 5. Enums
-        foreach (var enm in ci.Enums)
-        {
-            GenerateEnum(cb, enm, crateNorm, namespaceResolver, options);
-        }
-
-        // 6. Objects / Interfaces
+        // 3. Objects / Interfaces
         foreach (var obj in ci.Objects)
         {
             GenerateObject(cb, obj, crateNorm, ci, namespaceResolver, options);
         }
 
-        // 7. Callback Interfaces
+        // 4. Callback Interfaces
         foreach (var cbi in ci.CallbackInterfaces)
         {
             GenerateCallbackInterface(cb, cbi, crateNorm, namespaceResolver);
         }
 
-        // 8. Top-level Functions
+        // 5. Top-level Functions
         GenerateTopLevelMethods(cb, ci, ns, crateNorm, namespaceResolver);
+
+        // 6. Built-in Converters (String, ByteArray, Timestamp, Duration)
+        GenerateBuiltinConverters(cb);
+
+        // 7. Composite Converters (Option, Sequence, Map, Set)
+        var compositeTypes = FindCompositeTypes(ci);
+        GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver, ci, options);
+
+        // 8. _UniFFILib P/Invoke class
+        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver);
 
         return cb.ToString();
     }
@@ -710,7 +710,6 @@ public static class CodeGenerator
                 cb.AppendLine($"public static extern {completeFfi} ffi_{crateNorm}_rust_future_complete_{suffix}(ulong handle, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rust_future_free_{suffix}\", CallingConvention = CallingConvention.Cdecl)]");
-                cb.AppendLine("[SuppressGCTransition]");
                 cb.AppendLine($"public static extern void ffi_{crateNorm}_rust_future_free_{suffix}(ulong handle);");
                 cb.AppendLine();
             }
@@ -771,7 +770,6 @@ public static class CodeGenerator
                 cb.AppendLine($"public static extern IntPtr uniffi_{crateNorm}_fn_clone_{objLower}(IntPtr ptr, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_free_{objLower}\", CallingConvention = CallingConvention.Cdecl)]");
-                cb.AppendLine("[SuppressGCTransition]");
                 cb.AppendLine($"public static extern void uniffi_{crateNorm}_fn_free_{objLower}(IntPtr ptr, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
 

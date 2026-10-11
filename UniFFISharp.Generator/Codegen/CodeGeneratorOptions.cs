@@ -31,6 +31,6 @@ public class CodeGeneratorOptions
     public bool EffectiveUseNativeUnions =>
         UseNativeUnions ?? (
             ((int)LanguageVersion >= 1500 && LanguageVersion != LanguageVersion.Preview && LanguageVersion != LanguageVersion.Latest)
-            || ((LanguageVersion == LanguageVersion.Preview || LanguageVersion == LanguageVersion.Latest) && HasUnionAttributeSupport)
+            || (LanguageVersion == LanguageVersion.Preview && HasUnionAttributeSupport)
         );
 }

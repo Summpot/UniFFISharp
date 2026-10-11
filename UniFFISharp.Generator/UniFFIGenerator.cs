@@ -105,6 +105,22 @@ public class UniFFIGenerator : IIncrementalGenerator
                 return string.Empty;
             });
 
+        var useNativeUnionsProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property.UniFFIUseNativeUnions", out var raw) &&
+                    !string.IsNullOrWhiteSpace(raw))
+                {
+                    if (bool.TryParse(raw.Trim(), out var parsed))
+                    {
+                        return (bool?)parsed;
+                    }
+                }
+                return null;
+            });
+
+        var configProvider = namespaceProvider.Combine(useNativeUnionsProvider);
+
         var langVersionProvider = context.ParseOptionsProvider
             .Select((options, _) => options is CSharpParseOptions csOptions ? csOptions.LanguageVersion : LanguageVersion.Default);
 
@@ -114,18 +130,19 @@ public class UniFFIGenerator : IIncrementalGenerator
         var langAndSupportProvider = langVersionProvider.Combine(unionSupportProvider);
 
         var combinedProvider = stampProvider.Collect()
-            .Combine(namespaceProvider)
+            .Combine(configProvider)
             .Combine(langAndSupportProvider);
 
         context.RegisterSourceOutput(combinedProvider, (productionContext, pair) =>
         {
-            var ((stamps, customNamespace), (langVersion, hasUnionSupport)) = pair;
+            var ((stamps, (customNamespace, useNativeUnions)), (langVersion, hasUnionSupport)) = pair;
             var generatedCrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var nsConfig = new NamespaceConfig(customNamespace);
             var codeGenOptions = new CodeGeneratorOptions
             {
                 LanguageVersion = langVersion,
-                HasUnionAttributeSupport = hasUnionSupport
+                HasUnionAttributeSupport = hasUnionSupport,
+                UseNativeUnions = useNativeUnions
             };
 
             foreach (var stamp in stamps)
