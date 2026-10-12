@@ -214,20 +214,6 @@ public class UniFFIGenerator : IIncrementalGenerator
 #nullable enable
 namespace UniFFISharp
 {
-    internal enum InteropEngine
-    {
-        Auto = 0,
-        UniFFI = 1,
-        BoltFFI = 2
-    }
-
-    [global::System.AttributeUsage(global::System.AttributeTargets.Method | global::System.AttributeTargets.Class | global::System.AttributeTargets.Interface, AllowMultiple = false, Inherited = false)]
-    internal sealed class UniFFIPreferenceAttribute : global::System.Attribute
-    {
-        public InteropEngine Engine { get; }
-        public UniFFIPreferenceAttribute(InteropEngine engine) => Engine = engine;
-    }
-
     [global::System.AttributeUsage(global::System.AttributeTargets.Method | global::System.AttributeTargets.Class | global::System.AttributeTargets.Interface, AllowMultiple = false, Inherited = false)]
     internal sealed class PreferUniFFIAttribute : global::System.Attribute { }
 
@@ -619,30 +605,6 @@ namespace UniFFISharp
         {
             engine = InteropEngine.BoltFFI;
             return true;
-        }
-
-        if (string.Equals(attrName, "UniFFIPreferenceAttribute", StringComparison.Ordinal) ||
-            string.Equals(attrName, "UniFFIPreference", StringComparison.Ordinal))
-        {
-            if (attr.ConstructorArguments.Length > 0)
-            {
-                var arg = attr.ConstructorArguments[0].Value;
-                if (arg is int intVal)
-                {
-                    engine = (InteropEngine)intVal;
-                    return true;
-                }
-                if (arg is string strVal && Enum.TryParse<InteropEngine>(strVal, true, out var parsed))
-                {
-                    engine = parsed;
-                    return true;
-                }
-                if (arg != null && int.TryParse(arg.ToString(), out int parsedInt))
-                {
-                    engine = (InteropEngine)parsedInt;
-                    return true;
-                }
-            }
         }
 
         return false;

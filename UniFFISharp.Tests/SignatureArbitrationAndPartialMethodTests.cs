@@ -333,7 +333,7 @@ public class SignatureArbitrationAndPartialMethodTests
                 references: new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                    MetadataReference.CreateFromFile(typeof(UniFFIPreferenceAttribute).Assembly.Location)
+                    MetadataReference.CreateFromFile(typeof(PreferBoltFFIAttribute).Assembly.Location)
                 });
 
             driver = driver.AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(additionalText));
@@ -425,7 +425,7 @@ public class SignatureArbitrationAndPartialMethodTests
                 references: new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                    MetadataReference.CreateFromFile(typeof(UniFFIPreferenceAttribute).Assembly.Location)
+                    MetadataReference.CreateFromFile(typeof(PreferBoltFFIAttribute).Assembly.Location)
                 });
 
             var generator = new UniFFIGenerator();
