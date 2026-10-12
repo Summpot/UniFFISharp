@@ -137,7 +137,7 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains("internal struct FfiBuf", source);
         Assert.Contains("internal struct BoltFfiStatus", source);
         Assert.Contains("public class BoltFfiException : global::System.Exception", source);
-        Assert.Contains("internal sealed class WireReader", source);
+        Assert.Contains("class WireReader", source);
         Assert.Contains("internal sealed class WireWriter", source);
 
         // 3. Direct Struct (Blittable)
@@ -156,25 +156,25 @@ public class BoltFfiCodegenAndArbitrationTests
 
         // 5. Class Handle with IDisposable
         Assert.Contains("public partial class CanvasRenderer : IDisposable", source);
-        Assert.Contains("private long handle;", source);
+        Assert.Contains("private nint handle;", source);
         Assert.Contains("internal CanvasRenderer(nint handle, bool isHandle)", source);
-        Assert.Contains("internal nint GetHandle() => Handle;", source);
+        Assert.Contains("internal nint GetHandle()", source);
         Assert.Contains("NativeMethods.boltffi_class_release_canvas_renderer(", source);
 
         // 6. Native Methods
         Assert.Contains("internal static partial class NativeMethods", source);
         Assert.Contains("private const string NativeLib = \"geometry_core\";", source);
-        Assert.Contains("[DllImport(NativeLib, EntryPoint = \"boltffi_function_create_point\", CallingConvention = CallingConvention.Cdecl)]", source);
+        Assert.Contains("[DllImport(NativeLib, EntryPoint = \"boltffi_function_create_point\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]", source);
         Assert.Contains("internal static extern Point boltffi_function_create_point(double x, double y);", source);
-        Assert.Contains("[DllImport(NativeLib, EntryPoint = \"boltffi_class_release_canvas_renderer\", CallingConvention = CallingConvention.Cdecl)]", source);
+        Assert.Contains("[DllImport(NativeLib, EntryPoint = \"boltffi_class_release_canvas_renderer\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]", source);
         Assert.Contains("internal static extern void boltffi_class_release_canvas_renderer(nint handle);", source);
 
         // 7. Public Friendly Methods
         Assert.Contains("public static partial class GeometryCoreMethods", source);
         Assert.Contains("public static Point CreatePoint(double x, double y)", source);
-        Assert.Contains("public static async Task<string> RenderAsync(CanvasRenderer renderer, string title)", source);
+        Assert.Contains("public static unsafe async Task<string> RenderAsync(CanvasRenderer renderer, string title)", source);
         Assert.Contains("renderer.GetHandle()", source);
-        Assert.Contains("FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes(title ?? string.Empty))", source);
+        Assert.Contains("title_wire", source);
         Assert.Contains(".ReadString()", source);
     }
 
@@ -642,19 +642,18 @@ public class BoltFfiCodegenAndArbitrationTests
         // Verify class generation
         Assert.Contains("public partial class DatabaseSession : IDisposable", source);
         Assert.Contains("public DatabaseSession(string connStr)", source);
-        Assert.Contains(": this(NativeMethods.boltffi_database_session_new(", source);
-        Assert.Contains("public string Query(string sql)", source);
-        Assert.Contains("ThrowIfDisposed();", source);
-        Assert.Contains("NativeMethods.boltffi_database_session_query(Handle,", source);
-        Assert.Contains("public async Task<int> ExecuteAsync(string sql)", source);
+        Assert.Contains(": this(__Create_boltffi_database_session_new(connStr), true)", source);
+        Assert.Contains("public unsafe string Query(string sql)", source);
+        Assert.Contains("NativeMethods.boltffi_database_session_query(GetHandle(),", source);
+        Assert.Contains("public unsafe async Task<int> ExecuteAsync(string sql)", source);
         Assert.Contains("public void Close()", source);
-        Assert.Contains("NativeMethods.boltffi_database_session_close(Handle);", source);
+        Assert.Contains("NativeMethods.boltffi_database_session_close(GetHandle());", source);
         Assert.Contains("NativeMethods.boltffi_release_database_session(", source);
 
         // Verify NativeMethods
-        Assert.Contains("internal static extern nint boltffi_database_session_new(FfiBuf connStr);", source);
-        Assert.Contains("internal static extern FfiBuf boltffi_database_session_query(nint handle, FfiBuf sql);", source);
-        Assert.Contains("internal static extern int boltffi_database_session_execute_async(nint handle, FfiBuf sql);", source);
+        Assert.Contains("internal static extern nint boltffi_database_session_new(nint connStr_ptr, nuint connStr_len);", source);
+        Assert.Contains("internal static extern FfiBuf boltffi_database_session_query(nint handle, nint sql_ptr, nuint sql_len);", source);
+        Assert.Contains("internal static extern int boltffi_database_session_execute_async(nint handle, nint sql_ptr, nuint sql_len);", source);
         Assert.Contains("internal static extern void boltffi_database_session_close(nint handle);", source);
         Assert.Contains("internal static extern void boltffi_release_database_session(nint handle);", source);
 

@@ -1,6 +1,7 @@
 uniffi::setup_scaffolding!();
 
 #[derive(uniffi::Record, Clone, Copy, Debug)]
+#[repr(C)]
 #[boltffi::data]
 pub struct Point3D {
     pub x: f64,
@@ -9,6 +10,7 @@ pub struct Point3D {
 }
 
 #[derive(uniffi::Record, Clone, Copy, Debug)]
+#[repr(C)]
 #[boltffi::data]
 pub struct UserInfo {
     pub id: u64,
