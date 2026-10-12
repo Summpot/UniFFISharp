@@ -33,16 +33,10 @@
     <Analyzer Include="..\..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\AsmResolver*.dll" />
   </ItemGroup>
 
-  <!-- Copy native libraries to output directory -->
+  <!-- Copy auxiliary native libraries to output directory if present -->
   <ItemGroup>
-    <None Include="..\target\release\diplomat_bench.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Visible>false</Visible>
-    </None>
-    <None Include="..\target\release\csbindgen_bench.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Visible>false</Visible>
-    </None>
+    <None Include="..\target\release\*diplomat_bench.*" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\target\release\*csbindgen_bench.*" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
 </Project>

@@ -66,9 +66,13 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VER"
 
-      - name: Build Solution
+      - name: Build Project
         run: |
-          dotnet build UniFFISharp.slnx -c Release
+          dotnet build UniFFISharp/UniFFISharp.csproj -c Release
+
+      - name: Run Unit Tests
+        run: |
+          dotnet test UniFFISharp.Tests/UniFFISharp.Tests.csproj -c Release
 
       - name: Pack NuGet Package
         shell: bash
