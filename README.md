@@ -107,6 +107,26 @@ In the example above:
 - `sub_legacy` maps to `LegacyVendor`
 - Unconfigured sub-crates (e.g. `sub_beta`) map to `MyCompany.Sdk.SubBeta`
 
+## BoltFFI Dual-Engine Coexistence (v0.3.0+)
+
+UniFFISharp supports seamless coexistence between **UniFFI** and **BoltFFI** (`.boltffi` section, zero-copy blittable structs, direct P/Invoke calls).
+
+- **Zero-Config Upgrade (`PreferBoltFFI`)**: If a binary contains both UniFFI and BoltFFI contracts, BoltFFI automatically wins on colliding symbols in the same namespace with zero configuration required. Non-colliding UniFFI types remain generated.
+- **Inlined Lightweight Runtime**: Generated BoltFFI bindings inline `FfiBuf`, `BoltFfiStatus`, `WireReader`, and `WireWriter` directly into `.g.cs` files, requiring zero external runtime dependencies.
+- **Engine Control**:
+  ```xml
+  <PropertyGroup>
+    <!-- Engine selection: Auto (default), Dual, UniFFI, BoltFFI -->
+    <UniFFIEngine>Auto</UniFFIEngine>
+
+    <!-- Collision resolution: PreferBoltFFI (default), PreferUniFFI, Error (emits UFFI0020) -->
+    <UniFFIEnginePrefer>PreferBoltFFI</UniFFIEnginePrefer>
+
+    <!-- Optional: redirect BoltFFI to a separate namespace to generate both without collision -->
+    <BoltFFINamespace>MyCompany.Sdk.Bolt</BoltFFINamespace>
+  </PropertyGroup>
+  ```
+
 ## License
 
 MIT OR Apache-2.0

@@ -2,11 +2,17 @@
 
   <PropertyGroup>
     <UniFFIIsDirectReference>true</UniFFIIsDirectReference>
+    <UniFFIEngine Condition="'$(UniFFIEngine)' == ''">Auto</UniFFIEngine>
+    <UniFFIEnginePrefer Condition="'$(UniFFIEnginePrefer)' == ''">PreferBoltFFI</UniFFIEnginePrefer>
   </PropertyGroup>
 
   <ItemGroup>
     <CompilerVisibleProperty Include="UniFFINamespace" />
     <CompilerVisibleProperty Include="_UniFFINamespaceEncoded" />
+    <CompilerVisibleProperty Include="BoltFFINamespace" />
+    <CompilerVisibleProperty Include="_BoltFFINamespaceEncoded" />
+    <CompilerVisibleProperty Include="UniFFIEngine" />
+    <CompilerVisibleProperty Include="UniFFIEnginePrefer" />
     <CompilerVisibleProperty Include="UniFFIUseNativeUnions" />
     <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="UniFFI" />
   </ItemGroup>

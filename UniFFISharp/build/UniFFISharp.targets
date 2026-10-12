@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <_UniFFIImported>true</_UniFFIImported>
+    <UniFFIEngine Condition="'$(UniFFIEngine)' == ''">Auto</UniFFIEngine>
+    <UniFFIEnginePrefer Condition="'$(UniFFIEnginePrefer)' == ''">PreferBoltFFI</UniFFIEnginePrefer>
     <_UniFFINamespaceEncoded Condition="'$(UniFFINamespace)' != ''">$([System.Uri]::EscapeDataString('$(UniFFINamespace)'))</_UniFFINamespaceEncoded>
+    <_BoltFFINamespaceEncoded Condition="'$(BoltFFINamespace)' != ''">$([System.Uri]::EscapeDataString('$(BoltFFINamespace)'))</_BoltFFINamespaceEncoded>
   </PropertyGroup>
 
   <!-- ===================================================================== -->

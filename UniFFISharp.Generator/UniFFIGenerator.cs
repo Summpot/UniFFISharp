@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using UniFFISharp.Generator.Codegen;
+using UniFFISharp.Generator.Metadata.BoltFfi;
 using UniFFISharp.Generator.PeParser;
 
 [assembly: InternalsVisibleTo("UniFFISharp.Tests")]
@@ -18,6 +20,14 @@ namespace UniFFISharp.Generator;
 [Generator]
 public class UniFFIGenerator : IIncrementalGenerator
 {
+    private static readonly DiagnosticDescriptor SymbolCollisionDescriptor = new(
+        "UFFI0020",
+        "Symbol collision between UniFFI and BoltFFI",
+        "Symbol '{0}' is exported by both UniFFI and BoltFFI in namespace '{1}'. Configure <UniFFIEnginePrefer> to choose one or <BoltFFINamespace> to redirect.",
+        "UniFFISharp",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     static UniFFIGenerator()
     {
         try
@@ -105,6 +115,46 @@ public class UniFFIGenerator : IIncrementalGenerator
                 return string.Empty;
             });
 
+        var boltNamespaceProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property._BoltFFINamespaceEncoded", out var encoded) &&
+                    !string.IsNullOrWhiteSpace(encoded))
+                {
+                    return encoded.Trim();
+                }
+
+                if (options.GlobalOptions.TryGetValue("build_property.BoltFFINamespace", out var ns) &&
+                    !string.IsNullOrWhiteSpace(ns))
+                {
+                    return ns.Trim();
+                }
+
+                return string.Empty;
+            });
+
+        var engineProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property.UniFFIEngine", out var engine) &&
+                    !string.IsNullOrWhiteSpace(engine))
+                {
+                    return engine.Trim();
+                }
+                return "Auto";
+            });
+
+        var preferProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property.UniFFIEnginePrefer", out var prefer) &&
+                    !string.IsNullOrWhiteSpace(prefer))
+                {
+                    return prefer.Trim();
+                }
+                return "PreferBoltFFI";
+            });
+
         var useNativeUnionsProvider = context.AnalyzerConfigOptionsProvider
             .Select((options, _) =>
             {
@@ -119,13 +169,17 @@ public class UniFFIGenerator : IIncrementalGenerator
                 return null;
             });
 
-        var configProvider = namespaceProvider.Combine(useNativeUnionsProvider);
-
         var langVersionProvider = context.ParseOptionsProvider
             .Select((options, _) => options is CSharpParseOptions csOptions ? csOptions.LanguageVersion : LanguageVersion.Default);
 
         var unionSupportProvider = context.CompilationProvider
             .Select((compilation, _) => compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.UnionAttribute") != null);
+
+        var configProvider = namespaceProvider
+            .Combine(boltNamespaceProvider)
+            .Combine(engineProvider)
+            .Combine(preferProvider)
+            .Combine(useNativeUnionsProvider);
 
         var langAndSupportProvider = langVersionProvider.Combine(unionSupportProvider);
 
@@ -135,9 +189,13 @@ public class UniFFIGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(combinedProvider, (productionContext, pair) =>
         {
-            var ((stamps, (customNamespace, useNativeUnions)), (langVersion, hasUnionSupport)) = pair;
-            var generatedCrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var ((stamps, ((((customNamespace, boltNamespace), engineMode), preferMode), useNativeUnions)), (langVersion, hasUnionSupport)) = pair;
+            var generatedUniFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var generatedBoltFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             var nsConfig = new NamespaceConfig(customNamespace);
+            var boltNsConfig = string.IsNullOrWhiteSpace(boltNamespace) ? nsConfig : new NamespaceConfig(boltNamespace);
+
             var codeGenOptions = new CodeGeneratorOptions
             {
                 LanguageVersion = langVersion,
@@ -145,19 +203,22 @@ public class UniFFIGenerator : IIncrementalGenerator
                 UseNativeUnions = useNativeUnions
             };
 
+            bool enableUniFFI = !string.Equals(engineMode, "BoltFFI", StringComparison.OrdinalIgnoreCase);
+            bool enableBoltFFI = !string.Equals(engineMode, "UniFFI", StringComparison.OrdinalIgnoreCase);
+
             foreach (var stamp in stamps)
             {
                 var libPath = LibraryPathFromStamp(stamp);
                 if (libPath == null || !File.Exists(libPath))
                     continue;
 
-                var ciList = PeMetadataExtractor.ExtractAll(libPath);
-                if (ciList == null || ciList.Count == 0)
+                var ciList = enableUniFFI ? PeMetadataExtractor.ExtractAll(libPath) : Array.Empty<Metadata.ComponentInterface>();
+                var boltEnvelopes = enableBoltFFI ? BoltFfiMetadataExtractor.ExtractAll(libPath) : Array.Empty<BoltFfiMetadataEnvelope>();
+
+                if ((ciList == null || ciList.Count == 0) && (boltEnvelopes == null || boltEnvelopes.Count == 0))
                     continue;
 
-                var validCis = ciList.Where(c => !c.IsEmpty).ToList();
-                if (validCis.Count == 0)
-                    continue;
+                var validCis = ciList != null ? ciList.Where(c => !c.IsEmpty).ToList() : new List<Metadata.ComponentInterface>();
 
                 for (int i = 0; i < validCis.Count; i++)
                 {
@@ -181,16 +242,99 @@ public class UniFFIGenerator : IIncrementalGenerator
                     return nsConfig.ResolveNamespace(norm, false);
                 };
 
+                // Collision detection and arbitration
+                if (boltEnvelopes != null && boltEnvelopes.Count > 0)
+                {
+                    foreach (var env in boltEnvelopes)
+                    {
+                        if (env.Bindings.Native == null) continue;
+                        string crateNorm = env.Package.PackageName.Replace('-', '_');
+                        string boltTargetNs = boltNsConfig.ResolveNamespace(crateNorm, true);
+
+                        var boltSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var decl in env.Bindings.Native.Decls)
+                        {
+                            if (!string.IsNullOrEmpty(decl.DeclName))
+                            {
+                                boltSymbols.Add(decl.DeclName);
+                            }
+                        }
+                        boltSymbols.Add($"{TypeHelper.ToPascalCase(crateNorm)}Methods");
+
+                        // Check collision against UniFFI CI
+                        var matchedCi = validCis.FirstOrDefault(c => string.Equals(c.CrateName.Replace('-', '_'), crateNorm, StringComparison.OrdinalIgnoreCase));
+                        if (matchedCi != null)
+                        {
+                            bool sameNamespace = string.Equals(matchedCi.Namespace, boltTargetNs, StringComparison.OrdinalIgnoreCase);
+                            if (sameNamespace)
+                            {
+                                if (string.Equals(preferMode, "Error", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    foreach (var sym in boltSymbols)
+                                    {
+                                        if (matchedCi.Records.Any(r => string.Equals(r.Name, sym, StringComparison.OrdinalIgnoreCase)) ||
+                                            matchedCi.Enums.Any(e => string.Equals(e.Name, sym, StringComparison.OrdinalIgnoreCase)) ||
+                                            matchedCi.Objects.Any(o => string.Equals(o.Name, sym, StringComparison.OrdinalIgnoreCase)) ||
+                                            matchedCi.CallbackInterfaces.Any(ci => string.Equals(ci.Name, sym, StringComparison.OrdinalIgnoreCase)))
+                                        {
+                                            productionContext.ReportDiagnostic(Diagnostic.Create(
+                                                SymbolCollisionDescriptor,
+                                                Location.None,
+                                                sym,
+                                                matchedCi.Namespace));
+                                        }
+                                    }
+                                }
+                                else if (string.Equals(preferMode, "PreferUniFFI", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    // Drop colliding symbols from BoltFFI
+                                    env.Bindings.Native.Decls.RemoveAll(d =>
+                                        matchedCi.Records.Any(r => string.Equals(r.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)) ||
+                                        matchedCi.Enums.Any(e => string.Equals(e.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)) ||
+                                        matchedCi.Objects.Any(o => string.Equals(o.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)) ||
+                                        matchedCi.CallbackInterfaces.Any(ci => string.Equals(ci.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)));
+                                }
+                                else
+                                {
+                                    // Default: PreferBoltFFI -> drop colliding symbols from UniFFI
+                                    matchedCi.Records.RemoveAll(r => boltSymbols.Contains(r.Name));
+                                    matchedCi.Enums.RemoveAll(e => boltSymbols.Contains(e.Name));
+                                    matchedCi.Objects.RemoveAll(o => boltSymbols.Contains(o.Name));
+                                    matchedCi.CallbackInterfaces.RemoveAll(ci => boltSymbols.Contains(ci.Name));
+                                    if (boltSymbols.Contains($"{TypeHelper.ToPascalCase(crateNorm)}Methods"))
+                                    {
+                                        matchedCi.Functions.Clear();
+                                    }
+                                }
+                            }
+                        }
+
+                        // Emit BoltFFI bindings
+                        if (generatedBoltFFICrates.Add(crateNorm))
+                        {
+                            string boltSource = BoltFfiCodeGenerator.Generate(env, Path.GetFileName(libPath), boltTargetNs);
+                            if (!string.IsNullOrEmpty(boltSource))
+                            {
+                                productionContext.AddSource(
+                                    $"BoltFFIBindings.{crateNorm}.g.cs",
+                                    SourceText.From(boltSource, Encoding.UTF8));
+                            }
+                        }
+                    }
+                }
+
+                // Emit remaining UniFFI bindings
                 foreach (var ci in validCis)
                 {
+                    if (ci.IsEmpty) continue;
                     string crateNorm = ci.CrateName.Replace('-', '_');
-                    if (!generatedCrates.Add(crateNorm))
+                    if (!generatedUniFFICrates.Add(crateNorm))
                         continue;
 
                     string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver, codeGenOptions);
                     productionContext.AddSource(
                         $"UniFFIBindings.{crateNorm}.g.cs",
-                        SourceText.From(source, System.Text.Encoding.UTF8));
+                        SourceText.From(source, Encoding.UTF8));
                 }
             }
         });
