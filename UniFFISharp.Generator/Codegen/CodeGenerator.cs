@@ -67,7 +67,7 @@ public static class CodeGenerator
         // 2. Records
         foreach (var rec in ci.Records)
         {
-            GenerateRecord(cb, rec, crateNorm, ci, namespaceResolver);
+            GenerateRecord(cb, rec, crateNorm, ci, namespaceResolver, options);
         }
 
         // 3. Objects / Interfaces
@@ -83,7 +83,7 @@ public static class CodeGenerator
         }
 
         // 5. Top-level Functions
-        GenerateTopLevelMethods(cb, ci, ns, crateNorm, namespaceResolver);
+        GenerateTopLevelMethods(cb, ci, ns, crateNorm, namespaceResolver, options.MethodConfigs);
 
         // 6. Built-in Converters (String, ByteArray, Timestamp, Duration)
         GenerateBuiltinConverters(cb);
@@ -1195,26 +1195,33 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null)
+    private static void GenerateRecord(CSharpCodeBuilder cb, RecordMetadata rec, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null, CodeGeneratorOptions? options = null)
     {
         string recordName = TypeHelper.ToPascalCase(rec.Name);
 
-        // Record Declaration
-        AppendDocComment(cb, rec.Docstring);
-        var orderedFields = rec.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
-        foreach (var field in orderedFields)
-        {
-            AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name)), field.Docstring);
-        }
+        bool suppressDecl = options?.SuppressTypeDefinitions != null &&
+            (options.SuppressTypeDefinitions.Contains(rec.Name) || options.SuppressTypeDefinitions.Contains(recordName));
 
-        var paramDecls = new List<string>();
-        foreach (var field in orderedFields)
+        var orderedFields = rec.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+
+        if (!suppressDecl)
         {
-            string def = field.DefaultValue != null ? $" = {field.DefaultValue}" : "";
-            paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
+            // Record Declaration
+            AppendDocComment(cb, rec.Docstring);
+            foreach (var field in orderedFields)
+            {
+                AppendParamComment(cb, TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name)), field.Docstring);
+            }
+
+            var paramDecls = new List<string>();
+            foreach (var field in orderedFields)
+            {
+                string def = field.DefaultValue != null ? $" = {field.DefaultValue}" : "";
+                paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
+            }
+            cb.AppendLine($"public partial record {recordName}({string.Join(", ", paramDecls)});");
+            cb.AppendLine();
         }
-        cb.AppendLine($"public partial record {recordName}({string.Join(", ", paramDecls)});");
-        cb.AppendLine();
 
         // Record Converter
         using (cb.Block($"public sealed partial class FfiConverterType{recordName} : FfiConverterRustBuffer<{recordName}>"))
@@ -2119,13 +2126,36 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateTopLevelMethods(CSharpCodeBuilder cb, ComponentInterface ci, string ns, string crateNorm, Func<string, string>? namespaceResolver = null)
+    private static void GenerateTopLevelMethods(CSharpCodeBuilder cb, ComponentInterface ci, string ns, string crateNorm, Func<string, string>? namespaceResolver = null, Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null)
     {
         string className = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
 
+        var fnsToEmit = new List<(FnMetadata fn, bool isPartial)>();
+        foreach (var fn in ci.Functions)
+        {
+            string pascal = TypeHelper.ToPascalCase(fn.Name);
+            bool emit = true;
+            bool isPartial = false;
+            if (methodConfigs != null)
+            {
+                if (methodConfigs.TryGetValue(pascal, out var cfg) ||
+                    methodConfigs.TryGetValue(fn.Name, out cfg))
+                {
+                    emit = cfg.EmitMethod;
+                    isPartial = cfg.IsPartial;
+                }
+            }
+            if (emit)
+            {
+                fnsToEmit.Add((fn, isPartial));
+            }
+        }
+
+        if (fnsToEmit.Count == 0) return;
+
         using (cb.Block($"public static partial class {className}"))
         {
-            foreach (var fn in ci.Functions)
+            foreach (var (fn, isPartial) in fnsToEmit)
             {
                 AppendDocComment(cb, fn.Docstring);
                 foreach (var p in fn.Inputs)
@@ -2156,11 +2186,12 @@ public static class CodeGenerator
                 string methodName = TypeHelper.ToPascalCase(fn.Name);
                 if (fn.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
                 string errorHandler = fn.Throws != null ? TypeHelper.ConverterInstance(fn.Throws, crateNorm, namespaceResolver) : "NullCallStatusErrorHandler.INSTANCE";
+                string partialMod = isPartial ? "partial " : "";
 
                 if (fn.IsAsync)
                 {
                     string suffix = TypeHelper.FutureSuffix(fn.ReturnType);
-                    using (cb.Block($"public static async {retType} {methodName}({string.Join(", ", paramDecls)})"))
+                    using (cb.Block($"public static {partialMod}async {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine($"ulong futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
                         if (fn.ReturnType == null)
@@ -2194,7 +2225,7 @@ public static class CodeGenerator
                 else
                 {
                     callArgs.Add("ref status");
-                    using (cb.Block($"public static {retType} {methodName}({string.Join(", ", paramDecls)})"))
+                    using (cb.Block($"public static {partialMod}{retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");
                         if (fn.ReturnType == null)

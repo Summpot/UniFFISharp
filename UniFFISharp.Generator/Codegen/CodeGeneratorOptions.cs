@@ -33,4 +33,27 @@ public class CodeGeneratorOptions
             ((int)LanguageVersion >= 1500 && LanguageVersion != LanguageVersion.Preview && LanguageVersion != LanguageVersion.Latest)
             || (LanguageVersion == LanguageVersion.Preview && HasUnionAttributeSupport)
         );
+
+    /// <summary>
+    /// Per-method emission decisions (EmitMethod, IsPartial) indexed by method name or function name.
+    /// </summary>
+    public System.Collections.Generic.Dictionary<string, Arbitration.MethodEmissionConfig>? MethodConfigs { get; set; }
+
+    /// <summary>
+    /// Set of type names (records, enums, etc.) whose type declarations should be suppressed
+    /// (e.g. because they are provided by BoltFFI), while still generating converters.
+    /// </summary>
+    public System.Collections.Generic.HashSet<string>? SuppressTypeDefinitions { get; set; }
+
+    public CodeGeneratorOptions Clone()
+    {
+        return new CodeGeneratorOptions
+        {
+            LanguageVersion = this.LanguageVersion,
+            HasUnionAttributeSupport = this.HasUnionAttributeSupport,
+            UseNativeUnions = this.UseNativeUnions,
+            MethodConfigs = this.MethodConfigs != null ? new System.Collections.Generic.Dictionary<string, Arbitration.MethodEmissionConfig>(this.MethodConfigs, System.StringComparer.OrdinalIgnoreCase) : null,
+            SuppressTypeDefinitions = this.SuppressTypeDefinitions != null ? new System.Collections.Generic.HashSet<string>(this.SuppressTypeDefinitions, System.StringComparer.OrdinalIgnoreCase) : null
+        };
+    }
 }

@@ -18,7 +18,9 @@ public static class BoltFfiCodeGenerator
     public static string Generate(
         BoltFfiMetadataEnvelope envelope,
         string libraryFileName,
-        string targetNamespace)
+        string targetNamespace,
+        Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null,
+        HashSet<string>? suppressTypeDefinitions = null)
     {
         var native = envelope.Bindings.Native;
         if (native == null) return string.Empty;
@@ -56,6 +58,12 @@ public static class BoltFfiCodeGenerator
         // 4. Data Types (Records, Enums, Classes, Callbacks)
         foreach (var decl in native.Decls)
         {
+            if (suppressTypeDefinitions != null && !string.IsNullOrEmpty(decl.DeclName) &&
+                suppressTypeDefinitions.Contains(decl.DeclName))
+            {
+                continue;
+            }
+
             if (decl.Kind == BoltFfiDeclKind.Record && decl.Record != null)
             {
                 EmitRecord(sb, decl.Record);
@@ -66,7 +74,7 @@ public static class BoltFfiCodeGenerator
             }
             else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
             {
-                EmitClass(sb, decl.Class);
+                EmitClass(sb, decl.Class, methodConfigs);
             }
             else if (decl.Kind == BoltFfiDeclKind.Callback && decl.Callback != null)
             {
@@ -78,7 +86,7 @@ public static class BoltFfiCodeGenerator
         EmitNativeMethods(sb, native.Decls, libraryFileName);
 
         // 6. Public Friendly Methods Class
-        EmitPublicMethods(sb, native.Decls, cratePascal);
+        EmitPublicMethods(sb, native.Decls, cratePascal, methodConfigs);
 
         sb.AppendLine("}"); // end namespace
 
@@ -622,7 +630,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
     }
 
-    private static void EmitClass(StringBuilder sb, BoltFfiClassDecl classDecl)
+    private static void EmitClass(StringBuilder sb, BoltFfiClassDecl classDecl, Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null)
     {
         string className = classDecl.Name.ToPascalCase();
         if (string.IsNullOrEmpty(className)) return;
@@ -711,7 +719,19 @@ public static class BoltFfiCodeGenerator
                 publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
             }
 
-            EmitMethod(sb, "        ", m, publicParams, new List<string> { "GetHandle()" }, methodName, retType, isStatic: false, isAsync: m.IsAsync);
+            bool isPartial = false;
+            if (methodConfigs != null)
+            {
+                string qualifiedName = $"{className}.{methodName}";
+                if (methodConfigs.TryGetValue(qualifiedName, out var cfg) ||
+                    methodConfigs.TryGetValue(methodName, out cfg) ||
+                    methodConfigs.TryGetValue(m.Name.ToSnakeCase(), out cfg))
+                {
+                    isPartial = cfg.IsPartial;
+                }
+            }
+
+            EmitMethod(sb, "        ", m, publicParams, new List<string> { "GetHandle()" }, methodName, retType, isStatic: false, isAsync: m.IsAsync, isPartial: isPartial);
         }
 
         // 3. Dispose and Finalizer
@@ -953,7 +973,8 @@ public static class BoltFfiCodeGenerator
         string methodName,
         string retType,
         bool isStatic,
-        bool isAsync)
+        bool isAsync,
+        bool isPartial = false)
     {
         // Preparation statements
         var preStmts = new List<string>();
@@ -1044,17 +1065,18 @@ public static class BoltFfiCodeGenerator
 
         string staticMod = isStatic ? "static " : "";
         string unsafeMod = fixedVars.Count > 0 ? "unsafe " : "";
+        string partialMod = isPartial ? "partial " : "";
         string curIndent = indent;
 
         if (isAsync)
         {
             string taskRet = (retType == "void") ? "Task" : $"Task<{retType}>";
-            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}async {taskRet} {methodName}({string.Join(", ", publicParams)})");
+            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}{partialMod}async {taskRet} {methodName}({string.Join(", ", publicParams)})");
         }
         else
         {
             sb.AppendLine($"{curIndent}[global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]");
-            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}{retType} {methodName}({string.Join(", ", publicParams)})");
+            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}{partialMod}{retType} {methodName}({string.Join(", ", publicParams)})");
         }
         sb.AppendLine($"{curIndent}{{");
         curIndent += "    ";
@@ -1193,26 +1215,50 @@ public static class BoltFfiCodeGenerator
     private static void EmitPublicMethods(
         StringBuilder sb,
         List<BoltFfiDecl> decls,
-        string cratePascal)
+        string cratePascal,
+        Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null)
     {
-        sb.AppendLine($"    public static partial class {cratePascal}Methods");
-        sb.AppendLine("    {");
-
+        var funcsToEmit = new List<(BoltFfiFunctionDecl func, bool isPartial)>();
         foreach (var decl in decls)
         {
             if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
             {
                 var func = decl.Function;
-                string methodName = func.Name.ToPascalCase();
-                string retType = MapType(func.ReturnType);
-                var publicParams = new List<string>();
-                foreach (var p in func.Parameters)
+                string pascal = func.Name.ToPascalCase();
+                bool emit = true;
+                bool isPartial = false;
+                if (methodConfigs != null)
                 {
-                    publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                    if (methodConfigs.TryGetValue(pascal, out var cfg) ||
+                        methodConfigs.TryGetValue(func.Name.ToSnakeCase(), out cfg))
+                    {
+                        emit = cfg.EmitMethod;
+                        isPartial = cfg.IsPartial;
+                    }
                 }
-
-                EmitMethod(sb, "        ", func, publicParams, new List<string>(), methodName, retType, isStatic: true, isAsync: func.IsAsync);
+                if (emit)
+                {
+                    funcsToEmit.Add((func, isPartial));
+                }
             }
+        }
+
+        if (funcsToEmit.Count == 0) return;
+
+        sb.AppendLine($"    public static partial class {cratePascal}Methods");
+        sb.AppendLine("    {");
+
+        foreach (var (func, isPartial) in funcsToEmit)
+        {
+            string methodName = func.Name.ToPascalCase();
+            string retType = MapType(func.ReturnType);
+            var publicParams = new List<string>();
+            foreach (var p in func.Parameters)
+            {
+                publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+            }
+
+            EmitMethod(sb, "        ", func, publicParams, new List<string>(), methodName, retType, isStatic: true, isAsync: func.IsAsync, isPartial: isPartial);
         }
 
         sb.AppendLine("    }");
