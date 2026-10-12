@@ -15,19 +15,20 @@ public class NamespaceConfigTests
         
         var match = typeof(Microsoft.CodeAnalysis.Compilation).Assembly.GetType("Microsoft.CodeAnalysis.AnalyzerConfig")!;
         var parseMethod = match.GetMethod("Parse", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static, null, new[] { typeof(string), typeof(string) }, null)!;
+        string dummyPath(string name) => System.IO.Path.Combine(System.IO.Path.GetTempPath(), name);
         
         // 1. Semicolon gets truncated because ';' is an EditorConfig comment!
-        var configSemi = parseMethod.Invoke(null, new object[] { editorConfigWithSemicolon, "C:\\dummy1.editorconfig" })!;
+        var configSemi = parseMethod.Invoke(null, new object[] { editorConfigWithSemicolon, dummyPath("dummy1.editorconfig") })!;
         var valSemi = GetProperty(configSemi, "build_property.UniFFINamespace");
         Assert.Equal("MyCompany.Sdk", valSemi); // Truncated!
 
         // 2. Comma is NOT a comment! Preserves entire string!
-        var configComma = parseMethod.Invoke(null, new object[] { editorConfigWithComma, "C:\\dummy2.editorconfig" })!;
+        var configComma = parseMethod.Invoke(null, new object[] { editorConfigWithComma, dummyPath("dummy2.editorconfig") })!;
         var valComma = GetProperty(configComma, "build_property.UniFFINamespace");
         Assert.Equal("MyCompany.Sdk,sub_alpha=Security,sub_legacy=global::LegacyVendor", valComma);
 
         // 3. Pipe is also NOT a comment!
-        var configPipe = parseMethod.Invoke(null, new object[] { editorConfigWithPipe, "C:\\dummy3.editorconfig" })!;
+        var configPipe = parseMethod.Invoke(null, new object[] { editorConfigWithPipe, dummyPath("dummy3.editorconfig") })!;
         var valPipe = GetProperty(configPipe, "build_property.UniFFINamespace");
         Assert.Equal("MyCompany.Sdk|sub_alpha=Security|sub_legacy=global::LegacyVendor", valPipe);
 
@@ -35,7 +36,7 @@ public class NamespaceConfigTests
         string rawWithSemi = "MyCompany.Sdk;sub_alpha=Security;sub_legacy=global::LegacyVendor";
         string escapedUri = System.Uri.EscapeDataString(rawWithSemi);
         string editorConfigWithEncoded = $"is_global = true\r\nbuild_property._UniFFINamespaceEncoded = {escapedUri}\r\n";
-        var configEncoded = parseMethod.Invoke(null, new object[] { editorConfigWithEncoded, "C:\\dummy4.editorconfig" })!;
+        var configEncoded = parseMethod.Invoke(null, new object[] { editorConfigWithEncoded, dummyPath("dummy4.editorconfig") })!;
         var valEncoded = GetProperty(configEncoded, "build_property._UniFFINamespaceEncoded");
         Assert.NotNull(valEncoded);
         var nsConfigFromEncoded = new NamespaceConfig(valEncoded!);
@@ -46,7 +47,7 @@ public class NamespaceConfigTests
         // 5. Base64 in EditorConfig also survives with zero truncation!
         string b64 = "base64:" + System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(rawWithSemi));
         string editorConfigWithB64 = $"is_global = true\r\nbuild_property.UniFFINamespace = {b64}\r\n";
-        var configB64 = parseMethod.Invoke(null, new object[] { editorConfigWithB64, "C:\\dummy5.editorconfig" })!;
+        var configB64 = parseMethod.Invoke(null, new object[] { editorConfigWithB64, dummyPath("dummy5.editorconfig") })!;
         var valB64 = GetProperty(configB64, "build_property.UniFFINamespace");
         Assert.NotNull(valB64);
         var nsConfigFromB64 = new NamespaceConfig(valB64!);
