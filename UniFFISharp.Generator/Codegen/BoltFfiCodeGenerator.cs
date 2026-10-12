@@ -99,10 +99,16 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
         sb.AppendLine("        internal static FfiBuf FromBytes(byte[]? bytes)");
         sb.AppendLine("        {");
-        sb.AppendLine("            if (bytes == null || bytes.Length == 0) return default;");
-        sb.AppendLine("            nint mem = Marshal.AllocHGlobal(bytes.Length);");
-        sb.AppendLine("            Marshal.Copy(bytes, 0, mem, bytes.Length);");
-        sb.AppendLine("            return new FfiBuf { ptr = mem, len = (nuint)bytes.Length, cap = (nuint)bytes.Length, align = 1 };");
+        sb.AppendLine("            if (bytes == null || bytes.Length == 0)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                nint emptyMem = Marshal.AllocHGlobal(4);");
+        sb.AppendLine("                Marshal.WriteInt32(emptyMem, 0);");
+        sb.AppendLine("                return new FfiBuf { ptr = emptyMem, len = 4, cap = 4, align = 1 };");
+        sb.AppendLine("            }");
+        sb.AppendLine("            nint mem = Marshal.AllocHGlobal(4 + bytes.Length);");
+        sb.AppendLine("            Marshal.WriteInt32(mem, bytes.Length);");
+        sb.AppendLine("            Marshal.Copy(bytes, 0, mem + 4, bytes.Length);");
+        sb.AppendLine("            return new FfiBuf { ptr = mem, len = (nuint)(4 + bytes.Length), cap = (nuint)(4 + bytes.Length), align = 1 };");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        internal static void Free(ref FfiBuf buf)");
@@ -117,15 +123,35 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        internal byte[] ToArray()");
         sb.AppendLine("        {");
         sb.AppendLine("            if (ptr == 0 || len == 0) return Array.Empty<byte>();");
-        sb.AppendLine("            int byteLen = checked((int)len);");
-        sb.AppendLine("            byte[] arr = new byte[byteLen];");
-        sb.AppendLine("            Marshal.Copy(ptr, arr, 0, byteLen);");
+        sb.AppendLine("            if (len >= 4)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                unsafe");
+        sb.AppendLine("                {");
+        sb.AppendLine("                    uint byteLen = *(uint*)ptr;");
+        sb.AppendLine("                    if (byteLen == 0) return Array.Empty<byte>();");
+        sb.AppendLine("                    byte[] res = new byte[byteLen];");
+        sb.AppendLine("                    Marshal.Copy(ptr + 4, res, 0, (int)byteLen);");
+        sb.AppendLine("                    return res;");
+        sb.AppendLine("                }");
+        sb.AppendLine("            }");
+        sb.AppendLine("            int rawLen = checked((int)len);");
+        sb.AppendLine("            byte[] arr = new byte[rawLen];");
+        sb.AppendLine("            Marshal.Copy(ptr, arr, 0, rawLen);");
         sb.AppendLine("            return arr;");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        internal string ReadString()");
         sb.AppendLine("        {");
         sb.AppendLine("            if (ptr == 0 || len == 0) return string.Empty;");
+        sb.AppendLine("            if (len >= 4)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                unsafe");
+        sb.AppendLine("                {");
+        sb.AppendLine("                    uint strLen = *(uint*)ptr;");
+        sb.AppendLine("                    if (strLen == 0) return string.Empty;");
+        sb.AppendLine("                    return global::System.Text.Encoding.UTF8.GetString((byte*)ptr + 4, (int)strLen);");
+        sb.AppendLine("                }");
+        sb.AppendLine("            }");
         sb.AppendLine("            return global::System.Text.Encoding.UTF8.GetString(ToArray());");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
@@ -201,7 +227,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        }");
         sb.AppendLine("        internal string ReadString()");
         sb.AppendLine("        {");
-        sb.AppendLine("            int strLen = checked((int)ReadU64());");
+        sb.AppendLine("            int strLen = checked((int)ReadU32());");
         sb.AppendLine("            if (strLen == 0) return string.Empty;");
         sb.AppendLine("            byte[] bytes = new byte[strLen];");
         sb.AppendLine("            Marshal.Copy(pointer + position, bytes, 0, strLen);");
@@ -244,7 +270,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        internal void WriteString(string? str)");
         sb.AppendLine("        {");
         sb.AppendLine("            byte[] bytes = global::System.Text.Encoding.UTF8.GetBytes(str ?? string.Empty);");
-        sb.AppendLine("            WriteU64((ulong)bytes.Length);");
+        sb.AppendLine("            WriteU32((uint)bytes.Length);");
         sb.AppendLine("            if (bytes.Length > 0) stream.Write(bytes, 0, bytes.Length);");
         sb.AppendLine("        }");
         sb.AppendLine("        internal void WriteOptionBool(bool? val) { WriteBool(val.HasValue); if (val.HasValue) WriteBool(val.Value); }");
@@ -498,7 +524,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
         sb.AppendLine("        internal nint Handle => unchecked((nint)(ulong)global::System.Threading.Interlocked.Read(ref handle));");
         sb.AppendLine();
-        sb.AppendLine($"        internal {className}(nint handle)");
+        sb.AppendLine($"        internal {className}(nint handle, bool isHandle)");
         sb.AppendLine("        {");
         sb.AppendLine("            if (handle == 0) throw new global::System.ArgumentException(\"handle must not be zero\", nameof(handle));");
         sb.AppendLine("            this.handle = unchecked((long)(ulong)handle);");
@@ -522,10 +548,27 @@ public static class BoltFfiCodeGenerator
             {
                 string pName = ToCamel(p.Name);
                 initParams.Add($"{MapType(p.Type)} {pName}");
-                callArgs.Add(FormatCallArg(p.Type, pName));
+                if (p.Type.Kind == BoltFfiTypeKind.String)
+                {
+                    callArgs.Add($"FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty)).ptr");
+                    callArgs.Add($"FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty)).len");
+                }
+                else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
+                {
+                    callArgs.Add($"FfiBuf.FromBytes({pName}).ptr");
+                    callArgs.Add($"FfiBuf.FromBytes({pName}).len");
+                }
+                else if (p.Type.Kind == BoltFfiTypeKind.Class)
+                {
+                    callArgs.Add($"{pName}.GetHandle()");
+                }
+                else
+                {
+                    callArgs.Add(pName);
+                }
             }
             sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
-            sb.AppendLine($"            : this(NativeMethods.{init.Symbol}({string.Join(", ", callArgs)}))");
+            sb.AppendLine($"            : this(NativeMethods.{init.Symbol}({string.Join(", ", callArgs)}), true)");
             sb.AppendLine("        {");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -538,12 +581,36 @@ public static class BoltFfiCodeGenerator
             string retType = MapType(m.ReturnType);
             var publicParams = new List<string>();
             var callArgs = new List<string> { "Handle" };
+            var preCall = new List<string>();
+            var postCall = new List<string>();
 
             foreach (var p in m.Parameters)
             {
                 string pName = ToCamel(p.Name);
                 publicParams.Add($"{MapType(p.Type)} {pName}");
-                callArgs.Add(FormatCallArg(p.Type, pName));
+
+                if (p.Type.Kind == BoltFfiTypeKind.String)
+                {
+                    preCall.Add($"var {pName}_buf = FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty));");
+                    callArgs.Add($"{pName}_buf.ptr");
+                    callArgs.Add($"{pName}_buf.len");
+                    postCall.Add($"FfiBuf.Free(ref {pName}_buf);");
+                }
+                else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
+                {
+                    preCall.Add($"var {pName}_buf = FfiBuf.FromBytes({pName});");
+                    callArgs.Add($"{pName}_buf.ptr");
+                    callArgs.Add($"{pName}_buf.len");
+                    postCall.Add($"FfiBuf.Free(ref {pName}_buf);");
+                }
+                else if (p.Type.Kind == BoltFfiTypeKind.Class)
+                {
+                    callArgs.Add($"{pName}.GetHandle()");
+                }
+                else
+                {
+                    callArgs.Add(pName);
+                }
             }
 
             string callExpr = $"NativeMethods.{m.Symbol}({string.Join(", ", callArgs)})";
@@ -556,10 +623,28 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine("        {");
                 sb.AppendLine("            ThrowIfDisposed();");
                 sb.AppendLine("            await Task.Yield();");
-                if (retType == "void")
-                    sb.AppendLine($"            {callExpr};");
+                foreach (var s in preCall) sb.AppendLine($"            {s}");
+                if (postCall.Count > 0)
+                {
+                    sb.AppendLine("            try");
+                    sb.AppendLine("            {");
+                    if (retType == "void")
+                        sb.AppendLine($"                {callExpr};");
+                    else
+                        sb.AppendLine($"                return {returnExpr};");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            finally");
+                    sb.AppendLine("            {");
+                    foreach (var s in postCall) sb.AppendLine($"                {s}");
+                    sb.AppendLine("            }");
+                }
                 else
-                    sb.AppendLine($"            return {returnExpr};");
+                {
+                    if (retType == "void")
+                        sb.AppendLine($"            {callExpr};");
+                    else
+                        sb.AppendLine($"            return {returnExpr};");
+                }
                 sb.AppendLine("        }");
             }
             else
@@ -567,10 +652,28 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine($"        public {retType} {methodName}({string.Join(", ", publicParams)})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            ThrowIfDisposed();");
-                if (retType == "void")
-                    sb.AppendLine($"            {callExpr};");
+                foreach (var s in preCall) sb.AppendLine($"            {s}");
+                if (postCall.Count > 0)
+                {
+                    sb.AppendLine("            try");
+                    sb.AppendLine("            {");
+                    if (retType == "void")
+                        sb.AppendLine($"                {callExpr};");
+                    else
+                        sb.AppendLine($"                return {returnExpr};");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            finally");
+                    sb.AppendLine("            {");
+                    foreach (var s in postCall) sb.AppendLine($"                {s}");
+                    sb.AppendLine("            }");
+                }
                 else
-                    sb.AppendLine($"            return {returnExpr};");
+                {
+                    if (retType == "void")
+                        sb.AppendLine($"            {callExpr};");
+                    else
+                        sb.AppendLine($"            return {returnExpr};");
+                }
                 sb.AppendLine("        }");
             }
             sb.AppendLine();
@@ -657,6 +760,10 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
         sb.AppendLine($"        private const string NativeLib = \"{libStem}\";");
         sb.AppendLine();
+        sb.AppendLine("        [SuppressGCTransition]");
+        sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"boltffi_free_buf\", CallingConvention = CallingConvention.Cdecl)]");
+        sb.AppendLine("        internal static extern void boltffi_free_buf(FfiBuf buf);");
+        sb.AppendLine();
 
         var emittedSymbols = new HashSet<string>(StringComparer.Ordinal);
 
@@ -683,6 +790,7 @@ public static class BoltFfiCodeGenerator
                 // Release
                 if (!string.IsNullOrEmpty(decl.Class.ReleaseSymbol) && emittedSymbols.Add(decl.Class.ReleaseSymbol))
                 {
+                    sb.AppendLine("        [SuppressGCTransition]");
                     sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{decl.Class.ReleaseSymbol}\", CallingConvention = CallingConvention.Cdecl)]");
                     sb.AppendLine($"        internal static extern void {decl.Class.ReleaseSymbol}(nint handle);");
                     sb.AppendLine();
@@ -708,9 +816,26 @@ public static class BoltFfiCodeGenerator
         var nativeParams = new List<string>();
         foreach (var p in func.Parameters)
         {
-            nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+            if (p.Type.Kind == BoltFfiTypeKind.String || p.Type.Kind == BoltFfiTypeKind.Bytes || (p.Type.Kind == BoltFfiTypeKind.Record && !p.Type.IsDirectRecord))
+            {
+                nativeParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+            }
+            else
+            {
+                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+            }
         }
 
+        if (func.HasError)
+        {
+            if (func.ReturnType.Kind != BoltFfiTypeKind.Void)
+            {
+                nativeParams.Add($"out {nativeRet} out_val");
+            }
+            nativeRet = "FfiBuf";
+        }
+
+        sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -732,6 +857,7 @@ public static class BoltFfiCodeGenerator
             nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
         }
 
+        sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl)]");
         sb.AppendLine($"        internal static extern nint {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -754,6 +880,7 @@ public static class BoltFfiCodeGenerator
             nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
         }
 
+        sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -776,16 +903,85 @@ public static class BoltFfiCodeGenerator
                 string retType = MapType(func.ReturnType);
                 var publicParams = new List<string>();
                 var callArgs = new List<string>();
+                var preCall = new List<string>();
+                var postCall = new List<string>();
 
                 foreach (var p in func.Parameters)
                 {
                     string pName = ToCamel(p.Name);
                     publicParams.Add($"{MapType(p.Type)} {pName}");
-                    callArgs.Add(FormatCallArg(p.Type, pName));
+
+                    if (p.Type.Kind == BoltFfiTypeKind.String)
+                    {
+                        preCall.Add($"var {pName}_buf = FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty));");
+                        callArgs.Add($"{pName}_buf.ptr");
+                        callArgs.Add($"{pName}_buf.len");
+                        postCall.Add($"FfiBuf.Free(ref {pName}_buf);");
+                    }
+                    else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
+                    {
+                        preCall.Add($"var {pName}_buf = FfiBuf.FromBytes({pName});");
+                        callArgs.Add($"{pName}_buf.ptr");
+                        callArgs.Add($"{pName}_buf.len");
+                        postCall.Add($"FfiBuf.Free(ref {pName}_buf);");
+                    }
+                    else if (p.Type.Kind == BoltFfiTypeKind.Record && !p.Type.IsDirectRecord)
+                    {
+                        preCall.Add($"var {pName}_writer = new WireWriter();");
+                        preCall.Add($"{pName}.Encode({pName}_writer);");
+                        preCall.Add($"var {pName}_bytes = {pName}_writer.ToArray();");
+                        preCall.Add($"var {pName}_handle = global::System.Runtime.InteropServices.GCHandle.Alloc({pName}_bytes, global::System.Runtime.InteropServices.GCHandleType.Pinned);");
+                        callArgs.Add($"{pName}_handle.AddrOfPinnedObject()");
+                        callArgs.Add($"(nuint){pName}_bytes.Length");
+                        postCall.Add($"{pName}_handle.Free();");
+                    }
+                    else if (p.Type.Kind == BoltFfiTypeKind.Class)
+                    {
+                        callArgs.Add($"{pName}.GetHandle()");
+                    }
+                    else if (p.Type.Kind == BoltFfiTypeKind.Custom && !string.IsNullOrEmpty(p.Type.CustomTypeName))
+                    {
+                        callArgs.Add($"{ToPascal(p.Type.CustomTypeName)}Bridge.Register({pName})");
+                    }
+                    else
+                    {
+                        callArgs.Add(pName);
+                    }
+                }
+
+                if (func.HasError && func.ReturnType.Kind != BoltFfiTypeKind.Void)
+                {
+                    callArgs.Add($"out {retType} outVal");
                 }
 
                 string callExpr = $"NativeMethods.{func.Symbol}({string.Join(", ", callArgs)})";
                 string returnExpr = FormatReturnExpr(func.ReturnType, callExpr);
+
+                void EmitBody(string indent)
+                {
+                    if (func.HasError)
+                    {
+                        sb.AppendLine($"{indent}var errBuf = {callExpr};");
+                        sb.AppendLine($"{indent}if (errBuf.ptr != 0 && errBuf.len > 0)");
+                        sb.AppendLine($"{indent}{{");
+                        sb.AppendLine($"{indent}    string errMsg = errBuf.ReadString();");
+                        sb.AppendLine($"{indent}    NativeMethods.boltffi_free_buf(errBuf);");
+                        sb.AppendLine($"{indent}    throw new BoltFfiException(1, errMsg);");
+                        sb.AppendLine($"{indent}}}");
+                        if (retType != "void")
+                        {
+                            sb.AppendLine($"{indent}return outVal;");
+                        }
+                    }
+                    else if (retType == "void")
+                    {
+                        sb.AppendLine($"{indent}{callExpr};");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{indent}return {returnExpr};");
+                    }
+                }
 
                 if (func.IsAsync)
                 {
@@ -793,13 +989,21 @@ public static class BoltFfiCodeGenerator
                     sb.AppendLine($"        public static async {taskRet} {methodName}({string.Join(", ", publicParams)})");
                     sb.AppendLine("        {");
                     sb.AppendLine("            await Task.Yield();");
-                    if (retType == "void")
+                    foreach (var s in preCall) sb.AppendLine($"            {s}");
+                    if (postCall.Count > 0)
                     {
-                        sb.AppendLine($"            {callExpr};");
+                        sb.AppendLine("            try");
+                        sb.AppendLine("            {");
+                        EmitBody("                ");
+                        sb.AppendLine("            }");
+                        sb.AppendLine("            finally");
+                        sb.AppendLine("            {");
+                        foreach (var s in postCall) sb.AppendLine($"                {s}");
+                        sb.AppendLine("            }");
                     }
                     else
                     {
-                        sb.AppendLine($"            return {returnExpr};");
+                        EmitBody("            ");
                     }
                     sb.AppendLine("        }");
                 }
@@ -807,13 +1011,21 @@ public static class BoltFfiCodeGenerator
                 {
                     sb.AppendLine($"        public static {retType} {methodName}({string.Join(", ", publicParams)})");
                     sb.AppendLine("        {");
-                    if (retType == "void")
+                    foreach (var s in preCall) sb.AppendLine($"            {s}");
+                    if (postCall.Count > 0)
                     {
-                        sb.AppendLine($"            {callExpr};");
+                        sb.AppendLine("            try");
+                        sb.AppendLine("            {");
+                        EmitBody("                ");
+                        sb.AppendLine("            }");
+                        sb.AppendLine("            finally");
+                        sb.AppendLine("            {");
+                        foreach (var s in postCall) sb.AppendLine($"                {s}");
+                        sb.AppendLine("            }");
                     }
                     else
                     {
-                        sb.AppendLine($"            return {returnExpr};");
+                        EmitBody("            ");
                     }
                     sb.AppendLine("        }");
                 }

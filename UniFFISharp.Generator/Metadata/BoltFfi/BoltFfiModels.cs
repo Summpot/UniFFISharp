@@ -181,6 +181,86 @@ public sealed class BoltFfiNativeBindings
                     nat.Decls.Add(decl);
                 }
             }
+
+            // Resolve ID references (e.g. {"Record": 0}, {"Class": 0}) to names
+            var recordMap = new Dictionary<string, string>();
+            var recordDirectMap = new Dictionary<string, bool>();
+            var classMap = new Dictionary<string, string>();
+            var enumMap = new Dictionary<string, string>();
+
+            foreach (var decl in nat.Decls)
+            {
+                if (decl.Record != null)
+                {
+                    string pName = decl.Record.Name.ToPascalCase();
+                    string? id = decl.RawNode?["Record"]?["Direct"]?["id"]?.ToString()
+                        ?? decl.RawNode?["Record"]?["Encoded"]?["id"]?.ToString()
+                        ?? decl.RawNode?["Record"]?["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id)) recordMap[id!] = pName;
+                    recordDirectMap[pName] = decl.Record.IsDirect;
+                    if (!string.IsNullOrEmpty(id)) recordDirectMap[id!] = decl.Record.IsDirect;
+                }
+                if (decl.Class != null)
+                {
+                    string cName = decl.Class.Name.ToPascalCase();
+                    string? id = decl.RawNode?["Class"]?["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id)) classMap[id!] = cName;
+                }
+                if (decl.Enum != null)
+                {
+                    string eName = decl.Enum.Name.ToPascalCase();
+                    string? id = decl.RawNode?["Enum"]?["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id)) enumMap[id!] = eName;
+                }
+            }
+
+            void ResolveType(BoltFfiType? ty)
+            {
+                if (ty == null) return;
+                if (ty.Kind == BoltFfiTypeKind.Record)
+                {
+                    if (recordDirectMap.TryGetValue(ty.CustomTypeName, out var isDirect))
+                        ty.IsDirectRecord = isDirect;
+                    if (recordMap.TryGetValue(ty.CustomTypeName, out var rName))
+                    {
+                        ty.CustomTypeName = rName;
+                        if (recordDirectMap.TryGetValue(rName, out var isDirect2))
+                            ty.IsDirectRecord = isDirect2;
+                    }
+                }
+                else if (ty.Kind == BoltFfiTypeKind.Class && classMap.TryGetValue(ty.CustomTypeName, out var cName))
+                    ty.CustomTypeName = cName;
+                else if (ty.Kind == BoltFfiTypeKind.Enum && enumMap.TryGetValue(ty.CustomTypeName, out var eName))
+                    ty.CustomTypeName = eName;
+
+                if (ty.InnerType != null) ResolveType(ty.InnerType);
+            }
+
+            foreach (var decl in nat.Decls)
+            {
+                if (decl.Function != null)
+                {
+                    ResolveType(decl.Function.ReturnType);
+                    foreach (var p in decl.Function.Parameters) ResolveType(p.Type);
+                }
+                if (decl.Class != null)
+                {
+                    foreach (var init in decl.Class.Initializers)
+                    {
+                        init.ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Class, CustomTypeName = decl.Class.Name.ToPascalCase() };
+                        foreach (var p in init.Parameters) ResolveType(p.Type);
+                    }
+                    foreach (var m in decl.Class.Methods)
+                    {
+                        ResolveType(m.ReturnType);
+                        foreach (var p in m.Parameters) ResolveType(p.Type);
+                    }
+                }
+                if (decl.Record != null)
+                {
+                    foreach (var f in decl.Record.Fields) ResolveType(f.Type);
+                }
+            }
         }
         return nat;
     }
@@ -315,9 +395,19 @@ public sealed class BoltFfiRecordDecl
     {
         if (keyNode == null) return string.Empty;
         if (keyNode is JsonString s) return s.Value;
-        if (keyNode["Name"] != null) return keyNode["Name"]?.AsString() ?? string.Empty;
+        if (keyNode["Named"] != null)
+        {
+            var name = BoltFfiCanonicalName.FromJson(keyNode["Named"]);
+            return !string.IsNullOrEmpty(name.SourceSpelling) ? name.SourceSpelling! : name.ToSnakeCase();
+        }
+        if (keyNode["Name"] != null)
+        {
+            if (keyNode["Name"] is JsonString ns) return ns.Value;
+            var name = BoltFfiCanonicalName.FromJson(keyNode["Name"]);
+            return !string.IsNullOrEmpty(name.SourceSpelling) ? name.SourceSpelling! : name.ToSnakeCase();
+        }
         if (keyNode["Index"] != null) return $"item_{keyNode["Index"]?.AsInt64()}";
-        return keyNode.ToString();
+        return keyNode.AsString() ?? string.Empty;
     }
 }
 
@@ -461,7 +551,7 @@ public sealed class BoltFfiFunctionDecl
                 func.HasError = true;
             }
 
-            var returns = callable["returns"];
+            var returns = callable["returns"] ?? node["returns"];
             if (returns != null)
             {
                 if (returns["ty"] != null)
@@ -470,10 +560,38 @@ public sealed class BoltFfiFunctionDecl
                 }
                 else if (returns["plan"] is JsonNode plan)
                 {
-                    if (plan["DirectViaReturnSlot"] != null)
+                    if (plan is JsonString ps && ps.Value == "Void")
                     {
-                        func.ReturnType = BoltFfiType.FromDirectValue(plan["DirectViaReturnSlot"]);
+                        func.ReturnType = BoltFfiType.Void;
                     }
+                    else if (plan["Void"] != null)
+                    {
+                        func.ReturnType = BoltFfiType.Void;
+                    }
+                    else if (plan["DirectViaReturnSlot"] != null)
+                    {
+                        var slot = plan["DirectViaReturnSlot"];
+                        func.ReturnType = BoltFfiType.FromDirectValue(slot["ty"] ?? slot);
+                    }
+                    else if (plan["EncodedViaReturnSlot"] != null)
+                    {
+                        var slot = plan["EncodedViaReturnSlot"];
+                        func.ReturnType = BoltFfiType.FromJson(slot["ty"] ?? slot);
+                    }
+                    else if (plan["HandleViaReturnSlot"] != null)
+                    {
+                        var slot = plan["HandleViaReturnSlot"];
+                        func.ReturnType = BoltFfiType.FromJson(slot["target"] ?? slot);
+                    }
+                    else if (plan["DirectViaOutPointer"] != null)
+                    {
+                        var slot = plan["DirectViaOutPointer"];
+                        func.ReturnType = BoltFfiType.FromDirectValue(slot["ty"] ?? slot);
+                    }
+                }
+                else if (returns["Value"] != null)
+                {
+                    func.ReturnType = BoltFfiType.FromJson(returns["Value"]);
                 }
             }
 
@@ -484,7 +602,7 @@ public sealed class BoltFfiFunctionDecl
                     var param = new BoltFfiParamDecl
                     {
                         Name = BoltFfiCanonicalName.FromJson(p["name"]).ToCamelCase(),
-                        Type = p["ty"] != null ? BoltFfiType.FromJson(p["ty"]) : BoltFfiType.FromParamPlan(p["plan"])
+                        Type = BoltFfiType.FromParamPayload(p["payload"] ?? p["plan"] ?? p["ty"])
                     };
                     func.Parameters.Add(param);
                 }
@@ -520,6 +638,7 @@ public sealed class BoltFfiClassDecl
             ?? node["release_entry"]?.AsString()
             ?? node["release"]?.AsString()
             ?? node["release"]?["symbol"]?.AsString()
+            ?? node["release"]?["name"]?.AsString()
             ?? string.Empty;
 
         if (node["initializers"] is JsonArray initsArr)
@@ -596,6 +715,7 @@ public sealed class BoltFfiType
     public BoltFfiTypeKind Kind { get; set; }
     public string CustomTypeName { get; set; } = string.Empty;
     public BoltFfiType? InnerType { get; set; }
+    public bool IsDirectRecord { get; set; } = true;
 
     public static BoltFfiType Void => new() { Kind = BoltFfiTypeKind.Void };
     public static BoltFfiType Primitive(BoltFfiTypeKind kind) => new() { Kind = kind };
@@ -667,6 +787,10 @@ public sealed class BoltFfiType
         {
             return ParsePrimitive(js.Value);
         }
+        if (node["ty"] != null)
+        {
+            return FromJson(node["ty"]);
+        }
         if (node["Primitive"] != null)
         {
             return ParsePrimitive(node["Primitive"]?.AsString());
@@ -695,18 +819,30 @@ public sealed class BoltFfiType
                 CustomTypeName = node["Enum"]?.ToString() ?? string.Empty
             };
         }
-        return Primitive(BoltFfiTypeKind.Int32);
+        return ParsePrimitive(node.AsString());
     }
 
-    public static BoltFfiType FromParamPlan(JsonNode? node)
+    public static BoltFfiType FromParamPayload(JsonNode? node)
     {
         if (node == null) return Primitive(BoltFfiTypeKind.Bytes);
+        if (node["Value"] != null)
+        {
+            var val = node["Value"];
+            if (val["Direct"] != null) return FromDirectValue(val["Direct"]["ty"] ?? val["Direct"]);
+            if (val["Encoded"] != null) return FromJson(val["Encoded"]["ty"] ?? val["Encoded"]);
+        }
         if (node["Direct"] != null)
         {
-            return FromDirectValue(node["Direct"]);
+            return FromDirectValue(node["Direct"]["ty"] ?? node["Direct"]);
         }
-        return Primitive(BoltFfiTypeKind.Bytes);
+        if (node["Encoded"] != null)
+        {
+            return FromJson(node["Encoded"]["ty"] ?? node["Encoded"]);
+        }
+        return FromJson(node);
     }
+
+    public static BoltFfiType FromParamPlan(JsonNode? node) => FromParamPayload(node);
 
     public static BoltFfiType ParsePrimitive(string? primName)
     {
@@ -724,6 +860,7 @@ public sealed class BoltFfiType
             "F32" => Primitive(BoltFfiTypeKind.Float32),
             "F64" => Primitive(BoltFfiTypeKind.Float64),
             "String" => Primitive(BoltFfiTypeKind.String),
+            "Bytes" => Primitive(BoltFfiTypeKind.Bytes),
             _ => Primitive(BoltFfiTypeKind.Void)
         };
     }

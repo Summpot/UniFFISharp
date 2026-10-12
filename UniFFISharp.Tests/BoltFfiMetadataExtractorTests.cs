@@ -163,4 +163,14 @@ public class BoltFfiMetadataExtractorTests
         Assert.Equal("boltffi.bindings", envelopes[0].Magic);
         Assert.Equal("geo", envelopes[0].Package.PackageName);
     }
+
+    [Fact]
+    public void BoltFfiMetadataExtractor_ExtractsFromRealDll()
+    {
+        string dllPath = @"C:\Users\Summp\.gemini\antigravity\brain\9b5fc636-03e2-416c-abef-16eb7bb978cc\scratch\..\UniFFISharp-Diplomat-Benchmark\target\release\uniffi_bench.dll";
+        if (!System.IO.File.Exists(dllPath)) return;
+        var envs = BoltFfiMetadataExtractor.ExtractAll(dllPath);
+        string code = UniFFISharp.Generator.Codegen.BoltFfiCodeGenerator.Generate(envs[0], "test_bolt.dll", "TestBolt");
+        System.IO.File.WriteAllText(@"C:\Users\Summp\.gemini\antigravity\brain\9b5fc636-03e2-416c-abef-16eb7bb978cc\scratch\generated_bolt.cs", code);
+    }
 }

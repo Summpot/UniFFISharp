@@ -1,0 +1,11 @@
+[package]
+name = "diplomat_bench"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+diplomat = "0.16.1"
+diplomat-runtime = "0.16.0"

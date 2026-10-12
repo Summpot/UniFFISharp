@@ -6,4 +6,7 @@
   <Folder Name="/tests/">
     <Project Path="UniFFISharp.Tests/UniFFISharp.Tests.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/UniFFISharp.Benchmark/UniFFISharp.Benchmark.csproj" />
+  </Folder>
 </Solution>

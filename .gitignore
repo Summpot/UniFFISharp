@@ -6,3 +6,9 @@ obj/
 .idea/
 *.nupkg
 *.snupkg
+target/
+benchmarks/target/
+**/BenchmarkDotNet.Artifacts/
+GeneratedFiles/
+*.stamp
+metadata_dump.json

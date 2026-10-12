@@ -157,7 +157,7 @@ public class BoltFfiCodegenAndArbitrationTests
         // 5. Class Handle with IDisposable
         Assert.Contains("public partial class CanvasRenderer : IDisposable", source);
         Assert.Contains("private long handle;", source);
-        Assert.Contains("internal CanvasRenderer(nint handle)", source);
+        Assert.Contains("internal CanvasRenderer(nint handle, bool isHandle)", source);
         Assert.Contains("internal nint GetHandle() => Handle;", source);
         Assert.Contains("NativeMethods.boltffi_class_release_canvas_renderer(", source);
 

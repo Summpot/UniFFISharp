@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+
+    <!-- UniFFISharp Configuration -->
+    <UniFFICargoProject>..\crates\uniffi_bench\Cargo.toml</UniFFICargoProject>
+    <UniFFICargoTargetDir>..\target</UniFFICargoTargetDir>
+    <UniFFICargoProfile>release</UniFFICargoProfile>
+    <UniFFINamespace>UniffiBench</UniFFINamespace>
+    <BoltFFINamespace>UniffiBench.Bolt</BoltFFINamespace>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)GeneratedFiles</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+
+  <Import Project="..\..\UniFFISharp\build\UniFFISharp.props" />
+  <Import Project="..\..\UniFFISharp\build\UniFFISharp.targets" />
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\UniFFISharp\UniFFISharp.csproj" />
+    <ProjectReference Include="..\..\UniFFISharp.Generator\UniFFISharp.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <Analyzer Include="..\..\UniFFISharp.Generator\bin\$(Configuration)\netstandard2.0\AsmResolver*.dll" />
+  </ItemGroup>
+
+  <!-- Copy native libraries to output directory -->
+  <ItemGroup>
+    <None Include="..\target\release\diplomat_bench.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </None>
+    <None Include="..\target\release\csbindgen_bench.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </None>
+  </ItemGroup>
+
+</Project>
