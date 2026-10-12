@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using UniFFISharp.Generator.Metadata.BoltFfi;
 
@@ -8,8 +9,9 @@ namespace UniFFISharp.Generator.Codegen;
 
 /// <summary>
 /// Generates C# bindings for BoltFFI contracts.
-/// Inlines lightweight runtime helpers (FfiBuf, WireReader, WireWriter)
-/// and emits zero-copy blittable records and direct P/Invoke calls.
+/// Inlines lightweight runtime helpers (FfiBuf, WireReader, WireWriter, BoltFfiException)
+/// and emits zero-copy blittable records, data enums (tagged unions), classes with instance methods,
+/// callbacks, and direct P/Invoke calls.
 /// </summary>
 public static class BoltFfiCodeGenerator
 {
@@ -37,6 +39,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("#pragma warning disable CS8500");
         sb.AppendLine();
         sb.AppendLine("using System;");
+        sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Runtime.InteropServices;");
         sb.AppendLine("using System.Threading;");
         sb.AppendLine("using System.Threading.Tasks;");
@@ -50,7 +53,7 @@ public static class BoltFfiCodeGenerator
         // 3. Inlined Lightweight Runtime
         EmitLightweightRuntime(sb);
 
-        // 4. Data Types (Records, Enums, Classes)
+        // 4. Data Types (Records, Enums, Classes, Callbacks)
         foreach (var decl in native.Decls)
         {
             if (decl.Kind == BoltFfiDeclKind.Record && decl.Record != null)
@@ -63,12 +66,16 @@ public static class BoltFfiCodeGenerator
             }
             else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
             {
-                EmitClass(sb, decl.Class, libraryFileName);
+                EmitClass(sb, decl.Class);
+            }
+            else if (decl.Kind == BoltFfiDeclKind.Callback && decl.Callback != null)
+            {
+                EmitCallback(sb, decl.Callback);
             }
         }
 
         // 5. Native Methods P/Invoke
-        EmitNativeMethods(sb, native.Decls, libraryFileName, cratePascal);
+        EmitNativeMethods(sb, native.Decls, libraryFileName);
 
         // 6. Public Friendly Methods Class
         EmitPublicMethods(sb, native.Decls, cratePascal);
@@ -128,6 +135,15 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
         sb.AppendLine("        internal int code;");
         sb.AppendLine("        internal FfiBuf error;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public class BoltFfiException : global::System.Exception");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public int Code { get; }");
+        sb.AppendLine("        public BoltFfiException(int code, string message) : base(message)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            Code = code;");
+        sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    internal sealed class WireReader");
@@ -190,8 +206,14 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("            byte[] bytes = new byte[strLen];");
         sb.AppendLine("            Marshal.Copy(pointer + position, bytes, 0, strLen);");
         sb.AppendLine("            position += strLen;");
-        sb.AppendLine("            return Encoding.UTF8.GetString(bytes);");
+        sb.AppendLine("            return global::System.Text.Encoding.UTF8.GetString(bytes);");
         sb.AppendLine("        }");
+        sb.AppendLine("        internal bool? ReadOptionBool() => ReadBool() ? ReadBool() : null;");
+        sb.AppendLine("        internal int? ReadOptionI32() => ReadBool() ? ReadI32() : null;");
+        sb.AppendLine("        internal long? ReadOptionI64() => ReadBool() ? ReadI64() : null;");
+        sb.AppendLine("        internal float? ReadOptionF32() => ReadBool() ? ReadF32() : null;");
+        sb.AppendLine("        internal double? ReadOptionF64() => ReadBool() ? ReadF64() : null;");
+        sb.AppendLine("        internal string? ReadOptionString() => ReadBool() ? ReadString() : null;");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    internal sealed class WireWriter");
@@ -221,10 +243,16 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        internal void WriteF64(double val) => WriteI64(BitConverter.DoubleToInt64Bits(val));");
         sb.AppendLine("        internal void WriteString(string? str)");
         sb.AppendLine("        {");
-        sb.AppendLine("            byte[] bytes = Encoding.UTF8.GetBytes(str ?? string.Empty);");
+        sb.AppendLine("            byte[] bytes = global::System.Text.Encoding.UTF8.GetBytes(str ?? string.Empty);");
         sb.AppendLine("            WriteU64((ulong)bytes.Length);");
         sb.AppendLine("            if (bytes.Length > 0) stream.Write(bytes, 0, bytes.Length);");
         sb.AppendLine("        }");
+        sb.AppendLine("        internal void WriteOptionBool(bool? val) { WriteBool(val.HasValue); if (val.HasValue) WriteBool(val.Value); }");
+        sb.AppendLine("        internal void WriteOptionI32(int? val) { WriteBool(val.HasValue); if (val.HasValue) WriteI32(val.Value); }");
+        sb.AppendLine("        internal void WriteOptionI64(long? val) { WriteBool(val.HasValue); if (val.HasValue) WriteI64(val.Value); }");
+        sb.AppendLine("        internal void WriteOptionF32(float? val) { WriteBool(val.HasValue); if (val.HasValue) WriteF32(val.Value); }");
+        sb.AppendLine("        internal void WriteOptionF64(double? val) { WriteBool(val.HasValue); if (val.HasValue) WriteF64(val.Value); }");
+        sb.AppendLine("        internal void WriteOptionString(string? val) { WriteBool(val != null); if (val != null) WriteString(val); }");
         sb.AppendLine("        internal byte[] ToArray() => stream.ToArray();");
         sb.AppendLine("    }");
         sb.AppendLine();
@@ -335,6 +363,28 @@ public static class BoltFfiCodeGenerator
                 }
                 sb.AppendLine("        }");
             }
+
+            // Wire Decode
+            sb.AppendLine();
+            sb.AppendLine($"        internal static {recordName} Decode(WireReader reader) =>");
+            sb.AppendLine($"            new {recordName}(");
+            for (int i = 0; i < record.Fields.Count; i++)
+            {
+                string comma = (i == record.Fields.Count - 1) ? "" : ",";
+                sb.AppendLine($"                {WireReadExpr(record.Fields[i].Type)}{comma}");
+            }
+            sb.AppendLine("            );");
+
+            // Wire Encode
+            sb.AppendLine();
+            sb.AppendLine("        internal void Encode(WireWriter writer)");
+            sb.AppendLine("        {");
+            foreach (var f in record.Fields)
+            {
+                sb.AppendLine($"            {WireWriteStatement(f.Type, ToPascal(f.Name))};");
+            }
+            sb.AppendLine("        }");
+
             sb.AppendLine("    }");
         }
         sb.AppendLine();
@@ -345,44 +395,197 @@ public static class BoltFfiCodeGenerator
         string enumName = enumDecl.Name.ToPascalCase();
         if (string.IsNullOrEmpty(enumName)) return;
 
-        sb.AppendLine($"    public enum {enumName}");
+        bool isDataEnum = !enumDecl.IsCStyle || enumDecl.Variants.Any(v => v.PayloadFields.Count > 0);
+        if (!isDataEnum)
+        {
+            sb.AppendLine($"    public enum {enumName}");
+            sb.AppendLine("    {");
+            long currentDisc = 0;
+            foreach (var v in enumDecl.Variants)
+            {
+                long disc = v.Discriminant ?? currentDisc;
+                sb.AppendLine($"        {v.Name} = {disc},");
+                currentDisc = disc + 1;
+            }
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            return;
+        }
+
+        // Tagged Union / Data Enum
+        sb.AppendLine($"    public abstract partial record {enumName}");
         sb.AppendLine("    {");
-        long currentDisc = 0;
+
+        // Decode
+        sb.AppendLine($"        internal static {enumName} Decode(WireReader reader) =>");
+        sb.AppendLine("            reader.ReadU32() switch");
+        sb.AppendLine("            {");
+        long tagIndex = 0;
         foreach (var v in enumDecl.Variants)
         {
-            long disc = v.Discriminant ?? currentDisc;
-            sb.AppendLine($"        {v.Name} = {disc},");
-            currentDisc = disc + 1;
+            long tag = v.Discriminant ?? tagIndex;
+            tagIndex = tag + 1;
+            if (v.PayloadFields.Count == 0)
+            {
+                sb.AppendLine($"                {tag} => new {v.Name}(),");
+            }
+            else
+            {
+                var readArgs = new List<string>();
+                foreach (var f in v.PayloadFields)
+                {
+                    readArgs.Add(WireReadExpr(f.Type));
+                }
+                sb.AppendLine($"                {tag} => new {v.Name}({string.Join(", ", readArgs)}),");
+            }
         }
+        sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
+        sb.AppendLine("            };");
+        sb.AppendLine();
+
+        // Encode abstract method
+        sb.AppendLine("        internal abstract void Encode(WireWriter writer);");
+        sb.AppendLine();
+
+        // Variant child records
+        tagIndex = 0;
+        foreach (var v in enumDecl.Variants)
+        {
+            long tag = v.Discriminant ?? tagIndex;
+            tagIndex = tag + 1;
+
+            if (v.PayloadFields.Count == 0)
+            {
+                sb.AppendLine($"        public sealed partial record {v.Name}() : {enumName}");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            internal override void Encode(WireWriter writer) => writer.WriteU32({tag});");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                var paramList = new List<string>();
+                foreach (var f in v.PayloadFields)
+                {
+                    paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}");
+                }
+                sb.AppendLine($"        public sealed partial record {v.Name}({string.Join(", ", paramList)}) : {enumName}");
+                sb.AppendLine("        {");
+                sb.AppendLine("            internal override void Encode(WireWriter writer)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                writer.WriteU32({tag});");
+                foreach (var f in v.PayloadFields)
+                {
+                    sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name))};");
+                }
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+            }
+            sb.AppendLine();
+        }
+
         sb.AppendLine("    }");
         sb.AppendLine();
     }
 
-    private static void EmitClass(StringBuilder sb, BoltFfiClassDecl classDecl, string libraryFileName)
+    private static void EmitClass(StringBuilder sb, BoltFfiClassDecl classDecl)
     {
         string className = classDecl.Name.ToPascalCase();
         if (string.IsNullOrEmpty(className)) return;
 
         sb.AppendLine($"    public partial class {className} : IDisposable");
         sb.AppendLine("    {");
-        sb.AppendLine("        private nint handle;");
+        sb.AppendLine("        private long handle;");
+        sb.AppendLine();
+        sb.AppendLine("        internal nint Handle => unchecked((nint)(ulong)global::System.Threading.Interlocked.Read(ref handle));");
         sb.AppendLine();
         sb.AppendLine($"        internal {className}(nint handle)");
         sb.AppendLine("        {");
-        sb.AppendLine("            this.handle = handle;");
+        sb.AppendLine("            if (handle == 0) throw new global::System.ArgumentException(\"handle must not be zero\", nameof(handle));");
+        sb.AppendLine("            this.handle = unchecked((long)(ulong)handle);");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine("        internal nint GetHandle() => handle;");
+        sb.AppendLine("        internal nint GetHandle() => Handle;");
         sb.AppendLine();
+        sb.AppendLine("        private void ThrowIfDisposed()");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (global::System.Threading.Interlocked.Read(ref handle) == 0)");
+        sb.AppendLine($"                throw new global::System.ObjectDisposedException(nameof({className}));");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+
+        // 1. Initializers (Constructors)
+        foreach (var init in classDecl.Initializers)
+        {
+            var initParams = new List<string>();
+            var callArgs = new List<string>();
+            foreach (var p in init.Parameters)
+            {
+                string pName = ToCamel(p.Name);
+                initParams.Add($"{MapType(p.Type)} {pName}");
+                callArgs.Add(FormatCallArg(p.Type, pName));
+            }
+            sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
+            sb.AppendLine($"            : this(NativeMethods.{init.Symbol}({string.Join(", ", callArgs)}))");
+            sb.AppendLine("        {");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+
+        // 2. Instance Methods
+        foreach (var m in classDecl.Methods)
+        {
+            string methodName = m.Name.ToPascalCase();
+            string retType = MapType(m.ReturnType);
+            var publicParams = new List<string>();
+            var callArgs = new List<string> { "Handle" };
+
+            foreach (var p in m.Parameters)
+            {
+                string pName = ToCamel(p.Name);
+                publicParams.Add($"{MapType(p.Type)} {pName}");
+                callArgs.Add(FormatCallArg(p.Type, pName));
+            }
+
+            string callExpr = $"NativeMethods.{m.Symbol}({string.Join(", ", callArgs)})";
+            string returnExpr = FormatReturnExpr(m.ReturnType, callExpr);
+
+            if (m.IsAsync)
+            {
+                string taskRet = (retType == "void") ? "Task" : $"Task<{retType}>";
+                sb.AppendLine($"        public async {taskRet} {methodName}({string.Join(", ", publicParams)})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            ThrowIfDisposed();");
+                sb.AppendLine("            await Task.Yield();");
+                if (retType == "void")
+                    sb.AppendLine($"            {callExpr};");
+                else
+                    sb.AppendLine($"            return {returnExpr};");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                sb.AppendLine($"        public {retType} {methodName}({string.Join(", ", publicParams)})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            ThrowIfDisposed();");
+                if (retType == "void")
+                    sb.AppendLine($"            {callExpr};");
+                else
+                    sb.AppendLine($"            return {returnExpr};");
+                sb.AppendLine("        }");
+            }
+            sb.AppendLine();
+        }
+
+        // 3. Dispose and Finalizer
         sb.AppendLine("        public void Dispose()");
         sb.AppendLine("        {");
-        sb.AppendLine("            if (handle != 0)");
+        sb.AppendLine("            long old = global::System.Threading.Interlocked.Exchange(ref handle, 0);");
+        sb.AppendLine("            if (old != 0)");
         sb.AppendLine("            {");
         if (!string.IsNullOrEmpty(classDecl.ReleaseSymbol))
         {
-            sb.AppendLine($"                NativeMethods.{classDecl.ReleaseSymbol}(handle);");
+            sb.AppendLine($"                NativeMethods.{classDecl.ReleaseSymbol}(unchecked((nint)(ulong)old));");
         }
-        sb.AppendLine("                handle = 0;");
         sb.AppendLine("            }");
         sb.AppendLine("            GC.SuppressFinalize(this);");
         sb.AppendLine("        }");
@@ -392,11 +595,57 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
     }
 
+    private static void EmitCallback(StringBuilder sb, BoltFfiCallbackDecl callback)
+    {
+        string cbName = callback.Name.ToPascalCase();
+        if (string.IsNullOrEmpty(cbName)) return;
+        string ifaceName = $"I{cbName}";
+
+        // Interface definition
+        sb.AppendLine($"    public partial interface {ifaceName}");
+        sb.AppendLine("    {");
+        foreach (var m in callback.Methods)
+        {
+            string mName = m.Name.ToPascalCase();
+            string retType = MapType(m.ReturnType);
+            var mParams = new List<string>();
+            foreach (var p in m.Parameters)
+            {
+                mParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+            }
+            sb.AppendLine($"        {retType} {mName}({string.Join(", ", mParams)});");
+        }
+        sb.AppendLine("    }");
+        sb.AppendLine();
+
+        // Bridge class with thread-safe handle map
+        string bridgeName = $"{cbName}Bridge";
+        sb.AppendLine($"    internal static class {bridgeName}");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        private static readonly global::System.Collections.Concurrent.ConcurrentDictionary<ulong, {ifaceName}> Handles = new();");
+        sb.AppendLine("        private static long nextHandle = 1;");
+        sb.AppendLine();
+        sb.AppendLine($"        internal static ulong Register({ifaceName}? callback)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (callback == null) return 0;");
+        sb.AppendLine("            ulong id = (ulong)global::System.Threading.Interlocked.Increment(ref nextHandle);");
+        sb.AppendLine("            Handles[id] = callback;");
+        sb.AppendLine("            return id;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine($"        internal static {ifaceName}? Get(ulong handle) =>");
+        sb.AppendLine("            Handles.TryGetValue(handle, out var cb) ? cb : null;");
+        sb.AppendLine();
+        sb.AppendLine("        internal static void Free(ulong handle) =>");
+        sb.AppendLine("            Handles.TryRemove(handle, out _);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
     private static void EmitNativeMethods(
         StringBuilder sb,
         List<BoltFfiDecl> decls,
-        string libraryFileName,
-        string cratePascal)
+        string libraryFileName)
     {
         string libStem = Path.GetFileNameWithoutExtension(libraryFileName);
         if (libStem.StartsWith("lib", StringComparison.OrdinalIgnoreCase))
@@ -417,9 +666,22 @@ public static class BoltFfiCodeGenerator
             {
                 EmitNativeFunction(sb, decl.Function, emittedSymbols);
             }
-            else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null && !string.IsNullOrEmpty(decl.Class.ReleaseSymbol))
+            else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
             {
-                if (emittedSymbols.Add(decl.Class.ReleaseSymbol))
+                // Initializers
+                foreach (var init in decl.Class.Initializers)
+                {
+                    EmitNativeClassInitializer(sb, init, emittedSymbols);
+                }
+
+                // Instance Methods
+                foreach (var m in decl.Class.Methods)
+                {
+                    EmitNativeClassMethod(sb, m, emittedSymbols);
+                }
+
+                // Release
+                if (!string.IsNullOrEmpty(decl.Class.ReleaseSymbol) && emittedSymbols.Add(decl.Class.ReleaseSymbol))
                 {
                     sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{decl.Class.ReleaseSymbol}\", CallingConvention = CallingConvention.Cdecl)]");
                     sb.AppendLine($"        internal static extern void {decl.Class.ReleaseSymbol}(nint handle);");
@@ -454,6 +716,49 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
     }
 
+    private static void EmitNativeClassInitializer(
+        StringBuilder sb,
+        BoltFfiFunctionDecl func,
+        HashSet<string> emittedSymbols)
+    {
+        if (string.IsNullOrEmpty(func.Symbol) || !emittedSymbols.Add(func.Symbol))
+        {
+            return;
+        }
+
+        var nativeParams = new List<string>();
+        foreach (var p in func.Parameters)
+        {
+            nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+        }
+
+        sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl)]");
+        sb.AppendLine($"        internal static extern nint {func.Symbol}({string.Join(", ", nativeParams)});");
+        sb.AppendLine();
+    }
+
+    private static void EmitNativeClassMethod(
+        StringBuilder sb,
+        BoltFfiFunctionDecl func,
+        HashSet<string> emittedSymbols)
+    {
+        if (string.IsNullOrEmpty(func.Symbol) || !emittedSymbols.Add(func.Symbol))
+        {
+            return;
+        }
+
+        string nativeRet = MapNativeType(func.ReturnType);
+        var nativeParams = new List<string> { "nint handle" };
+        foreach (var p in func.Parameters)
+        {
+            nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+        }
+
+        sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl)]");
+        sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
+        sb.AppendLine();
+    }
+
     private static void EmitPublicMethods(
         StringBuilder sb,
         List<BoltFfiDecl> decls,
@@ -476,48 +781,18 @@ public static class BoltFfiCodeGenerator
                 {
                     string pName = ToCamel(p.Name);
                     publicParams.Add($"{MapType(p.Type)} {pName}");
-                    if (p.Type.Kind == BoltFfiTypeKind.Class)
-                    {
-                        callArgs.Add($"{pName}.GetHandle()");
-                    }
-                    else if (p.Type.Kind == BoltFfiTypeKind.String)
-                    {
-                        callArgs.Add($"FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty))");
-                    }
-                    else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
-                    {
-                        callArgs.Add($"FfiBuf.FromBytes({pName})");
-                    }
-                    else
-                    {
-                        callArgs.Add(pName);
-                    }
+                    callArgs.Add(FormatCallArg(p.Type, pName));
                 }
 
                 string callExpr = $"NativeMethods.{func.Symbol}({string.Join(", ", callArgs)})";
-                string returnExpr = callExpr;
-                if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
-                {
-                    string clsName = !string.IsNullOrEmpty(func.ReturnType.CustomTypeName)
-                        ? ToPascal(func.ReturnType.CustomTypeName)
-                        : "object";
-                    returnExpr = $"new {clsName}({callExpr})";
-                }
-                else if (func.ReturnType.Kind == BoltFfiTypeKind.String)
-                {
-                    returnExpr = $"{callExpr}.ReadString()";
-                }
-                else if (func.ReturnType.Kind == BoltFfiTypeKind.Bytes)
-                {
-                    returnExpr = $"{callExpr}.ToArray()";
-                }
+                string returnExpr = FormatReturnExpr(func.ReturnType, callExpr);
 
                 if (func.IsAsync)
                 {
                     string taskRet = (retType == "void") ? "Task" : $"Task<{retType}>";
                     sb.AppendLine($"        public static async {taskRet} {methodName}({string.Join(", ", publicParams)})");
                     sb.AppendLine("        {");
-                    sb.AppendLine($"            await Task.Yield();");
+                    sb.AppendLine("            await Task.Yield();");
                     if (retType == "void")
                     {
                         sb.AppendLine($"            {callExpr};");
@@ -550,6 +825,77 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
     }
 
+    private static string FormatCallArg(BoltFfiType ty, string pName)
+    {
+        if (ty.Kind == BoltFfiTypeKind.Class)
+            return $"{pName}.GetHandle()";
+        if (ty.Kind == BoltFfiTypeKind.String)
+            return $"FfiBuf.FromBytes(global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty))";
+        if (ty.Kind == BoltFfiTypeKind.Bytes)
+            return $"FfiBuf.FromBytes({pName})";
+        if (ty.Kind == BoltFfiTypeKind.Custom && !string.IsNullOrEmpty(ty.CustomTypeName))
+            return $"{ToPascal(ty.CustomTypeName)}Bridge.Register({pName})";
+        return pName;
+    }
+
+    private static string FormatReturnExpr(BoltFfiType ty, string callExpr)
+    {
+        if (ty.Kind == BoltFfiTypeKind.Class)
+        {
+            string clsName = !string.IsNullOrEmpty(ty.CustomTypeName)
+                ? ToPascal(ty.CustomTypeName)
+                : "object";
+            return $"new {clsName}({callExpr})";
+        }
+        if (ty.Kind == BoltFfiTypeKind.String)
+            return $"{callExpr}.ReadString()";
+        if (ty.Kind == BoltFfiTypeKind.Bytes)
+            return $"{callExpr}.ToArray()";
+        return callExpr;
+    }
+
+    private static string WireReadExpr(BoltFfiType ty)
+    {
+        return ty.Kind switch
+        {
+            BoltFfiTypeKind.Bool => "reader.ReadBool()",
+            BoltFfiTypeKind.Int8 => "reader.ReadI8()",
+            BoltFfiTypeKind.UInt8 => "reader.ReadU8()",
+            BoltFfiTypeKind.Int16 => "reader.ReadI16()",
+            BoltFfiTypeKind.UInt16 => "reader.ReadU16()",
+            BoltFfiTypeKind.Int32 => "reader.ReadI32()",
+            BoltFfiTypeKind.UInt32 => "reader.ReadU32()",
+            BoltFfiTypeKind.Int64 => "reader.ReadI64()",
+            BoltFfiTypeKind.UInt64 => "reader.ReadU64()",
+            BoltFfiTypeKind.Float32 => "reader.ReadF32()",
+            BoltFfiTypeKind.Float64 => "reader.ReadF64()",
+            BoltFfiTypeKind.String => "reader.ReadString()",
+            BoltFfiTypeKind.Enum or BoltFfiTypeKind.Record => $"{MapType(ty)}.Decode(reader)",
+            _ => "reader.ReadI32()"
+        };
+    }
+
+    private static string WireWriteStatement(BoltFfiType ty, string expr)
+    {
+        return ty.Kind switch
+        {
+            BoltFfiTypeKind.Bool => $"writer.WriteBool({expr})",
+            BoltFfiTypeKind.Int8 => $"writer.WriteI8({expr})",
+            BoltFfiTypeKind.UInt8 => $"writer.WriteU8({expr})",
+            BoltFfiTypeKind.Int16 => $"writer.WriteI16({expr})",
+            BoltFfiTypeKind.UInt16 => $"writer.WriteU16({expr})",
+            BoltFfiTypeKind.Int32 => $"writer.WriteI32({expr})",
+            BoltFfiTypeKind.UInt32 => $"writer.WriteU32({expr})",
+            BoltFfiTypeKind.Int64 => $"writer.WriteI64({expr})",
+            BoltFfiTypeKind.UInt64 => $"writer.WriteU64({expr})",
+            BoltFfiTypeKind.Float32 => $"writer.WriteF32({expr})",
+            BoltFfiTypeKind.Float64 => $"writer.WriteF64({expr})",
+            BoltFfiTypeKind.String => $"writer.WriteString({expr})",
+            BoltFfiTypeKind.Enum or BoltFfiTypeKind.Record => $"{expr}.Encode(writer)",
+            _ => $"writer.WriteI32({expr})"
+        };
+    }
+
     private static string MapType(BoltFfiType ty)
     {
         return ty.Kind switch
@@ -568,12 +914,12 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Float64 => "double",
             BoltFfiTypeKind.String => "string",
             BoltFfiTypeKind.Bytes => "byte[]",
-            BoltFfiTypeKind.Record => !string.IsNullOrEmpty(ty.CustomTypeName) ? ty.CustomTypeName : "object",
-            BoltFfiTypeKind.Enum => !string.IsNullOrEmpty(ty.CustomTypeName) ? ty.CustomTypeName : "int",
-            BoltFfiTypeKind.Class => !string.IsNullOrEmpty(ty.CustomTypeName) ? ty.CustomTypeName : "object",
+            BoltFfiTypeKind.Record => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
+            BoltFfiTypeKind.Enum => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "int",
+            BoltFfiTypeKind.Class => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
             BoltFfiTypeKind.Option => $"{MapType(ty.InnerType ?? BoltFfiType.Void)}?",
             BoltFfiTypeKind.Sequence => $"System.Collections.Generic.List<{MapType(ty.InnerType ?? BoltFfiType.Void)}>",
-            _ => "object"
+            _ => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object"
         };
     }
 

@@ -206,6 +206,7 @@ public sealed class BoltFfiDecl
     public BoltFfiEnumDecl? Enum { get; set; }
     public BoltFfiFunctionDecl? Function { get; set; }
     public BoltFfiClassDecl? Class { get; set; }
+    public BoltFfiCallbackDecl? Callback { get; set; }
     public JsonNode? RawNode { get; set; }
 
     public string DeclName => Kind switch
@@ -214,6 +215,7 @@ public sealed class BoltFfiDecl
         BoltFfiDeclKind.Enum when Enum != null => Enum.Name.ToPascalCase(),
         BoltFfiDeclKind.Function when Function != null => Function.Name.ToPascalCase(),
         BoltFfiDeclKind.Class when Class != null => Class.Name.ToPascalCase(),
+        BoltFfiDeclKind.Callback when Callback != null => Callback.Name.ToPascalCase(),
         _ => string.Empty
     };
 
@@ -245,6 +247,7 @@ public sealed class BoltFfiDecl
                     break;
                 case "Callback":
                     decl.Kind = BoltFfiDeclKind.Callback;
+                    decl.Callback = BoltFfiCallbackDecl.FromJson(kv.Value);
                     break;
                 case "Stream":
                     decl.Kind = BoltFfiDeclKind.Stream;
@@ -308,7 +311,7 @@ public sealed class BoltFfiRecordDecl
         return record;
     }
 
-    private static string ParseFieldKey(JsonNode? keyNode)
+    internal static string ParseFieldKey(JsonNode? keyNode)
     {
         if (keyNode == null) return string.Empty;
         if (keyNode is JsonString s) return s.Value;
@@ -348,6 +351,10 @@ public sealed class BoltFfiEnumDecl
             enumDecl.IsCStyle = false;
             target = node["Data"]!;
         }
+        else
+        {
+            enumDecl.IsCStyle = true;
+        }
 
         enumDecl.Name = BoltFfiCanonicalName.FromJson(target["name"]);
 
@@ -358,8 +365,40 @@ public sealed class BoltFfiEnumDecl
                 var variant = new BoltFfiEnumVariant
                 {
                     Name = BoltFfiCanonicalName.FromJson(v["name"]).ToPascalCase(),
-                    Discriminant = v["discriminant"]?.AsInt64()
+                    Discriminant = v["discriminant"]?.AsInt64() ?? v["tag"]?.AsInt64()
                 };
+
+                var payloadNode = v["payload"];
+                if (payloadNode != null)
+                {
+                    var fieldsArr = payloadNode["Tuple"] as JsonArray
+                        ?? payloadNode["Struct"] as JsonArray;
+                    if (fieldsArr != null)
+                    {
+                        foreach (var f in fieldsArr.Items)
+                        {
+                            var field = new BoltFfiFieldDecl
+                            {
+                                Name = BoltFfiRecordDecl.ParseFieldKey(f["key"]),
+                                Type = BoltFfiType.FromJson(f["ty"])
+                            };
+                            variant.PayloadFields.Add(field);
+                        }
+                    }
+                }
+                else if (v["fields"] is JsonArray directFields)
+                {
+                    foreach (var f in directFields.Items)
+                    {
+                        var field = new BoltFfiFieldDecl
+                        {
+                            Name = BoltFfiRecordDecl.ParseFieldKey(f["key"]),
+                            Type = BoltFfiType.FromJson(f["ty"])
+                        };
+                        variant.PayloadFields.Add(field);
+                    }
+                }
+
                 enumDecl.Variants.Add(variant);
             }
         }
@@ -393,7 +432,7 @@ public sealed class BoltFfiFunctionDecl
 
         func.Name = BoltFfiCanonicalName.FromJson(node["name"]);
 
-        var symNode = node["symbol"];
+        var symNode = node["symbol"] ?? node["target"];
         if (symNode is JsonString sStr)
         {
             func.Symbol = sStr.Value;
@@ -401,6 +440,10 @@ public sealed class BoltFfiFunctionDecl
         else if (symNode?["name"] != null)
         {
             func.Symbol = symNode["name"]?.AsString() ?? string.Empty;
+        }
+        else if (symNode?["symbol"] != null)
+        {
+            func.Symbol = symNode["symbol"]?.AsString() ?? string.Empty;
         }
 
         var callable = node["callable"];
@@ -478,7 +521,49 @@ public sealed class BoltFfiClassDecl
             ?? node["release"]?.AsString()
             ?? node["release"]?["symbol"]?.AsString()
             ?? string.Empty;
+
+        if (node["initializers"] is JsonArray initsArr)
+        {
+            foreach (var item in initsArr.Items)
+            {
+                var func = BoltFfiFunctionDecl.FromJson(item);
+                if (func != null) cls.Initializers.Add(func);
+            }
+        }
+
+        if (node["methods"] is JsonArray methodsArr)
+        {
+            foreach (var item in methodsArr.Items)
+            {
+                var func = BoltFfiFunctionDecl.FromJson(item);
+                if (func != null) cls.Methods.Add(func);
+            }
+        }
+
         return cls;
+    }
+}
+
+public sealed class BoltFfiCallbackDecl
+{
+    public BoltFfiCanonicalName Name { get; set; } = new();
+    public List<BoltFfiFunctionDecl> Methods { get; set; } = new();
+
+    public static BoltFfiCallbackDecl FromJson(JsonNode? node)
+    {
+        var cb = new BoltFfiCallbackDecl();
+        if (node == null) return cb;
+        cb.Name = BoltFfiCanonicalName.FromJson(node["name"]);
+        var methodsNode = node["methods"] ?? node["protocol"]?["methods"] ?? node["protocol"]?["vtable"]?["methods"];
+        if (methodsNode is JsonArray arr)
+        {
+            foreach (var m in arr.Items)
+            {
+                var method = BoltFfiFunctionDecl.FromJson(m);
+                if (method != null) cb.Methods.Add(method);
+            }
+        }
+        return cb;
     }
 }
 

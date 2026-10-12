@@ -136,6 +136,7 @@ public class BoltFfiCodegenAndArbitrationTests
         // 2. Inlined Lightweight Runtime
         Assert.Contains("internal struct FfiBuf", source);
         Assert.Contains("internal struct BoltFfiStatus", source);
+        Assert.Contains("public class BoltFfiException : global::System.Exception", source);
         Assert.Contains("internal sealed class WireReader", source);
         Assert.Contains("internal sealed class WireWriter", source);
 
@@ -155,10 +156,10 @@ public class BoltFfiCodegenAndArbitrationTests
 
         // 5. Class Handle with IDisposable
         Assert.Contains("public partial class CanvasRenderer : IDisposable", source);
-        Assert.Contains("private nint handle;", source);
+        Assert.Contains("private long handle;", source);
         Assert.Contains("internal CanvasRenderer(nint handle)", source);
-        Assert.Contains("internal nint GetHandle() => handle;", source);
-        Assert.Contains("NativeMethods.boltffi_class_release_canvas_renderer(handle);", source);
+        Assert.Contains("internal nint GetHandle() => Handle;", source);
+        Assert.Contains("NativeMethods.boltffi_class_release_canvas_renderer(", source);
 
         // 6. Native Methods
         Assert.Contains("internal static partial class NativeMethods", source);
@@ -531,4 +532,293 @@ public class BoltFfiCodegenAndArbitrationTests
 
         Assert.Contains("Point", collisions);
     }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_GeneratesClassInitializersAndInstanceMethods()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""db"", ""client""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""db"", ""client""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Class"": {
+                                ""name"": { ""parts"": [""database"", ""session""] },
+                                ""release_symbol"": ""boltffi_release_database_session"",
+                                ""initializers"": [
+                                    {
+                                        ""name"": { ""parts"": [""new""] },
+                                        ""symbol"": ""boltffi_database_session_new"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {
+                                                ""plan"": {
+                                                    ""DirectViaReturnSlot"": {
+                                                        ""Class"": ""DatabaseSession""
+                                                    }
+                                                }
+                                            },
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""conn_str""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ],
+                                ""methods"": [
+                                    {
+                                        ""name"": { ""parts"": [""query""] },
+                                        ""symbol"": ""boltffi_database_session_query"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {
+                                                ""plan"": {
+                                                    ""DirectViaReturnSlot"": {
+                                                        ""Primitive"": ""String""
+                                                    }
+                                                }
+                                            },
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""sql""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": { ""parts"": [""execute"", ""async""] },
+                                        ""symbol"": ""boltffi_database_session_execute_async"",
+                                        ""callable"": {
+                                            ""execution"": ""Async"",
+                                            ""returns"": {
+                                                ""plan"": {
+                                                    ""DirectViaReturnSlot"": {
+                                                        ""Primitive"": ""I32""
+                                                    }
+                                                }
+                                            },
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""sql""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": { ""parts"": [""close""] },
+                                        ""symbol"": ""boltffi_database_session_close"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {},
+                                            ""params"": []
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "db_client.dll", "Db.Client");
+
+        // Verify class generation
+        Assert.Contains("public partial class DatabaseSession : IDisposable", source);
+        Assert.Contains("public DatabaseSession(string connStr)", source);
+        Assert.Contains(": this(NativeMethods.boltffi_database_session_new(", source);
+        Assert.Contains("public string Query(string sql)", source);
+        Assert.Contains("ThrowIfDisposed();", source);
+        Assert.Contains("NativeMethods.boltffi_database_session_query(Handle,", source);
+        Assert.Contains("public async Task<int> ExecuteAsync(string sql)", source);
+        Assert.Contains("public void Close()", source);
+        Assert.Contains("NativeMethods.boltffi_database_session_close(Handle);", source);
+        Assert.Contains("NativeMethods.boltffi_release_database_session(", source);
+
+        // Verify NativeMethods
+        Assert.Contains("internal static extern nint boltffi_database_session_new(FfiBuf connStr);", source);
+        Assert.Contains("internal static extern FfiBuf boltffi_database_session_query(nint handle, FfiBuf sql);", source);
+        Assert.Contains("internal static extern int boltffi_database_session_execute_async(nint handle, FfiBuf sql);", source);
+        Assert.Contains("internal static extern void boltffi_database_session_close(nint handle);", source);
+        Assert.Contains("internal static extern void boltffi_release_database_session(nint handle);", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_GeneratesDataEnumTaggedUnion()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""geometry"", ""model""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""geometry"", ""model""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Enum"": {
+                                ""Data"": {
+                                    ""name"": { ""parts"": [""geometry"", ""item""] },
+                                    ""variants"": [
+                                        {
+                                            ""name"": ""Point"",
+                                            ""discriminant"": 0,
+                                            ""payload"": {
+                                                ""Tuple"": [
+                                                    { ""key"": { ""Index"": 0 }, ""ty"": { ""Primitive"": ""F64"" } },
+                                                    { ""key"": { ""Index"": 1 }, ""ty"": { ""Primitive"": ""F64"" } }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            ""name"": ""Circle"",
+                                            ""discriminant"": 1,
+                                            ""payload"": {
+                                                ""Struct"": [
+                                                    { ""key"": { ""Name"": ""radius"" }, ""ty"": { ""Primitive"": ""F64"" } }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            ""name"": ""Empty"",
+                                            ""discriminant"": 2
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "geometry_model.dll", "Geometry.Model");
+
+        // Verify abstract partial record
+        Assert.Contains("public abstract partial record GeometryItem", source);
+        Assert.Contains("internal static GeometryItem Decode(WireReader reader) =>", source);
+        Assert.Contains("0 => new Point(reader.ReadF64(), reader.ReadF64()),", source);
+        Assert.Contains("1 => new Circle(reader.ReadF64()),", source);
+        Assert.Contains("2 => new Empty(),", source);
+        Assert.Contains("internal abstract void Encode(WireWriter writer);", source);
+
+        // Verify variant sealed records
+        Assert.Contains("public sealed partial record Point(double Item0, double Item1) : GeometryItem", source);
+        Assert.Contains("public sealed partial record Circle(double Radius) : GeometryItem", source);
+        Assert.Contains("public sealed partial record Empty() : GeometryItem", source);
+        Assert.Contains("writer.WriteU32(0);", source);
+        Assert.Contains("writer.WriteF64(Item0);", source);
+        Assert.Contains("writer.WriteF64(Item1);", source);
+        Assert.Contains("writer.WriteU32(1);", source);
+        Assert.Contains("writer.WriteF64(Radius);", source);
+        Assert.Contains("writer.WriteU32(2);", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_GeneratesCallbackInterface()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""events"", ""core""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""events"", ""core""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Callback"": {
+                                ""name"": { ""parts"": [""event"", ""listener""] },
+                                ""methods"": [
+                                    {
+                                        ""name"": { ""parts"": [""on"", ""event""] },
+                                        ""symbol"": ""cb_on_event"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {},
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""event_id""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""I32"" } }
+                                                },
+                                                {
+                                                    ""name"": { ""parts"": [""message""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "events_core.dll", "Events.Core");
+
+        // Verify callback interface and bridge
+        Assert.Contains("public partial interface IEventListener", source);
+        Assert.Contains("void OnEvent(int eventId, string message);", source);
+        Assert.Contains("internal static class EventListenerBridge", source);
+        Assert.Contains("ConcurrentDictionary<ulong, IEventListener> Handles = new();", source);
+        Assert.Contains("internal static ulong Register(IEventListener? callback)", source);
+        Assert.Contains("internal static IEventListener? Get(ulong handle)", source);
+        Assert.Contains("internal static void Free(ulong handle)", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
 }
+
