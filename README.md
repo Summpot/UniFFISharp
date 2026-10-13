@@ -111,7 +111,8 @@ In the example above:
 
 UniFFISharp supports seamless coexistence between **UniFFI** and **BoltFFI** (`.boltffi` section, zero-copy blittable structs, direct P/Invoke calls).
 
-- **Zero-Config Upgrade (`PreferBoltFFI`)**: If a binary contains both UniFFI and BoltFFI contracts, BoltFFI automatically wins on colliding symbols in the same namespace with zero configuration required. Non-colliding UniFFI types remain generated.
+- **Automatic Selection (`Auto`)**: When both contracts export a function, the generator selects its engine by signature. UniFFI-only functions remain available even when BoltFFI is preferred. Aggregate BoltFFI exports retain their original component namespaces.
+- **Compatible Managed APIs**: During coexistence, synchronous free functions with supported scalar, string, and byte-buffer signatures can use BoltFFI. Async protocols, engine-specific object handles, callbacks, and unsupported aggregate signatures retain their UniFFI bindings and managed types.
 - **Inlined Lightweight Runtime**: Generated BoltFFI bindings inline `FfiBuf`, `BoltFfiStatus`, `WireReader`, and `WireWriter` directly into `.g.cs` files, requiring zero external runtime dependencies.
 - **Engine Control**:
   ```xml
@@ -119,8 +120,8 @@ UniFFISharp supports seamless coexistence between **UniFFI** and **BoltFFI** (`.
     <!-- Engine selection: Auto (default), Dual, UniFFI, BoltFFI -->
     <UniFFIEngine>Auto</UniFFIEngine>
 
-    <!-- Collision resolution: PreferBoltFFI (default), PreferUniFFI, Error (emits UFFI0020) -->
-    <UniFFIEnginePrefer>PreferBoltFFI</UniFFIEnginePrefer>
+    <!-- Selection: Auto (default), PreferBoltFFI, PreferUniFFI, Error (emits UFFI0020) -->
+    <UniFFIEnginePrefer>Auto</UniFFIEnginePrefer>
 
     <!-- Optional: redirect BoltFFI to a separate namespace to generate both without collision -->
     <BoltFFINamespace>MyCompany.Sdk.Bolt</BoltFFINamespace>

@@ -877,7 +877,8 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
+                nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
@@ -892,6 +893,8 @@ public static class BoltFfiCodeGenerator
 
         sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+        if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
+            sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
     }

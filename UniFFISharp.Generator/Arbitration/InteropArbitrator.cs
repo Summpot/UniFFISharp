@@ -23,15 +23,15 @@ public static class InteropArbitrator
         BoltFfiFunctionDecl? boltFn,
         InteropEngine overrideEngine = InteropEngine.Auto)
     {
-        if (overrideEngine != InteropEngine.Auto)
-        {
-            return overrideEngine;
-        }
-
         // If exported only by one engine, use that engine
         if (uniffiFn == null && boltFn != null) return InteropEngine.BoltFFI;
         if (boltFn == null && uniffiFn != null) return InteropEngine.UniFFI;
         if (uniffiFn == null && boltFn == null) return InteropEngine.Auto;
+
+        if (overrideEngine != InteropEngine.Auto)
+        {
+            return overrideEngine;
+        }
 
         // --- Signature Cost Model ---
 
@@ -70,8 +70,8 @@ public static class InteropArbitrator
         // BoltFFI passes blittable structs directly across C-ABI with [SuppressGCTransition] (1.12 ns vs 135 ns, 120x faster, 0B alloc).
         bool hasBlittableStruct = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.Record) ||
                                   (uniffiFn.ReturnType != null && uniffiFn.ReturnType.Kind == TypeKind.Record) ||
-                                  boltFn!.Parameters.Any(p => p.Type.IsDirectRecord) ||
-                                  boltFn.ReturnType.IsDirectRecord;
+                                  boltFn!.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Record && p.Type.IsDirectRecord) ||
+                                  (boltFn.ReturnType.Kind == BoltFfiTypeKind.Record && boltFn.ReturnType.IsDirectRecord);
         if (hasBlittableStruct)
         {
             return InteropEngine.BoltFFI;

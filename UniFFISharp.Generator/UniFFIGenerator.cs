@@ -254,6 +254,9 @@ namespace UniFFISharp
 
                 var validCis = ciList != null ? ciList.Where(c => !c.IsEmpty).ToList() : new List<Metadata.ComponentInterface>();
 
+                if (validCis.Count > 0)
+                    boltEnvelopes = BoltFfiCoexistence.Prepare(boltEnvelopes, validCis.Select(c => c.CrateName));
+
                 for (int i = 0; i < validCis.Count; i++)
                 {
                     bool isRoot = (i == 0);
@@ -283,7 +286,8 @@ namespace UniFFISharp
                     {
                         if (env.Bindings.Native == null) continue;
                         string crateNorm = env.Package.PackageName.Replace('-', '_');
-                        string boltTargetNs = boltNsConfig.ResolveNamespace(crateNorm, true);
+                        bool isRootCrate = validCis.Count == 0 || string.Equals(validCis[0].CrateName.Replace('-', '_'), crateNorm, StringComparison.OrdinalIgnoreCase);
+                        string boltTargetNs = boltNsConfig.ResolveNamespace(crateNorm, isRootCrate);
 
                         var boltSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (var decl in env.Bindings.Native.Decls)

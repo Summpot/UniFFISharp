@@ -100,9 +100,11 @@ public sealed class BoltFfiCanonicalName
         var sb = new StringBuilder();
         foreach (var part in Parts)
         {
-            if (string.IsNullOrEmpty(part)) continue;
-            sb.Append(char.ToUpperInvariant(part[0]));
-            if (part.Length > 1) sb.Append(part.Substring(1));
+            foreach (var word in part.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                sb.Append(char.ToUpperInvariant(word[0]));
+                if (word.Length > 1) sb.Append(word.Substring(1));
+            }
         }
         return sb.ToString();
     }
@@ -507,6 +509,7 @@ public sealed class BoltFfiEnumVariant
 
 public sealed class BoltFfiFunctionDecl
 {
+    public JsonNode? RawNode { get; set; }
     public BoltFfiCanonicalName Name { get; set; } = new();
     public string Symbol { get; set; } = string.Empty;
     public bool IsAsync { get; set; }
@@ -517,7 +520,7 @@ public sealed class BoltFfiFunctionDecl
 
     public static BoltFfiFunctionDecl FromJson(JsonNode? node)
     {
-        var func = new BoltFfiFunctionDecl();
+        var func = new BoltFfiFunctionDecl { RawNode = node };
         if (node == null) return func;
 
         func.Name = BoltFfiCanonicalName.FromJson(node["name"]);
@@ -540,7 +543,7 @@ public sealed class BoltFfiFunctionDecl
         if (callable != null)
         {
             var exec = callable["execution"];
-            if (exec?.AsString() == "Async" || exec?["Async"] != null)
+            if (exec?.AsString() == "Async" || exec?["Async"] != null || exec?["Asynchronous"] != null)
             {
                 func.IsAsync = true;
             }

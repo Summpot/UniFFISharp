@@ -3,7 +3,7 @@
   <PropertyGroup>
     <UniFFIIsDirectReference>true</UniFFIIsDirectReference>
     <UniFFIEngine Condition="'$(UniFFIEngine)' == ''">Auto</UniFFIEngine>
-    <UniFFIEnginePrefer Condition="'$(UniFFIEnginePrefer)' == ''">PreferBoltFFI</UniFFIEnginePrefer>
+    <UniFFIEnginePrefer Condition="'$(UniFFIEnginePrefer)' == ''">Auto</UniFFIEnginePrefer>
   </PropertyGroup>
 
   <ItemGroup>
