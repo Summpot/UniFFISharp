@@ -236,6 +236,8 @@ public sealed class BoltFfiNativeBindings
                     ty.CustomTypeName = eName;
 
                 if (ty.InnerType != null) ResolveType(ty.InnerType);
+                if (ty.KeyType != null) ResolveType(ty.KeyType);
+                if (ty.ValueType != null) ResolveType(ty.ValueType);
             }
 
             foreach (var decl in nat.Decls)
@@ -243,6 +245,7 @@ public sealed class BoltFfiNativeBindings
                 if (decl.Function != null)
                 {
                     ResolveType(decl.Function.ReturnType);
+                    ResolveType(decl.Function.ErrorType);
                     foreach (var p in decl.Function.Parameters) ResolveType(p.Type);
                 }
                 if (decl.Class != null)
@@ -255,12 +258,21 @@ public sealed class BoltFfiNativeBindings
                     foreach (var m in decl.Class.Methods)
                     {
                         ResolveType(m.ReturnType);
+                        ResolveType(m.ErrorType);
                         foreach (var p in m.Parameters) ResolveType(p.Type);
                     }
                 }
                 if (decl.Record != null)
                 {
                     foreach (var f in decl.Record.Fields) ResolveType(f.Type);
+                }
+                if (decl.Stream != null)
+                {
+                    ResolveType(decl.Stream.ItemType);
+                }
+                if (decl.Constant != null)
+                {
+                    ResolveType(decl.Constant.Type);
                 }
             }
         }
@@ -289,6 +301,8 @@ public sealed class BoltFfiDecl
     public BoltFfiFunctionDecl? Function { get; set; }
     public BoltFfiClassDecl? Class { get; set; }
     public BoltFfiCallbackDecl? Callback { get; set; }
+    public BoltFfiStreamDecl? Stream { get; set; }
+    public BoltFfiConstantDecl? Constant { get; set; }
     public JsonNode? RawNode { get; set; }
 
     public string DeclName => Kind switch
@@ -298,6 +312,8 @@ public sealed class BoltFfiDecl
         BoltFfiDeclKind.Function when Function != null => Function.Name.ToPascalCase(),
         BoltFfiDeclKind.Class when Class != null => Class.Name.ToPascalCase(),
         BoltFfiDeclKind.Callback when Callback != null => Callback.Name.ToPascalCase(),
+        BoltFfiDeclKind.Stream when Stream != null => Stream.Name.ToPascalCase(),
+        BoltFfiDeclKind.Constant when Constant != null => Constant.Name.ToPascalCase(),
         _ => string.Empty
     };
 
@@ -333,9 +349,11 @@ public sealed class BoltFfiDecl
                     break;
                 case "Stream":
                     decl.Kind = BoltFfiDeclKind.Stream;
+                    decl.Stream = BoltFfiStreamDecl.FromJson(kv.Value);
                     break;
                 case "Constant":
                     decl.Kind = BoltFfiDeclKind.Constant;
+                    decl.Constant = BoltFfiConstantDecl.FromJson(kv.Value);
                     break;
                 case "CustomType":
                     decl.Kind = BoltFfiDeclKind.CustomType;
@@ -514,6 +532,11 @@ public sealed class BoltFfiFunctionDecl
     public string Symbol { get; set; } = string.Empty;
     public bool IsAsync { get; set; }
     public bool HasError { get; set; }
+    public string AsyncPollSymbol { get; set; } = string.Empty;
+    public string AsyncCompleteSymbol { get; set; } = string.Empty;
+    public string AsyncCancelSymbol { get; set; } = string.Empty;
+    public string AsyncFreeSymbol { get; set; } = string.Empty;
+    public BoltFfiType? ErrorType { get; set; }
     public BoltFfiType ReturnType { get; set; } = new();
     public List<BoltFfiParamDecl> Parameters { get; set; } = new();
     public string? DocComment { get; set; }
@@ -546,12 +569,33 @@ public sealed class BoltFfiFunctionDecl
             if (exec?.AsString() == "Async" || exec?["Async"] != null || exec?["Asynchronous"] != null)
             {
                 func.IsAsync = true;
+                var pollHandle = exec?["PollHandle"] ?? exec?["Asynchronous"]?["PollHandle"];
+                if (pollHandle != null)
+                {
+                    func.AsyncPollSymbol = pollHandle["poll"]?["name"]?.AsString() ?? pollHandle["poll"]?.AsString() ?? string.Empty;
+                    func.AsyncCompleteSymbol = pollHandle["complete"]?["name"]?.AsString() ?? pollHandle["complete"]?.AsString() ?? string.Empty;
+                    func.AsyncCancelSymbol = pollHandle["cancel"]?["name"]?.AsString() ?? pollHandle["cancel"]?.AsString() ?? string.Empty;
+                    func.AsyncFreeSymbol = pollHandle["free"]?["name"]?.AsString() ?? pollHandle["free"]?.AsString() ?? string.Empty;
+                }
+
+                if (string.IsNullOrEmpty(func.AsyncPollSymbol) && !string.IsNullOrEmpty(func.Symbol))
+                {
+                    string baseSym = func.Symbol.StartsWith("boltffi_") ? func.Symbol.Substring(8) : func.Symbol;
+                    func.AsyncPollSymbol = $"boltffi_async_{baseSym}_poll";
+                    func.AsyncCompleteSymbol = $"boltffi_async_{baseSym}_complete";
+                    func.AsyncCancelSymbol = $"boltffi_async_{baseSym}_cancel";
+                    func.AsyncFreeSymbol = $"boltffi_async_{baseSym}_free";
+                }
             }
 
             var err = callable["error"];
             if (err is JsonObject && err["None"] == null)
             {
                 func.HasError = true;
+                if (err["Payload"] is JsonNode pNode) func.ErrorType = BoltFfiType.FromJson(pNode["ty"] ?? pNode);
+                else if (err["Custom"] != null) func.ErrorType = BoltFfiType.FromJson(err["Custom"]);
+                else if (err["Enum"] != null) func.ErrorType = BoltFfiType.FromJson(err);
+                else if (err["Record"] != null) func.ErrorType = BoltFfiType.FromJson(err);
             }
 
             var returns = callable["returns"] ?? node["returns"];
@@ -571,25 +615,21 @@ public sealed class BoltFfiFunctionDecl
                     {
                         func.ReturnType = BoltFfiType.Void;
                     }
-                    else if (plan["DirectViaReturnSlot"] != null)
+                    else if (plan["DirectViaReturnSlot"] is JsonNode slot1)
                     {
-                        var slot = plan["DirectViaReturnSlot"];
-                        func.ReturnType = BoltFfiType.FromDirectValue(slot["ty"] ?? slot);
+                        func.ReturnType = BoltFfiType.FromDirectValue(slot1["ty"] ?? slot1);
                     }
-                    else if (plan["EncodedViaReturnSlot"] != null)
+                    else if (plan["EncodedViaReturnSlot"] is JsonNode slot2)
                     {
-                        var slot = plan["EncodedViaReturnSlot"];
-                        func.ReturnType = BoltFfiType.FromJson(slot["ty"] ?? slot);
+                        func.ReturnType = BoltFfiType.FromJson(slot2["ty"] ?? slot2);
                     }
-                    else if (plan["HandleViaReturnSlot"] != null)
+                    else if (plan["HandleViaReturnSlot"] is JsonNode slot3)
                     {
-                        var slot = plan["HandleViaReturnSlot"];
-                        func.ReturnType = BoltFfiType.FromJson(slot["target"] ?? slot);
+                        func.ReturnType = BoltFfiType.FromJson(slot3["target"] ?? slot3);
                     }
-                    else if (plan["DirectViaOutPointer"] != null)
+                    else if (plan["DirectViaOutPointer"] is JsonNode slot4)
                     {
-                        var slot = plan["DirectViaOutPointer"];
-                        func.ReturnType = BoltFfiType.FromDirectValue(slot["ty"] ?? slot);
+                        func.ReturnType = BoltFfiType.FromDirectValue(slot4["ty"] ?? slot4);
                     }
                 }
                 else if (returns["Value"] != null)
@@ -669,6 +709,8 @@ public sealed class BoltFfiClassDecl
 public sealed class BoltFfiCallbackDecl
 {
     public BoltFfiCanonicalName Name { get; set; } = new();
+    public string RegisterSymbol { get; set; } = string.Empty;
+    public string CreateHandleSymbol { get; set; } = string.Empty;
     public List<BoltFfiFunctionDecl> Methods { get; set; } = new();
 
     public static BoltFfiCallbackDecl FromJson(JsonNode? node)
@@ -676,6 +718,17 @@ public sealed class BoltFfiCallbackDecl
         var cb = new BoltFfiCallbackDecl();
         if (node == null) return cb;
         cb.Name = BoltFfiCanonicalName.FromJson(node["name"]);
+
+        var proto = node["protocol"];
+        if (proto != null)
+        {
+            cb.RegisterSymbol = proto["register"]?["name"]?.AsString() ?? proto["register"]?.AsString() ?? string.Empty;
+            cb.CreateHandleSymbol = proto["create_handle"]?["name"]?.AsString() ?? proto["create_handle"]?.AsString() ?? string.Empty;
+        }
+        string cbSnake = cb.Name.ToSnakeCase();
+        if (string.IsNullOrEmpty(cb.RegisterSymbol)) cb.RegisterSymbol = $"boltffi_register_callback_{cbSnake}";
+        if (string.IsNullOrEmpty(cb.CreateHandleSymbol)) cb.CreateHandleSymbol = $"boltffi_create_callback_{cbSnake}";
+
         var methodsNode = node["methods"] ?? node["protocol"]?["methods"] ?? node["protocol"]?["vtable"]?["methods"];
         if (methodsNode is JsonArray arr)
         {
@@ -686,6 +739,63 @@ public sealed class BoltFfiCallbackDecl
             }
         }
         return cb;
+    }
+}
+
+public sealed class BoltFfiStreamDecl
+{
+    public BoltFfiCanonicalName Name { get; set; } = new();
+    public BoltFfiType ItemType { get; set; } = new();
+    public string SubscribeSymbol { get; set; } = string.Empty;
+    public string PopBatchSymbol { get; set; } = string.Empty;
+    public string WaitSymbol { get; set; } = string.Empty;
+    public string PollSymbol { get; set; } = string.Empty;
+    public string UnsubscribeSymbol { get; set; } = string.Empty;
+    public string FreeSymbol { get; set; } = string.Empty;
+    public string? DocComment { get; set; }
+
+    public static BoltFfiStreamDecl FromJson(JsonNode? node)
+    {
+        var s = new BoltFfiStreamDecl();
+        if (node == null) return s;
+        s.Name = BoltFfiCanonicalName.FromJson(node["name"]);
+        s.ItemType = BoltFfiType.FromJson(node["item"]?["ty"] ?? node["item"]);
+        var proto = node["protocol"];
+        if (proto != null)
+        {
+            s.SubscribeSymbol = proto["subscribe"]?["name"]?.AsString() ?? proto["subscribe"]?.AsString() ?? string.Empty;
+            s.PopBatchSymbol = proto["pop_batch"]?["name"]?.AsString() ?? proto["pop_batch"]?.AsString() ?? string.Empty;
+            s.WaitSymbol = proto["wait"]?["name"]?.AsString() ?? proto["wait"]?.AsString() ?? string.Empty;
+            s.PollSymbol = proto["poll"]?["name"]?.AsString() ?? proto["poll"]?.AsString() ?? string.Empty;
+            s.UnsubscribeSymbol = proto["unsubscribe"]?["name"]?.AsString() ?? proto["unsubscribe"]?.AsString() ?? string.Empty;
+            s.FreeSymbol = proto["free"]?["name"]?.AsString() ?? proto["free"]?.AsString() ?? string.Empty;
+        }
+        string streamSnake = s.Name.ToSnakeCase();
+        if (string.IsNullOrEmpty(s.SubscribeSymbol)) s.SubscribeSymbol = $"boltffi_stream_{streamSnake}_subscribe";
+        if (string.IsNullOrEmpty(s.PopBatchSymbol)) s.PopBatchSymbol = $"boltffi_stream_{streamSnake}_pop_batch";
+        if (string.IsNullOrEmpty(s.WaitSymbol)) s.WaitSymbol = $"boltffi_stream_{streamSnake}_wait";
+        if (string.IsNullOrEmpty(s.PollSymbol)) s.PollSymbol = $"boltffi_stream_{streamSnake}_poll";
+        if (string.IsNullOrEmpty(s.UnsubscribeSymbol)) s.UnsubscribeSymbol = $"boltffi_stream_{streamSnake}_unsubscribe";
+        if (string.IsNullOrEmpty(s.FreeSymbol)) s.FreeSymbol = $"boltffi_stream_{streamSnake}_free";
+        return s;
+    }
+}
+
+public sealed class BoltFfiConstantDecl
+{
+    public BoltFfiCanonicalName Name { get; set; } = new();
+    public BoltFfiType Type { get; set; } = new();
+    public string ValueLiteral { get; set; } = string.Empty;
+    public string? DocComment { get; set; }
+
+    public static BoltFfiConstantDecl FromJson(JsonNode? node)
+    {
+        var c = new BoltFfiConstantDecl();
+        if (node == null) return c;
+        c.Name = BoltFfiCanonicalName.FromJson(node["name"]);
+        c.Type = BoltFfiType.FromJson(node["ty"] ?? node["type"]);
+        c.ValueLiteral = node["value"]?.ToString() ?? node["literal"]?.ToString() ?? string.Empty;
+        return c;
     }
 }
 
@@ -705,11 +815,18 @@ public enum BoltFfiTypeKind
     Float64,
     String,
     Bytes,
+    Duration,
+    DateTime,
+    Guid,
+    Uri,
     Record,
     Enum,
     Class,
+    Callback,
     Option,
     Sequence,
+    Map,
+    Set,
     Custom
 }
 
@@ -718,6 +835,8 @@ public sealed class BoltFfiType
     public BoltFfiTypeKind Kind { get; set; }
     public string CustomTypeName { get; set; } = string.Empty;
     public BoltFfiType? InnerType { get; set; }
+    public BoltFfiType? KeyType { get; set; }
+    public BoltFfiType? ValueType { get; set; }
     public bool IsDirectRecord { get; set; } = true;
 
     public static BoltFfiType Void => new() { Kind = BoltFfiTypeKind.Void };
@@ -755,29 +874,82 @@ public sealed class BoltFfiType
             };
         }
 
-        if (node["Option"] != null)
+        if (node["Callback"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Callback,
+                CustomTypeName = node["Callback"]?.ToString() ?? string.Empty
+            };
+        }
+
+        if (node["Option"] != null || node["Optional"] != null)
         {
             return new BoltFfiType
             {
                 Kind = BoltFfiTypeKind.Option,
-                InnerType = FromJson(node["Option"])
+                InnerType = FromJson(node["Option"] ?? node["Optional"])
             };
         }
 
-        if (node["Vec"] != null)
+        if (node["Vec"] != null || node["Sequence"] != null)
         {
             return new BoltFfiType
             {
                 Kind = BoltFfiTypeKind.Sequence,
-                InnerType = FromJson(node["Vec"])
+                InnerType = FromJson(node["Vec"] ?? node["Sequence"])
+            };
+        }
+
+        if (node["Map"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Map,
+                KeyType = FromJson(node["Map"]?["key"]),
+                ValueType = FromJson(node["Map"]?["value"])
+            };
+        }
+
+        if (node["Set"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Set,
+                InnerType = FromJson(node["Set"])
             };
         }
 
         if (node["Builtin"] != null)
         {
             string? b = node["Builtin"]?.AsString();
-            if (b == "String") return Primitive(BoltFfiTypeKind.String);
-            return Primitive(BoltFfiTypeKind.Bytes);
+            return b switch
+            {
+                "String" => Primitive(BoltFfiTypeKind.String),
+                "Bytes" => Primitive(BoltFfiTypeKind.Bytes),
+                "Duration" => Primitive(BoltFfiTypeKind.Duration),
+                "DateTime" => Primitive(BoltFfiTypeKind.DateTime),
+                "Guid" => Primitive(BoltFfiTypeKind.Guid),
+                "Uri" => Primitive(BoltFfiTypeKind.Uri),
+                _ => Primitive(BoltFfiTypeKind.Bytes)
+            };
+        }
+        if (node["Custom"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Custom,
+                CustomTypeName = node["Custom"]?.ToString() ?? string.Empty
+            };
+        }
+
+        if (node is JsonObject)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Custom,
+                CustomTypeName = node.ToString()
+            };
         }
 
         return Void;
@@ -822,25 +994,32 @@ public sealed class BoltFfiType
                 CustomTypeName = node["Enum"]?.ToString() ?? string.Empty
             };
         }
+        if (node["Custom"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Custom,
+                CustomTypeName = node["Custom"]?.ToString() ?? string.Empty
+            };
+        }
         return ParsePrimitive(node.AsString());
     }
 
     public static BoltFfiType FromParamPayload(JsonNode? node)
     {
         if (node == null) return Primitive(BoltFfiTypeKind.Bytes);
-        if (node["Value"] != null)
+        if (node["Value"] is JsonNode val)
         {
-            var val = node["Value"];
-            if (val["Direct"] != null) return FromDirectValue(val["Direct"]["ty"] ?? val["Direct"]);
-            if (val["Encoded"] != null) return FromJson(val["Encoded"]["ty"] ?? val["Encoded"]);
+            if (val["Direct"] is JsonNode d) return FromDirectValue(d["ty"] ?? d);
+            if (val["Encoded"] is JsonNode e) return FromJson(e["ty"] ?? e);
         }
-        if (node["Direct"] != null)
+        if (node["Direct"] is JsonNode dir)
         {
-            return FromDirectValue(node["Direct"]["ty"] ?? node["Direct"]);
+            return FromDirectValue(dir["ty"] ?? dir);
         }
-        if (node["Encoded"] != null)
+        if (node["Encoded"] is JsonNode enc)
         {
-            return FromJson(node["Encoded"]["ty"] ?? node["Encoded"]);
+            return FromJson(enc["ty"] ?? enc);
         }
         return FromJson(node);
     }
@@ -864,6 +1043,10 @@ public sealed class BoltFfiType
             "F64" => Primitive(BoltFfiTypeKind.Float64),
             "String" => Primitive(BoltFfiTypeKind.String),
             "Bytes" => Primitive(BoltFfiTypeKind.Bytes),
+            "Duration" => Primitive(BoltFfiTypeKind.Duration),
+            "DateTime" => Primitive(BoltFfiTypeKind.DateTime),
+            "Guid" => Primitive(BoltFfiTypeKind.Guid),
+            "Uri" => Primitive(BoltFfiTypeKind.Uri),
             _ => Primitive(BoltFfiTypeKind.Void)
         };
     }

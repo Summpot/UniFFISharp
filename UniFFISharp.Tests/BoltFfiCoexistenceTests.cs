@@ -27,7 +27,7 @@ public class BoltFfiCoexistenceTests
     {
         var envelope = Envelope(Function("version", "pixeval_native", "\"String\"") + "," +
             Function("is_pixiv_host", "pixeval_maho") + "," +
-            Function("locate_server_name", "pixeval_maho", "{\"Optional\":\"String\"}"));
+            Function("locate_server_name", "pixeval_maho", "{\"Custom\":\"UnsupportedOpaque\"}"));
         var routed = BoltFfiCoexistence.Prepare(new[] { envelope, envelope }, new[] { "pixeval_native", "pixeval_maho" });
 
         Assert.Equal(2, routed.Count);
@@ -41,7 +41,15 @@ public class BoltFfiCoexistenceTests
     [InlineData("{\"Optional\":\"String\"}")]
     [InlineData("{\"Sequence\":\"Bytes\"}")]
     [InlineData("{\"Map\":{\"key\":\"String\",\"value\":\"Bytes\"}}")]
-    [InlineData("{\"Record\":42}")]
+    [InlineData("{\"Record\":\"Point\"}")]
+    public void SupportedReturnShapesCanBind(string returns)
+    {
+        var function = Envelope(Function("test", "pixeval_native", returns)).Bindings.Native!.Decls[0].Function!;
+        Assert.True(BoltFfiCoexistence.CanBind(function));
+    }
+
+    [Theory]
+    [InlineData("{\"Custom\":\"UnknownOpaque\"}")]
     public void UnsupportedReturnShapesRetainUniFfi(string returns)
     {
         var function = Envelope(Function("test", "pixeval_native", returns)).Bindings.Native!.Decls[0].Function!;
@@ -49,11 +57,11 @@ public class BoltFfiCoexistenceTests
     }
 
     [Fact]
-    public void NativeAsyncProtocolIsRecognizedAndRetainsUniFfi()
+    public void NativeAsyncProtocolIsSupportedAndCanBind()
     {
         var function = Envelope(Function("ping", "pixeval_native", "\"String\"", "{\"Asynchronous\":{}}")).Bindings.Native!.Decls[0].Function!;
         Assert.True(function.IsAsync);
-        Assert.False(BoltFfiCoexistence.CanBind(function));
+        Assert.True(BoltFfiCoexistence.CanBind(function));
     }
 
     [Fact]

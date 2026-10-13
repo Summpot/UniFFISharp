@@ -133,12 +133,8 @@ public class BoltFfiCodegenAndArbitrationTests
         // 1. Namespace
         Assert.Contains("namespace Geometry.Core", source);
 
-        // 2. Inlined Lightweight Runtime
-        Assert.Contains("internal struct FfiBuf", source);
-        Assert.Contains("internal struct BoltFfiStatus", source);
-        Assert.Contains("public class BoltFfiException : global::System.Exception", source);
-        Assert.Contains("class WireReader", source);
-        Assert.Contains("internal sealed class WireWriter", source);
+        // 2. Shared Runtime reference
+        Assert.Contains("using UniFFISharp.BoltFfi;", source);
 
         // 3. Direct Struct (Blittable)
         Assert.Contains("[StructLayout(LayoutKind.Sequential)]", source);
@@ -172,7 +168,7 @@ public class BoltFfiCodegenAndArbitrationTests
         // 7. Public Friendly Methods
         Assert.Contains("public static partial class GeometryCoreMethods", source);
         Assert.Contains("public static Point CreatePoint(double x, double y)", source);
-        Assert.Contains("public static unsafe async Task<string> RenderAsync(CanvasRenderer renderer, string title)", source);
+        Assert.Contains("public static unsafe Task<string> RenderAsync(CanvasRenderer renderer, string title, CancellationToken cancellationToken = default)", source);
         Assert.Contains("renderer.GetHandle()", source);
         Assert.Contains("title_wire", source);
         Assert.Contains(".ReadString()", source);
@@ -645,7 +641,7 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains(": this(__Create_boltffi_database_session_new(connStr), true)", source);
         Assert.Contains("public unsafe string Query(string sql)", source);
         Assert.Contains("NativeMethods.boltffi_database_session_query(GetHandle(),", source);
-        Assert.Contains("public unsafe async Task<int> ExecuteAsync(string sql)", source);
+        Assert.Contains("public unsafe Task<int> ExecuteAsync(string sql, CancellationToken cancellationToken = default)", source);
         Assert.Contains("public void Close()", source);
         Assert.Contains("NativeMethods.boltffi_database_session_close(GetHandle());", source);
         Assert.Contains("NativeMethods.boltffi_release_database_session(", source);
@@ -653,7 +649,7 @@ public class BoltFfiCodegenAndArbitrationTests
         // Verify NativeMethods
         Assert.Contains("internal static extern nint boltffi_database_session_new(nint connStr_ptr, nuint connStr_len);", source);
         Assert.Contains("internal static extern FfiBuf boltffi_database_session_query(nint handle, nint sql_ptr, nuint sql_len);", source);
-        Assert.Contains("internal static extern int boltffi_database_session_execute_async(nint handle, nint sql_ptr, nuint sql_len);", source);
+        Assert.Contains("internal static extern nint boltffi_database_session_execute_async(nint handle, nint sql_ptr, nuint sql_len);", source);
         Assert.Contains("internal static extern void boltffi_database_session_close(nint handle);", source);
         Assert.Contains("internal static extern void boltffi_release_database_session(nint handle);", source);
 
@@ -807,10 +803,9 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains("public partial interface IEventListener", source);
         Assert.Contains("void OnEvent(int eventId, string message);", source);
         Assert.Contains("internal static class EventListenerBridge", source);
-        Assert.Contains("ConcurrentDictionary<ulong, IEventListener> Handles = new();", source);
-        Assert.Contains("internal static ulong Register(IEventListener? callback)", source);
-        Assert.Contains("internal static IEventListener? Get(ulong handle)", source);
-        Assert.Contains("internal static void Free(ulong handle)", source);
+        Assert.Contains("internal struct VTable", source);
+        Assert.Contains("internal static BoltFFICallbackHandle Create(IEventListener? callback)", source);
+        Assert.Contains("public sealed class EventListenerProxy : IEventListener", source);
 
         // Verify syntax validity
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
