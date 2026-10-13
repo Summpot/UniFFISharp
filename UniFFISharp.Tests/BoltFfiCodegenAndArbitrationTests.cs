@@ -138,20 +138,16 @@ public class BoltFfiCodegenAndArbitrationTests
 
         // 3. Direct Struct (Blittable)
         Assert.Contains("[StructLayout(LayoutKind.Sequential)]", source);
-        Assert.Contains("public partial struct Point : IEquatable<Point>", source);
-        Assert.Contains("public double X;", source);
-        Assert.Contains("public double Y;", source);
-        Assert.Contains("public bool Equals(Point other)", source);
-        Assert.Contains("public override int GetHashCode()", source);
-        Assert.Contains("public static bool operator ==(Point left, Point right)", source);
+        Assert.Contains("public partial record struct Point(double X, double Y);", source);
 
         // 4. Enum
         Assert.Contains("public enum ShapeKind", source);
         Assert.Contains("Circle = 0,", source);
         Assert.Contains("Square = 1,", source);
 
-        // 5. Class Handle with IDisposable
-        Assert.Contains("public partial class CanvasRenderer : IDisposable", source);
+        // 5. Class Handle with IDisposable and Interface
+        Assert.Contains("public partial interface ICanvasRenderer : IDisposable", source);
+        Assert.Contains("public partial class CanvasRenderer : ICanvasRenderer, IDisposable", source);
         Assert.Contains("private nint handle;", source);
         Assert.Contains("internal CanvasRenderer(nint handle, bool isHandle)", source);
         Assert.Contains("internal nint GetHandle()", source);
@@ -416,8 +412,7 @@ public class BoltFfiCodegenAndArbitrationTests
 
             var boltTree = runResult.GeneratedTrees.First(t => t.FilePath.Contains("BoltFFIBindings.mock_pkg.g.cs"));
             string text = boltTree.GetText().ToString();
-            Assert.Contains("public partial struct SampleData", text);
-            Assert.Contains("public int Id;", text);
+            Assert.Contains("public partial record struct SampleData(int Id);", text);
         }
         finally
         {
@@ -636,7 +631,8 @@ public class BoltFfiCodegenAndArbitrationTests
         string source = BoltFfiCodeGenerator.Generate(env!, "db_client.dll", "Db.Client");
 
         // Verify class generation
-        Assert.Contains("public partial class DatabaseSession : IDisposable", source);
+        Assert.Contains("public partial interface IDatabaseSession : IDisposable", source);
+        Assert.Contains("public partial class DatabaseSession : IDatabaseSession, IDisposable", source);
         Assert.Contains("public DatabaseSession(string connStr)", source);
         Assert.Contains(": this(__Create_boltffi_database_session_new(connStr), true)", source);
         Assert.Contains("public unsafe string Query(string sql)", source);

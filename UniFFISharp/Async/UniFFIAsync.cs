@@ -81,15 +81,40 @@ public static class _UniFFIAsync
         }
     }
 
-    private static async Task PollFuture(ulong rustFuture, Action<ulong, IntPtr, ulong> pollFunc)
+    private static async Task PollFuture(
+        ulong rustFuture,
+        Action<ulong, IntPtr, ulong> pollFunc,
+        Action<ulong>? cancelFunc = null,
+        CancellationToken cancellationToken = default)
     {
         byte pollResult;
         do
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var tcs = new TaskCompletionSource<byte>(TaskCreationOptions.RunContinuationsAsynchronously);
             ulong mapEntry = _asyncHandleMap.Insert(tcs);
-            pollFunc(rustFuture, _continuationCallbackPtr, mapEntry);
-            pollResult = await tcs.Task.ConfigureAwait(false);
+            CancellationTokenRegistration reg = default;
+            if (cancellationToken.CanBeCanceled && cancelFunc != null)
+            {
+                reg = cancellationToken.Register(() =>
+                {
+                    if (_asyncHandleMap.Remove(mapEntry, out var pendingTcs) && pendingTcs != null)
+                    {
+                        pendingTcs.TrySetCanceled(cancellationToken);
+                    }
+                    try { cancelFunc(rustFuture); } catch { }
+                });
+            }
+
+            try
+            {
+                pollFunc(rustFuture, _continuationCallbackPtr, mapEntry);
+                pollResult = await tcs.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                reg.Dispose();
+            }
         }
         while (pollResult != UNIFFI_RUST_FUTURE_POLL_READY);
     }
@@ -100,12 +125,14 @@ public static class _UniFFIAsync
         CompleteFuncDelegate<F> completeFunc,
         Action<ulong> freeFunc,
         Func<F, T> liftFunc,
-        CallStatusErrorHandler<E> errorHandler
+        CallStatusErrorHandler<E> errorHandler,
+        Action<ulong>? cancelFunc = null,
+        CancellationToken cancellationToken = default
     ) where E : Exception
     {
         try
         {
-            await PollFuture(rustFuture, pollFunc).ConfigureAwait(false);
+            await PollFuture(rustFuture, pollFunc, cancelFunc, cancellationToken).ConfigureAwait(false);
             var status = new UniffiRustCallStatus();
             var result = completeFunc(rustFuture, ref status);
             if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);
@@ -122,12 +149,14 @@ public static class _UniFFIAsync
         Action<ulong, IntPtr, ulong> pollFunc,
         CompleteActionDelegate completeFunc,
         Action<ulong> freeFunc,
-        CallStatusErrorHandler<E> errorHandler
+        CallStatusErrorHandler<E> errorHandler,
+        Action<ulong>? cancelFunc = null,
+        CancellationToken cancellationToken = default
     ) where E : Exception
     {
         try
         {
-            await PollFuture(rustFuture, pollFunc).ConfigureAwait(false);
+            await PollFuture(rustFuture, pollFunc, cancelFunc, cancellationToken).ConfigureAwait(false);
             var status = new UniffiRustCallStatus();
             completeFunc(rustFuture, ref status);
             if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);

@@ -1,8 +1,9 @@
 using System;
+using UniFFISharp.Exceptions;
 
 namespace UniFFISharp.BoltFfi;
 
-public class BoltFfiException : Exception
+public class BoltFfiException : UniffiException
 {
     public int Code { get; }
     public int StatusCode => Code;
@@ -12,7 +13,7 @@ public class BoltFfiException : Exception
         Code = code;
     }
 
-    public BoltFfiException(int code, string message, Exception? innerException) : base(message, innerException)
+    public BoltFfiException(int code, string message, Exception? innerException) : base(message, innerException!)
     {
         Code = code;
     }

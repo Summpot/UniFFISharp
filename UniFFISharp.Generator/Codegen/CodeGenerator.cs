@@ -706,6 +706,9 @@ public static class CodeGenerator
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rust_future_poll_{suffix}\", CallingConvention = CallingConvention.Cdecl)]");
                 cb.AppendLine($"public static extern void ffi_{crateNorm}_rust_future_poll_{suffix}(ulong handle, IntPtr callback, ulong data);");
                 cb.AppendLine();
+                cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rust_future_cancel_{suffix}\", CallingConvention = CallingConvention.Cdecl)]");
+                cb.AppendLine($"public static extern void ffi_{crateNorm}_rust_future_cancel_{suffix}(ulong handle);");
+                cb.AppendLine();
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"ffi_{crateNorm}_rust_future_complete_{suffix}\", CallingConvention = CallingConvention.Cdecl)]");
                 cb.AppendLine($"public static extern {completeFfi} ffi_{crateNorm}_rust_future_complete_{suffix}(ulong handle, ref UniffiRustCallStatus status);");
                 cb.AppendLine();
@@ -720,7 +723,7 @@ public static class CodeGenerator
             }
             foreach (var obj in ci.Objects)
             {
-                foreach (var ctor in obj.Constructors) if (ctor.IsAsync) DeclareFutureFns(null);
+                foreach (var ctor in obj.Constructors) if (ctor.IsAsync) DeclareFutureFns(new UniFFIType { Kind = TypeKind.Interface });
                 foreach (var m in obj.Methods) if (m.IsAsync) DeclareFutureFns(m.ReturnType);
             }
 
@@ -1219,7 +1222,8 @@ public static class CodeGenerator
                 string def = field.DefaultValue != null ? $" = {field.DefaultValue}" : "";
                 paramDecls.Add($"{TypeHelper.ToCSharpType(field.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}{def}");
             }
-            cb.AppendLine($"public partial record {recordName}({string.Join(", ", paramDecls)});");
+            cb.AppendLine("[StructLayout(LayoutKind.Sequential)]");
+            cb.AppendLine($"public partial record struct {recordName}({string.Join(", ", paramDecls)});");
             cb.AppendLine();
         }
 
@@ -1761,6 +1765,10 @@ public static class CodeGenerator
                 }
                 string methodName = TypeHelper.ToPascalCase(m.Name);
                 if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
+                if (m.IsAsync)
+                {
+                    paramDecls.Add("CancellationToken cancellationToken = default");
+                }
                 cb.AppendLine($"{retType} {methodName}({string.Join(", ", paramDecls)});");
             }
         }
@@ -1918,7 +1926,8 @@ public static class CodeGenerator
                 if (ctor.IsAsync)
                 {
                     string asyncCtorName = ctor.Name == "new" ? $"{objName}Async" : (ctorName.EndsWith("Async") ? ctorName : $"{ctorName}Async");
-                    using (cb.Block($"public static async Task<{objName}> {asyncCtorName}({string.Join(", ", paramDecls)})"))
+                    var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
+                    using (cb.Block($"public static async Task<{objName}> {asyncCtorName}({string.Join(", ", asyncParamDecls)})"))
                     {
                         cb.AppendLine($"ulong futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
                         cb.AppendLine($"var ptr = await _UniFFIAsync.UniffiRustCallAsync(");
@@ -1928,7 +1937,9 @@ public static class CodeGenerator
                         cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => (IntPtr)_UniFFILib.ffi_{crateNorm}_rust_future_complete_u64(f, ref s),");
                         cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_u64(f),");
                         cb.AppendLine("res => res,");
-                        cb.AppendLine($"{errorHandler}");
+                        cb.AppendLine($"{errorHandler},");
+                        cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_u64(f),");
+                        cb.AppendLine("cancellationToken");
                         cb.Unindent();
                         cb.AppendLine(");");
                         cb.AppendLine($"return CreateInternal(ptr);");
@@ -1994,7 +2005,8 @@ public static class CodeGenerator
                 if (m.IsAsync)
                 {
                     string suffix = TypeHelper.FutureSuffix(m.ReturnType);
-                    using (cb.Block($"public async {retType} {methodName}({string.Join(", ", paramDecls)})"))
+                    var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
+                    using (cb.Block($"public async {retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
                     {
                         cb.AppendLine("IncrementCallCounter();");
                         cb.AppendLine("ulong futureHandle;");
@@ -2014,7 +2026,9 @@ public static class CodeGenerator
                             cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
                             cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            cb.AppendLine($"{errorHandler}");
+                            cb.AppendLine($"{errorHandler},");
+                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
                         }
@@ -2028,7 +2042,9 @@ public static class CodeGenerator
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
                             string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
-                            cb.AppendLine($"{errorHandler}");
+                            cb.AppendLine($"{errorHandler},");
+                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
                         }
@@ -2191,7 +2207,8 @@ public static class CodeGenerator
                 if (fn.IsAsync)
                 {
                     string suffix = TypeHelper.FutureSuffix(fn.ReturnType);
-                    using (cb.Block($"public static {partialMod}async {retType} {methodName}({string.Join(", ", paramDecls)})"))
+                    var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
+                    using (cb.Block($"public static {partialMod}async {retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
                     {
                         cb.AppendLine($"ulong futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
                         if (fn.ReturnType == null)
@@ -2202,7 +2219,9 @@ public static class CodeGenerator
                             cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
                             cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            cb.AppendLine($"{errorHandler}");
+                            cb.AppendLine($"{errorHandler},");
+                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
                         }
@@ -2216,7 +2235,9 @@ public static class CodeGenerator
                             cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
                             string liftExpr = TypeHelper.IsFfiPrimitive(fn.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(fn.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
-                            cb.AppendLine($"{errorHandler}");
+                            cb.AppendLine($"{errorHandler},");
+                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
                         }

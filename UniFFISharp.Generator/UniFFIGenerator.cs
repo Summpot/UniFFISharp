@@ -349,32 +349,47 @@ namespace UniFFISharp
                                     var allFnNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                                     foreach (var fn in matchedCi.Functions)
                                     {
-                                        allFnNames.Add(TypeHelper.ToPascalCase(fn.Name));
+                                        string p = TypeHelper.ToPascalCase(fn.Name);
+                                        allFnNames.Add(p);
+                                        if (fn.IsAsync && !p.EndsWith("Async")) allFnNames.Add(p + "Async");
                                     }
                                     foreach (var decl in env.Bindings.Native.Decls)
                                     {
                                         if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
                                         {
-                                            allFnNames.Add(decl.Function.Name.ToPascalCase());
+                                            string p = decl.Function.Name.ToPascalCase();
+                                            allFnNames.Add(p);
+                                            if (decl.Function.IsAsync && !p.EndsWith("Async")) allFnNames.Add(p + "Async");
                                         }
                                     }
 
                                     foreach (var pascalName in allFnNames)
                                     {
                                         var uniffiFn = matchedCi.Functions.FirstOrDefault(f =>
-                                            string.Equals(TypeHelper.ToPascalCase(f.Name), pascalName, StringComparison.OrdinalIgnoreCase) ||
-                                            string.Equals(f.Name, pascalName, StringComparison.OrdinalIgnoreCase));
+                                        {
+                                            string p = TypeHelper.ToPascalCase(f.Name);
+                                            string pAsync = (f.IsAsync && !p.EndsWith("Async")) ? p + "Async" : p;
+                                            return string.Equals(p, pascalName, StringComparison.OrdinalIgnoreCase) ||
+                                                   string.Equals(pAsync, pascalName, StringComparison.OrdinalIgnoreCase) ||
+                                                   string.Equals(f.Name, pascalName, StringComparison.OrdinalIgnoreCase);
+                                        });
 
                                         var boltDecl = env.Bindings.Native.Decls.FirstOrDefault(d =>
-                                            d.Kind == BoltFfiDeclKind.Function && d.Function != null &&
-                                            (string.Equals(d.Function.Name.ToPascalCase(), pascalName, StringComparison.OrdinalIgnoreCase) ||
-                                             string.Equals(d.Function.Name.ToSnakeCase(), pascalName, StringComparison.OrdinalIgnoreCase)));
+                                        {
+                                            if (d.Kind != BoltFfiDeclKind.Function || d.Function == null) return false;
+                                            string p = d.Function.Name.ToPascalCase();
+                                            string pAsync = (d.Function.IsAsync && !p.EndsWith("Async")) ? p + "Async" : p;
+                                            return string.Equals(p, pascalName, StringComparison.OrdinalIgnoreCase) ||
+                                                   string.Equals(pAsync, pascalName, StringComparison.OrdinalIgnoreCase) ||
+                                                   string.Equals(d.Function.Name.ToSnakeCase(), pascalName, StringComparison.OrdinalIgnoreCase);
+                                        });
                                         var boltFn = boltDecl?.Function;
 
                                         var userMethod = userPartialMethods.FirstOrDefault(m =>
                                             string.Equals(m.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
                                             (string.IsNullOrEmpty(m.ContainingNamespace) || string.Equals(m.ContainingNamespace, matchedCi.Namespace, StringComparison.OrdinalIgnoreCase)) &&
-                                            string.Equals(m.MethodName, pascalName, StringComparison.OrdinalIgnoreCase));
+                                            (string.Equals(m.MethodName, pascalName, StringComparison.OrdinalIgnoreCase) ||
+                                             (pascalName.EndsWith("Async") && string.Equals(m.MethodName + "Async", pascalName, StringComparison.OrdinalIgnoreCase))));
 
                                         bool isUserPartial = userMethod != null;
                                         var overrideEngine = InteropEngine.Auto;

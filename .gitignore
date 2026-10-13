@@ -12,3 +12,4 @@ benchmarks/target/
 GeneratedFiles/
 *.stamp
 metadata_dump.json
+.vscode/
