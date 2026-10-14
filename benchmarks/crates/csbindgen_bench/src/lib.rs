@@ -180,3 +180,37 @@ pub extern "C" fn cs_bench_parse_positive(val: i64) -> CsResultInt64 {
         }
     }
 }
+
+// 7. Callbacks
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_invoke_callback(cb: extern "C" fn(i64) -> i64, val: i64) -> i64 {
+    cb(val)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_trigger_progress(cb: extern "C" fn(u64, u64, f64), times: u32) {
+    for i in 1..=times {
+        let cur = i as u64;
+        let tot = times as u64;
+        cb(cur, tot, (cur as f64) / (tot as f64) * 100.0);
+    }
+}
+
+// 8. Large Buffer
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_process_large_buffer(ptr: *mut u8, len: usize) {
+    let slice = std::slice::from_raw_parts_mut(ptr, len);
+    for x in slice {
+        *x ^= 0x2A;
+    }
+}
+
+// 9. Async Task completion via callback
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_async_compute(input: u64, delay_micros: u64, context: *mut std::ffi::c_void, on_complete: extern "C" fn(*mut std::ffi::c_void, u64)) {
+    if delay_micros > 0 {
+        std::thread::sleep(std::time::Duration::from_micros(delay_micros));
+    }
+    on_complete(context, input * 2);
+}
+

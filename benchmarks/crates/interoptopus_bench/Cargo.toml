@@ -1,0 +1,16 @@
+[package]
+name = "interoptopus_bench"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "generate_interoptopus"
+path = "src/bin/generate.rs"
+
+[dependencies]
+interoptopus = { version = "0.16.6", features = ["macros", "tokio"] }
+interoptopus_csharp = { version = "0.16.6", features = ["unstable-plugins", "unstable-rt-dotnet-download"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }

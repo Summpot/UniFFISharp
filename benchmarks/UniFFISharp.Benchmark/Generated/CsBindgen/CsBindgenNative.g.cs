@@ -69,6 +69,18 @@ namespace CsBindgenBench
         [DllImport(__DllName, EntryPoint = "cs_bench_parse_positive", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern CsResultInt64 cs_bench_parse_positive(long val);
 
+        [DllImport(__DllName, EntryPoint = "cs_bench_invoke_callback", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern long cs_bench_invoke_callback(delegate* unmanaged[Cdecl]<long, long> cb, long val);
+
+        [DllImport(__DllName, EntryPoint = "cs_bench_trigger_progress", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void cs_bench_trigger_progress(delegate* unmanaged[Cdecl]<ulong, ulong, double, void> cb, uint times);
+
+        [DllImport(__DllName, EntryPoint = "cs_bench_process_large_buffer", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void cs_bench_process_large_buffer(byte* ptr, nuint len);
+
+        [DllImport(__DllName, EntryPoint = "cs_bench_async_compute", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void cs_bench_async_compute(ulong input, ulong delay_micros, void* context, delegate* unmanaged[Cdecl]<void*, ulong, void> on_complete);
+
 
     }
 

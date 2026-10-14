@@ -37,6 +37,7 @@
   <ItemGroup>
     <None Include="..\target\release\*diplomat_bench.*" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <None Include="..\target\release\*csbindgen_bench.*" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="..\target\release\*interoptopus_bench.*" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
 </Project>

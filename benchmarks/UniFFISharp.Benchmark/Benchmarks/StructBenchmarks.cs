@@ -11,10 +11,10 @@ namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
 [MarkdownExporterAttribute.GitHub]
 public class StructBenchmarks
 {
-    private UniffiBench.Point3D _uPoint = null!;
+    private UniffiBench.Point3D _uPoint;
     private DiplomatBench.Point3D _dPoint;
 
-    private UniffiBench.UserInfo _uUser = null!;
+    private UniffiBench.UserInfo _uUser;
     private DiplomatBench.UserInfo _dUser;
 
     [GlobalSetup]

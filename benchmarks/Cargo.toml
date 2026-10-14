@@ -3,6 +3,7 @@ members = [
     "crates/uniffi_bench",
     "crates/diplomat_bench",
     "crates/csbindgen_bench",
+    "crates/interoptopus_bench",
 ]
 resolver = "2"
 

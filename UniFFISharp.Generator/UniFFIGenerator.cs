@@ -502,6 +502,17 @@ namespace UniFFISharp
                                 }
                             }
 
+                            // Types defined in the current BoltFFI crate belong to boltTargetNs (unless suppressed)
+                            foreach (var decl in env.Bindings.Native.Decls)
+                            {
+                                if (!string.IsNullOrEmpty(decl.DeclName) &&
+                                    (suppressTypeDefinitions == null || !suppressTypeDefinitions.Contains(decl.DeclName)))
+                                {
+                                    typeToNs[decl.DeclName] = boltTargetNs;
+                                    typeToNs[TypeHelper.ToPascalCase(decl.DeclName)] = boltTargetNs;
+                                }
+                            }
+
                             string boltSource = BoltFfiCodeGenerator.Generate(
                                 env,
                                 Path.GetFileName(libPath),

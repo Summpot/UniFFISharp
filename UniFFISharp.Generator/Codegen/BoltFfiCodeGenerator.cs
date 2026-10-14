@@ -1150,7 +1150,7 @@ public static class BoltFfiCodeGenerator
             else if (NeedsWireBuffer(p.Type))
             {
                 preStmts.Add($"var {pName}_writer = WireWriter.GetOrCreate();");
-                preStmts.Add($"{WireWriteStatement(p.Type, pName)};");
+                preStmts.Add($"{WireWriteStatement(p.Type, pName, $"{pName}_writer")};");
                 fixedVars.Add(($"{pName}_ptr", $"{pName}_writer.Buffer"));
                 callArgs.Add($"(nint){pName}_ptr");
                 callArgs.Add($"(nuint){pName}_writer.Length");
