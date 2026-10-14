@@ -252,6 +252,139 @@ public class SignatureArbitrationAndPartialMethodTests
     }
 
     [Fact]
+    public void SelectBestEngine_FallibleCStyleEnum_SelectsUniFFI()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "parse_level",
+            ReturnType = new UniFFIType { Kind = TypeKind.Enum, Name = "LogLevel" },
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "code", Type = UniFFIType.Primitive(TypeKind.Int32) }
+            },
+            Throws = new UniFFIType { Kind = TypeKind.Enum, Name = "BenchError" }
+        };
+
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "parse", "level" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Enum, IsCStyleEnum = true, CustomTypeName = "LogLevel" },
+            Parameters = new List<BoltFfiParamDecl>
+            {
+                new() { Name = "code", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Int32 } }
+            },
+            HasError = true
+        };
+
+        var winner = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn);
+        Assert.Equal(GeneratorEngine.UniFFI, winner);
+    }
+
+    [Fact]
+    public void SelectBestEngine_InfallibleCStyleEnum_SelectsBoltFFI()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "get_level",
+            ReturnType = new UniFFIType { Kind = TypeKind.Enum, Name = "LogLevel" },
+            Inputs = new List<FnParamMetadata>(),
+            Throws = null
+        };
+
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "get", "level" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Enum, IsCStyleEnum = true, CustomTypeName = "LogLevel" },
+            Parameters = new List<BoltFfiParamDecl>(),
+            HasError = false
+        };
+
+        var winner = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn);
+        Assert.Equal(GeneratorEngine.BoltFFI, winner);
+    }
+
+    [Fact]
+    public void SelectBestEngine_OptionStringReturn_SelectsUniFFI()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "get_optional_alias",
+            ReturnType = new UniFFIType { Kind = TypeKind.Option, InnerType = UniFFIType.Primitive(TypeKind.String) },
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "id", Type = UniFFIType.Primitive(TypeKind.UInt64) }
+            }
+        };
+
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "get", "optional", "alias" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Option, InnerType = new BoltFfiType { Kind = BoltFfiTypeKind.String } },
+            Parameters = new List<BoltFfiParamDecl>
+            {
+                new() { Name = "id", Type = new BoltFfiType { Kind = BoltFfiTypeKind.UInt64 } }
+            }
+        };
+
+        var winner = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn);
+        Assert.Equal(GeneratorEngine.UniFFI, winner);
+    }
+
+    [Fact]
+    public void SelectBestEngine_ComplexCollection_SelectsBoltFFI()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "pass_complex_entities",
+            ReturnType = UniFFIType.Primitive(TypeKind.UInt64),
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "entities", Type = new UniFFIType { Kind = TypeKind.Sequence, InnerType = new UniFFIType { Kind = TypeKind.Record, Name = "BenchComplexEntity" } } }
+            }
+        };
+
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "pass", "complex", "entities" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.UInt64 },
+            Parameters = new List<BoltFfiParamDecl>
+            {
+                new() { Name = "entities", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Sequence, InnerType = new BoltFfiType { Kind = BoltFfiTypeKind.Record, CustomTypeName = "BenchComplexEntity" } } }
+            }
+        };
+
+        var winner = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn);
+        Assert.Equal(GeneratorEngine.BoltFFI, winner);
+    }
+
+    [Fact]
+    public void SelectBestEngine_TaggedUnionAst_SelectsBoltFFI()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "eval_tagged_union",
+            ReturnType = UniFFIType.Primitive(TypeKind.UInt64),
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "ast", Type = new UniFFIType { Kind = TypeKind.Enum, Name = "BenchTaggedUnion" } }
+            }
+        };
+
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "eval", "tagged", "union" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.UInt64 },
+            Parameters = new List<BoltFfiParamDecl>
+            {
+                new() { Name = "ast", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Enum, IsCStyleEnum = false, CustomTypeName = "BenchTaggedUnion" } }
+            }
+        };
+
+        var winner = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn);
+        Assert.Equal(GeneratorEngine.BoltFFI, winner);
+    }
+
+    [Fact]
     public void IncrementalGenerator_ArbitratesAndSelectsFastestEnginePerSignature()
     {
         string tempDir = Path.Combine(Path.GetTempPath(), "uniffisharp_arb_test_" + Guid.NewGuid().ToString("N"));

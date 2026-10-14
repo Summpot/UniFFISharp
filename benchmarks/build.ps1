@@ -33,10 +33,14 @@ cargo run --release --bin generate_interoptopus
 Write-Host "[3/4] Generating Diplomat C# bindings..." -ForegroundColor Cyan
 $DiplomatOut = "UniFFISharp.Benchmark/Generated/Diplomat"
 if (-not (Get-Command "diplomat-tool" -ErrorAction SilentlyContinue)) {
-    Write-Error "diplomat-tool CLI not found in PATH. Please run 'cargo install diplomat-tool'."
+    if (Test-Path (Join-Path $DiplomatOut "BenchOps.cs")) {
+        Write-Host "diplomat-tool CLI not found in PATH, using existing bindings in $DiplomatOut." -ForegroundColor Yellow
+    } else {
+        Write-Error "diplomat-tool CLI not found in PATH. Please run 'cargo install diplomat-tool'."
+    }
+} else {
+    diplomat-tool dotnet $DiplomatOut -e crates/diplomat_bench/src/lib.rs
 }
-
-diplomat-tool dotnet $DiplomatOut -e crates/diplomat_bench/src/lib.rs
 
 # Ensure BenchCounter.Manual.cs exists for deterministic IDisposable
 $ManualDisposable = Join-Path $DiplomatOut "BenchCounter.Manual.cs"
