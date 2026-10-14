@@ -144,8 +144,8 @@ public class PartialTypesTests
         var ci = CreateSampleComponentInterface();
         string code = CodeGenerator.Generate(ci, "test.dll");
 
-        // Record should be partial
-        Assert.Contains("public partial record UserProfile(", code);
+        // Record should be partial record struct
+        Assert.Contains("public partial record struct UserProfile(", code);
 
         // Object interface and class should be partial
         Assert.Contains("public partial interface ISessionManager : IDisposable", code);
@@ -214,7 +214,7 @@ public class PartialTypesTests
 namespace TestCrate;
 
 // 1. Extend Record
-public partial record UserProfile
+public partial record struct UserProfile
 {
     public string DisplayInfo => $""{Name} ({Age})"";
 }
