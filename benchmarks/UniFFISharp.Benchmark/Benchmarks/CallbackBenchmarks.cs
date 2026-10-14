@@ -33,8 +33,24 @@ public unsafe class CallbackBenchmarks
         }
     }
 
+    private sealed class BoltSimpleCb : UniffiBench.Bolt.IBoltSimpleCallback
+    {
+        public long OnInvoke(long val) => val * 2;
+    }
+
+    private sealed class BoltProgressCb : UniffiBench.Bolt.IBoltProgressCallback
+    {
+        public ulong LastCurrent;
+        public void OnProgress(ulong current, ulong total, double percentage)
+        {
+            LastCurrent = current;
+        }
+    }
+
     private UniFfiSimpleCb _uSimple = null!;
     private UniFfiProgressCb _uProgress = null!;
+    private BoltSimpleCb _bSimple = null!;
+    private BoltProgressCb _bProgress = null!;
 
     private BenchSimpleCallbackDelegate _iSimple = null!;
     private BenchProgressCallbackDelegate _iProgress = null!;
@@ -56,6 +72,8 @@ public unsafe class CallbackBenchmarks
     {
         _uSimple = new UniFfiSimpleCb();
         _uProgress = new UniFfiProgressCb();
+        _bSimple = new BoltSimpleCb();
+        _bProgress = new BoltProgressCb();
 
         _iSimple = val => val * 2;
         _iProgress = (cur, tot, pct) => { _iLastCurrent = cur; };
@@ -69,6 +87,12 @@ public unsafe class CallbackBenchmarks
     public long SimpleCallback_UniFFI()
     {
         return ClassicBench.BenchInvokeCallback(_uSimple, 42);
+    }
+
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
+    public long SimpleCallback_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimple, 42);
     }
 
     [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Raw FnPtr)")]
@@ -92,6 +116,12 @@ public unsafe class CallbackBenchmarks
     public void ProgressCallback_100x_UniFFI()
     {
         ClassicBench.BenchTriggerProgress(_uProgress, 100);
+    }
+
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
+    public void ProgressCallback_100x_BoltFFI()
+    {
+        UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgress, 100);
     }
 
     [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Raw FnPtr)")]

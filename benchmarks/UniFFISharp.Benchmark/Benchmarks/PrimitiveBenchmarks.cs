@@ -25,6 +25,12 @@ public class PrimitiveBenchmarks
         BenchOps.BenchNoop();
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): NoOp")]
+    public void NoOp_BoltFFI()
+    {
+        UniffiBench.Bolt.UniffiBenchMethods.BenchNoop();
+    }
+
     [Benchmark(Description = "UniFFI: AddInt64")]
     public long AddInt64_UniFFI()
     {
@@ -37,6 +43,12 @@ public class PrimitiveBenchmarks
         return BenchOps.BenchAddI64(123456789, 987654321);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): AddInt64")]
+    public long AddInt64_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchAddI64(123456789, 987654321);
+    }
+
     [Benchmark(Description = "UniFFI: ScalarMath (5 args)")]
     public double ScalarMath_UniFFI()
     {
@@ -47,6 +59,12 @@ public class PrimitiveBenchmarks
     public double ScalarMath_Diplomat()
     {
         return BenchOps.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): ScalarMath (5 args)")]
+    public double ScalarMath_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
     }
 
     [Benchmark(Description = "UniFFI: Loop 1000 AddInt64")]
@@ -67,6 +85,17 @@ public class PrimitiveBenchmarks
         for (int i = 0; i < LoopCount; i++)
         {
             sum += BenchOps.BenchAddI64(sum, i);
+        }
+        return sum;
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): Loop 1000 AddInt64")]
+    public long Loop1000_Add_BoltFFI()
+    {
+        long sum = 0;
+        for (int i = 0; i < LoopCount; i++)
+        {
+            sum += UniffiBench.Bolt.UniffiBenchMethods.BenchAddI64(sum, i);
         }
         return sum;
     }

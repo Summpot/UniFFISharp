@@ -185,9 +185,9 @@ public class PartialTypesTests
         Assert.Contains("public enum Status", code);
         Assert.DoesNotContain("partial enum Status", code);
 
-        // Callback delegates must NOT be partial (C# restriction)
-        Assert.Contains("public delegate void CallbackDelegate_ProgressListener_0(", code);
-        Assert.DoesNotContain("partial delegate", code);
+        // Callback VTable with unmanaged function pointers
+        Assert.Contains("UniFfiVTableProgressListener", code);
+        Assert.Contains("CallbackMethod_ProgressListener_0", code);
     }
 
     [Fact]

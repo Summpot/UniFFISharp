@@ -22,6 +22,7 @@ public unsafe class ConcurrentContentionBenchmarks
     private BenchSharedService _uShared = null!;
     private InteroptopusBench.BenchCounter _iShared = null!;
     private CsBindgenBench.BenchCounter* _cShared;
+    private UniffiBench.Bolt.BoltCounter _bShared = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -29,6 +30,7 @@ public unsafe class ConcurrentContentionBenchmarks
         _uShared = new BenchSharedService();
         _iShared = InteroptopusBench.BenchCounter.Create(0);
         _cShared = CsBindgenNative.cs_bench_counter_new(0);
+        _bShared = new UniffiBench.Bolt.BoltCounter(0);
     }
 
     [GlobalCleanup]
@@ -36,6 +38,7 @@ public unsafe class ConcurrentContentionBenchmarks
     {
         _uShared.Dispose();
         _iShared.Dispose();
+        _bShared.Dispose();
         if (_cShared != null)
         {
             CsBindgenNative.cs_bench_counter_destroy(_cShared);
@@ -57,6 +60,22 @@ public unsafe class ConcurrentContentionBenchmarks
             for (int i = 0; i < OpsPerThread; i++)
             {
                 sum += _uShared.ReadState();
+            }
+            System.Threading.Interlocked.Add(ref total, sum);
+        });
+        return total;
+    }
+
+    [BenchmarkCategory("01_ConcurrentReads_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI Atomic Read)")]
+    public ulong ConcurrentReads_BoltFFI()
+    {
+        ulong total = 0;
+        Parallel.For(0, ThreadCount, _ =>
+        {
+            ulong sum = 0;
+            for (int i = 0; i < OpsPerThread; i++)
+            {
+                sum += _bShared.Get();
             }
             System.Threading.Interlocked.Add(ref total, sum);
         });
@@ -109,6 +128,23 @@ public unsafe class ConcurrentContentionBenchmarks
             for (int i = 0; i < OpsPerThread; i++)
             {
                 sum += _uShared.WriteState(1);
+            }
+            System.Threading.Interlocked.Add(ref total, sum);
+        });
+        return total;
+    }
+
+    [BenchmarkCategory("02_ConcurrentReadWrite_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI Atomic Read/Write)")]
+    public ulong ConcurrentReadWrite_BoltFFI()
+    {
+        ulong total = 0;
+        Parallel.For(0, ThreadCount, _ =>
+        {
+            ulong sum = 0;
+            for (int i = 0; i < OpsPerThread; i++)
+            {
+                _bShared.Increment(1);
+                sum += _bShared.Get();
             }
             System.Threading.Interlocked.Add(ref total, sum);
         });

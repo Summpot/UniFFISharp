@@ -13,12 +13,14 @@ public class ObjectBenchmarks
 {
     private UniffiBench.BenchCounter _uCounter = null!;
     private DiplomatBench.BenchCounter _dCounter = null!;
+    private UniffiBench.Bolt.BoltCounter _bCounter = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         _uCounter = new UniffiBench.BenchCounter(0);
         _dCounter = DiplomatBench.BenchCounter.New(0);
+        _bCounter = new UniffiBench.Bolt.BoltCounter(0);
     }
 
     [GlobalCleanup]
@@ -26,6 +28,7 @@ public class ObjectBenchmarks
     {
         _uCounter.Dispose();
         _dCounter.Dispose();
+        _bCounter.Dispose();
     }
 
     // --- Object Lifecycle (Create & Destroy) ---
@@ -43,6 +46,13 @@ public class ObjectBenchmarks
         counter.Increment(1);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): Object Create & Destroy")]
+    public void Object_CreateDestroy_BoltFFI()
+    {
+        using var counter = new UniffiBench.Bolt.BoltCounter(42);
+        counter.Increment(1);
+    }
+
     // --- Object Method Calls (Stateful Dispatch) ---
     [Benchmark(Description = "UniFFI: Object Method Calls")]
     public ulong Object_MethodCalls_UniFFI()
@@ -56,5 +66,12 @@ public class ObjectBenchmarks
     {
         _dCounter.Increment(5);
         return _dCounter.Get();
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): Object Method Calls")]
+    public ulong Object_MethodCalls_BoltFFI()
+    {
+        _bCounter.Increment(5);
+        return _bCounter.Get();
     }
 }

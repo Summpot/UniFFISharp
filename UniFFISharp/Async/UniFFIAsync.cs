@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,29 +56,39 @@ public static class _UniFFIAsync
     public delegate void CompleteActionDelegate(ulong handle, ref UniffiRustCallStatus status);
 
     private static readonly ConcurrentHandleMap<TaskCompletionSource<byte>> _asyncHandleMap = new();
-    private static readonly UniFfiFutureCallback _continuationCallback = OnContinuationCallback;
-    private static readonly IntPtr _continuationCallbackPtr = Marshal.GetFunctionPointerForDelegate(_continuationCallback);
 
     public static readonly ConcurrentHandleMap<UniffiForeignFutureHandle> ForeignFuturesMap = new();
-    private static readonly UniffiForeignFutureDroppedCallback _droppedCallback = OnForeignFutureDropped;
-    private static readonly IntPtr _droppedCallbackPtr = Marshal.GetFunctionPointerForDelegate(_droppedCallback);
 
-    public static IntPtr ContinuationCallbackPointer => _continuationCallbackPtr;
-    public static IntPtr DroppedCallbackPointer => _droppedCallbackPtr;
+    public static unsafe IntPtr ContinuationCallbackPointer => (IntPtr)(delegate* unmanaged[Cdecl]<ulong, byte, void>)&OnContinuationCallback;
+    public static unsafe IntPtr DroppedCallbackPointer => (IntPtr)(delegate* unmanaged[Cdecl]<ulong, void>)&OnForeignFutureDropped;
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnForeignFutureDropped(ulong handle)
     {
-        if (ForeignFuturesMap.Remove(handle, out var futureHandle) && futureHandle != null)
+        try
         {
-            futureHandle.MarkDropped();
+            if (ForeignFuturesMap.Remove(handle, out var futureHandle) && futureHandle != null)
+            {
+                futureHandle.MarkDropped();
+            }
+        }
+        catch
+        {
         }
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnContinuationCallback(ulong continuationHandle, byte pollResult)
     {
-        if (_asyncHandleMap.Remove(continuationHandle, out TaskCompletionSource<byte>? task) && task != null)
+        try
         {
-            task.SetResult(pollResult);
+            if (_asyncHandleMap.Remove(continuationHandle, out TaskCompletionSource<byte>? task) && task != null)
+            {
+                task.SetResult(pollResult);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -108,7 +119,7 @@ public static class _UniFFIAsync
 
             try
             {
-                pollFunc(rustFuture, _continuationCallbackPtr, mapEntry);
+                pollFunc(rustFuture, ContinuationCallbackPointer, mapEntry);
                 pollResult = await tcs.Task.ConfigureAwait(false);
             }
             finally

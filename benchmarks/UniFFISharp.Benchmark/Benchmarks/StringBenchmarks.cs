@@ -38,6 +38,12 @@ public class StringBenchmarks
         return BenchOps.BenchStringLength(_smallAscii);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringPass (16B ASCII)")]
+    public ulong StringPass_Small_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringLength(_smallAscii);
+    }
+
     // --- Medium String Passing (1 KB) ---
     [Benchmark(Description = "UniFFI: StringPass (1KB ASCII)")]
     public ulong StringPass_Medium_UniFFI()
@@ -49,6 +55,12 @@ public class StringBenchmarks
     public ulong StringPass_Medium_Diplomat()
     {
         return BenchOps.BenchStringLength(_mediumAscii);
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringPass (1KB ASCII)")]
+    public ulong StringPass_Medium_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringLength(_mediumAscii);
     }
 
     // --- Large String Passing (32 KB) ---
@@ -64,6 +76,12 @@ public class StringBenchmarks
         return BenchOps.BenchStringLength(_largeAscii);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringPass (32KB ASCII)")]
+    public ulong StringPass_Large_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringLength(_largeAscii);
+    }
+
     // --- Unicode String Passing ---
     [Benchmark(Description = "UniFFI: StringPass (Unicode/Emoji)")]
     public ulong StringPass_Unicode_UniFFI()
@@ -75,6 +93,12 @@ public class StringBenchmarks
     public ulong StringPass_Unicode_Diplomat()
     {
         return BenchOps.BenchStringLength(_unicodeStr);
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringPass (Unicode/Emoji)")]
+    public ulong StringPass_Unicode_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringLength(_unicodeStr);
     }
 
     // --- String Returning (Rust -> C#) ---
@@ -90,6 +114,12 @@ public class StringBenchmarks
         return BenchOps.BenchStringGreeting("World");
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringReturn")]
+    public string StringReturn_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringGreeting("World");
+    }
+
     // --- String Roundtrip ---
     [Benchmark(Description = "UniFFI: StringRoundtrip")]
     public string StringRoundtrip_UniFFI()
@@ -101,5 +131,11 @@ public class StringBenchmarks
     public string StringRoundtrip_Diplomat()
     {
         return BenchOps.BenchStringRoundtrip("BenchmarkPayload");
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): StringRoundtrip")]
+    public string StringRoundtrip_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchStringRoundtrip("BenchmarkPayload");
     }
 }

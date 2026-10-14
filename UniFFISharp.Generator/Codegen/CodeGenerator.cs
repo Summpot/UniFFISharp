@@ -40,6 +40,7 @@ public static class CodeGenerator
         cb.AppendLine("using System;");
         cb.AppendLine("using System.Collections.Generic;");
         cb.AppendLine("using System.IO;");
+        cb.AppendLine("using System.Runtime.CompilerServices;");
         cb.AppendLine("using System.Runtime.InteropServices;");
         cb.AppendLine("using System.Text;");
         cb.AppendLine("using System.Threading;");
@@ -839,13 +840,31 @@ public static class CodeGenerator
         string cbiLower = TypeHelper.SanitizeIdentifier(cbi.Name.ToLowerInvariant());
 
         // 1. VTable Struct (UniFFI 0.32 layout: uniffi_free, uniffi_clone first, then method pointers)
-        using (cb.Block($"[StructLayout(LayoutKind.Sequential)] public partial struct UniFfiVTable{cbiName}"))
+        using (cb.Block($"[StructLayout(LayoutKind.Sequential)] public unsafe partial struct UniFfiVTable{cbiName}"))
         {
-            cb.AppendLine("public IntPtr uniffiFree;");
-            cb.AppendLine("public IntPtr uniffiClone;");
+            cb.AppendLine("public delegate* unmanaged[Cdecl]<ulong, void> uniffiFree;");
+            cb.AppendLine("public delegate* unmanaged[Cdecl]<ulong, ulong> uniffiClone;");
             for (int i = 0; i < cbi.Methods.Count; i++)
             {
-                cb.AppendLine($"public IntPtr m{i};");
+                var m = cbi.Methods[i];
+                var fnTypes = new List<string> { "ulong" };
+                foreach (var p in m.Inputs)
+                {
+                    fnTypes.Add(TypeHelper.ToFfiType(p.Type));
+                }
+                if (m.IsAsync)
+                {
+                    fnTypes.Add("IntPtr");
+                    fnTypes.Add("ulong");
+                    fnTypes.Add("IntPtr");
+                }
+                else
+                {
+                    fnTypes.Add("IntPtr");
+                    fnTypes.Add("UniffiRustCallStatus*");
+                }
+                fnTypes.Add("void");
+                cb.AppendLine($"public delegate* unmanaged[Cdecl]<{string.Join(", ", fnTypes)}> m{i};");
             }
         }
         cb.AppendLine();
@@ -855,36 +874,14 @@ public static class CodeGenerator
         cb.AppendLine($"public static extern void uniffi_{crateNorm}_fn_init_callback_vtable_{cbiLower}(IntPtr vtable);");
         cb.AppendLine();
 
-        // 3. Delegate declarations
+        // 3. Async result structs
         for (int i = 0; i < cbi.Methods.Count; i++)
         {
             var m = cbi.Methods[i];
-            var ffiParams = new List<string> { "ulong uniffiHandle" };
-            foreach (var p in m.Inputs)
-            {
-                ffiParams.Add($"{TypeHelper.ToFfiType(p.Type)} {TypeHelper.ToCamelCase(p.Name)}");
-            }
-            if (m.IsAsync)
-            {
-                ffiParams.Add("IntPtr uniffiFutureCallback");
-                ffiParams.Add("ulong uniffiCallbackData");
-                ffiParams.Add("IntPtr uniffiOutReturn");
-            }
-            else
-            {
-                ffiParams.Add("IntPtr uniffiOutReturn");
-                ffiParams.Add("ref UniffiRustCallStatus callStatus");
-            }
-
-            cb.AppendLine($"[UnmanagedFunctionPointer(CallingConvention.Cdecl)]");
-            cb.AppendLine($"public delegate void CallbackDelegate_{cbiName}_{i}({string.Join(", ", ffiParams)});");
-            cb.AppendLine();
-
             if (m.IsAsync)
             {
                 string? ffiRet = m.ReturnType != null ? TypeHelper.ToFfiType(m.ReturnType) : null;
                 string resultStruct = $"ForeignFutureStruct_{cbiName}_{i}";
-                string delegateType = $"ForeignFutureCompleteDelegate_{cbiName}_{i}";
 
                 cb.AppendLine("[StructLayout(LayoutKind.Sequential)]");
                 using (cb.Block($"public partial struct {resultStruct}"))
@@ -896,28 +893,29 @@ public static class CodeGenerator
                     cb.AppendLine("public UniffiRustCallStatus callStatus;");
                 }
                 cb.AppendLine();
-                cb.AppendLine("[UnmanagedFunctionPointer(CallingConvention.Cdecl)]");
-                cb.AppendLine($"public delegate void {delegateType}(ulong callbackData, {resultStruct} result);");
-                cb.AppendLine();
             }
         }
 
-        // 4. Delegate instances and Pinned GCHandle
-        cb.AppendLine($"private static GCHandle? _vtablePin_{cbiName};");
-        cb.AppendLine($"private static UniffiCallbackInterfaceFree? _freeDelegate_{cbiName};");
-        cb.AppendLine($"private static UniffiCallbackInterfaceClone? _cloneDelegate_{cbiName};");
-        for (int i = 0; i < cbi.Methods.Count; i++)
+        // 4. VTable pointer storage
+        cb.AppendLine($"private static IntPtr _vtableAlloc_{cbiName} = IntPtr.Zero;");
+        cb.AppendLine();
+
+        // 5. Free and Clone callbacks
+        cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+        using (cb.Block($"private static void CallbackFree_{cbiName}(ulong handle)"))
         {
-            cb.AppendLine($"private static CallbackDelegate_{cbiName}_{i}? _methodDelegate_{cbiName}_{i};");
-            if (cbi.Methods[i].IsAsync)
-            {
-                string delegateType = $"ForeignFutureCompleteDelegate_{cbiName}_{i}";
-                cb.AppendLine($"private static readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, {delegateType}> _cbCache_{cbiName}_{i} = new();");
-            }
+            cb.AppendLine($"FfiConverterType{cbiName}.handleMap.Remove(handle);");
         }
         cb.AppendLine();
 
-        // 5. Method implementations
+        cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+        using (cb.Block($"private static ulong CallbackClone_{cbiName}(ulong handle)"))
+        {
+            cb.AppendLine($"return FfiConverterType{cbiName}.handleMap.TryGet(handle, out var o) && o != null ? FfiConverterType{cbiName}.handleMap.Insert(o) : 0;");
+        }
+        cb.AppendLine();
+
+        // 6. Method implementations
         for (int i = 0; i < cbi.Methods.Count; i++)
         {
             var m = cbi.Methods[i];
@@ -949,11 +947,10 @@ public static class CodeGenerator
                 ffiParams.Add("ulong uniffiCallbackData");
                 ffiParams.Add("IntPtr uniffiOutReturn");
 
-                string? ffiRet = m.ReturnType != null ? TypeHelper.ToFfiType(m.ReturnType) : null;
                 string resultStruct = $"ForeignFutureStruct_{cbiName}_{i}";
-                string delegateType = $"ForeignFutureCompleteDelegate_{cbiName}_{i}";
 
-                using (cb.Block($"private static void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
+                cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+                using (cb.Block($"private static unsafe void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
                 {
                     cb.AppendLine("var futureHandle = new UniffiForeignFutureHandle();");
                     cb.AppendLine("var foreignHandle = _UniFFIAsync.ForeignFuturesMap.Insert(futureHandle);");
@@ -974,7 +971,7 @@ public static class CodeGenerator
                             cb.AppendLine($"earlyRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
                         }
                         using (cb.Block("catch")) { }
-                        cb.AppendLine($"var earlyCb = _cbCache_{cbiName}_{i}.GetOrAdd(uniffiFutureCallback, static p => Marshal.GetDelegateForFunctionPointer<{delegateType}>(p));");
+                        cb.AppendLine($"var earlyCb = (delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback;");
                         cb.AppendLine("futureHandle.InvokeCallbackOnce(() => earlyCb(uniffiCallbackData, earlyRet));");
                         cb.AppendLine("futureHandle.Dispose();");
                         cb.AppendLine("return;");
@@ -1044,7 +1041,7 @@ public static class CodeGenerator
                                 using (cb.Block("catch")) { }
                             }
                             cb.AppendLine();
-                            cb.AppendLine($"var cb = _cbCache_{cbiName}_{i}.GetOrAdd(uniffiFutureCallback, static p => Marshal.GetDelegateForFunctionPointer<{delegateType}>(p));");
+                            cb.AppendLine($"var cb = (delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback;");
                             cb.AppendLine("futureHandle.InvokeCallbackOnce(() => cb(uniffiCallbackData, ret));");
                         }
                         using (cb.Block("finally"))
@@ -1058,14 +1055,15 @@ public static class CodeGenerator
             else
             {
                 ffiParams.Add("IntPtr uniffiOutReturn");
-                ffiParams.Add("ref UniffiRustCallStatus callStatus");
+                ffiParams.Add("UniffiRustCallStatus* callStatus");
 
-                using (cb.Block($"private static void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
+                cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+                using (cb.Block($"private static unsafe void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
                 {
                     using (cb.Block($"if (!FfiConverterType{cbiName}.handleMap.TryGet(uniffiHandle, out var obj) || obj == null)"))
                     {
-                        cb.AppendLine("callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                        cb.AppendLine($"callStatus.error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
+                        cb.AppendLine("callStatus->code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                        cb.AppendLine($"callStatus->error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
                         cb.AppendLine("return;");
                     }
                     using (cb.Block("try"))
@@ -1086,54 +1084,48 @@ public static class CodeGenerator
                                 cb.AppendLine($"*({ffiRet}*)uniffiOutReturn.ToPointer() = {loweredExpr};");
                             }
                         }
-                        cb.AppendLine("callStatus.code = UniffiCallbackResponseStatus.SUCCESS;");
+                        cb.AppendLine("callStatus->code = UniffiCallbackResponseStatus.SUCCESS;");
                     }
                     if (m.Throws != null)
                     {
                         using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
                         {
-                            cb.AppendLine("callStatus.code = UniffiCallbackResponseStatus.ERROR;");
-                            cb.AppendLine($"callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
+                            cb.AppendLine("callStatus->code = UniffiCallbackResponseStatus.ERROR;");
+                            cb.AppendLine($"callStatus->error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
                         }
                     }
                     using (cb.Block("catch (Exception ex)"))
                     {
-                        cb.AppendLine("callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                        cb.AppendLine("callStatus.error_buf = FfiConverterString.INSTANCE.Lower(ex.Message);");
+                        cb.AppendLine("callStatus->code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                        cb.AppendLine("callStatus->error_buf = FfiConverterString.INSTANCE.Lower(ex.Message);");
                     }
                 }
                 cb.AppendLine();
             }
         }
 
-        // 6. Registration method
-        using (cb.Block($"public static void RegisterCallback_{cbiName}()"))
+        // 7. Registration method
+        using (cb.Block($"public static unsafe void RegisterCallback_{cbiName}()"))
         {
-            using (cb.Block($"if (_vtablePin_{cbiName}.HasValue)"))
+            using (cb.Block($"if (_vtableAlloc_{cbiName} != IntPtr.Zero)"))
             {
                 cb.AppendLine("return;");
             }
             using (cb.Block("try"))
             {
-                cb.AppendLine($"_freeDelegate_{cbiName} = (handle) => FfiConverterType{cbiName}.handleMap.Remove(handle);");
-                cb.AppendLine($"_cloneDelegate_{cbiName} = (handle) => FfiConverterType{cbiName}.handleMap.TryGet(handle, out var o) && o != null ? FfiConverterType{cbiName}.handleMap.Insert(o) : 0;");
-                for (int i = 0; i < cbi.Methods.Count; i++)
-                {
-                    cb.AppendLine($"_methodDelegate_{cbiName}_{i} = CallbackMethod_{cbiName}_{i};");
-                }
-
                 using (cb.Block($"var vtable = new UniFfiVTable{cbiName}", ";"))
                 {
-                    cb.AppendLine($"uniffiFree = Marshal.GetFunctionPointerForDelegate(_freeDelegate_{cbiName}),");
-                    cb.AppendLine($"uniffiClone = Marshal.GetFunctionPointerForDelegate(_cloneDelegate_{cbiName}),");
+                    cb.AppendLine($"uniffiFree = &CallbackFree_{cbiName},");
+                    cb.AppendLine($"uniffiClone = &CallbackClone_{cbiName},");
                     for (int i = 0; i < cbi.Methods.Count; i++)
                     {
-                        cb.AppendLine($"m{i} = Marshal.GetFunctionPointerForDelegate(_methodDelegate_{cbiName}_{i}),");
+                        cb.AppendLine($"m{i} = &CallbackMethod_{cbiName}_{i},");
                     }
                 }
 
-                cb.AppendLine($"_vtablePin_{cbiName} = GCHandle.Alloc(vtable, GCHandleType.Pinned);");
-                cb.AppendLine($"uniffi_{crateNorm}_fn_init_callback_vtable_{cbiLower}(_vtablePin_{cbiName}.Value.AddrOfPinnedObject());");
+                cb.AppendLine($"_vtableAlloc_{cbiName} = Marshal.AllocHGlobal(sizeof(UniFfiVTable{cbiName}));");
+                cb.AppendLine($"*(UniFfiVTable{cbiName}*)_vtableAlloc_{cbiName} = vtable;");
+                cb.AppendLine($"uniffi_{crateNorm}_fn_init_callback_vtable_{cbiLower}(_vtableAlloc_{cbiName});");
             }
             using (cb.Block("catch (EntryPointNotFoundException)"))
             {

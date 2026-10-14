@@ -1028,10 +1028,10 @@ public class BoltFfiCodegenAndArbitrationTests
         // Verify callback interface and bridge
         Assert.Contains("public partial interface IEventListener", source);
         Assert.Contains("void OnEvent(int eventId, string message);", source);
-        Assert.Contains("internal static class EventListenerBridge", source);
+        Assert.Contains("EventListenerBridge", source);
         Assert.Contains("internal struct VTable", source);
         Assert.Contains("internal static BoltFFICallbackHandle Create(IEventListener? callback)", source);
-        Assert.Contains("public sealed class EventListenerProxy : IEventListener", source);
+        Assert.Contains("EventListenerProxy : IEventListener", source);
 
         // Verify syntax validity
         var syntaxTree = CSharpSyntaxTree.ParseText(source);

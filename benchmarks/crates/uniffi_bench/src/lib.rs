@@ -228,6 +228,30 @@ pub fn bench_trigger_progress(cb: Box<dyn BenchProgressCallback>, times: u32) {
     }
 }
 
+#[boltffi::export]
+pub trait BoltSimpleCallback {
+    fn on_invoke(&self, value: i64) -> i64;
+}
+
+#[boltffi::export]
+pub fn bolt_bench_invoke_callback(cb: Box<dyn BoltSimpleCallback>, value: i64) -> i64 {
+    cb.on_invoke(value)
+}
+
+#[boltffi::export]
+pub trait BoltProgressCallback {
+    fn on_progress(&self, current: u64, total: u64, percentage: f64);
+}
+
+#[boltffi::export]
+pub fn bolt_bench_trigger_progress(cb: Box<dyn BoltProgressCallback>, times: u32) {
+    for i in 1..=times {
+        let cur = i as u64;
+        let tot = times as u64;
+        cb.on_progress(cur, tot, (cur as f64) / (tot as f64) * 100.0);
+    }
+}
+
 // -----------------------------------------------------------------------------
 // 8. Complex Entities (Nested Records & Collections)
 // -----------------------------------------------------------------------------

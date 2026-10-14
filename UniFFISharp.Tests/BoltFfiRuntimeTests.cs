@@ -120,7 +120,13 @@ public class BoltFfiRuntimeTests
                 if (pollCount == 1)
                 {
                     // Cooperative async continuation callback invocation
-                    ThreadPool.QueueUserWorkItem(_ => cb(cbData, 0));
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        unsafe
+                        {
+                            ((delegate* unmanaged[Cdecl]<ulong, sbyte, void>)cb)(cbData, 0);
+                        }
+                    });
                 }
             },
             complete: future =>

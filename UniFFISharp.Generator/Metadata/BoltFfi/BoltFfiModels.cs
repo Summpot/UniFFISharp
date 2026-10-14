@@ -916,6 +916,15 @@ public sealed class BoltFfiType
             };
         }
 
+        if (node["Class"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Class,
+                CustomTypeName = node["Class"]?.ToString() ?? string.Empty
+            };
+        }
+
         if (node["Callback"] != null)
         {
             return new BoltFfiType
@@ -1036,6 +1045,14 @@ public sealed class BoltFfiType
                 CustomTypeName = node["Enum"]?.ToString() ?? string.Empty
             };
         }
+        if (node["Callback"] != null)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Callback,
+                CustomTypeName = node["Callback"]?.ToString() ?? string.Empty
+            };
+        }
         if (node["Custom"] != null)
         {
             return new BoltFfiType
@@ -1054,6 +1071,46 @@ public sealed class BoltFfiType
         {
             if (val["Direct"] is JsonNode d) return FromDirectValue(d["ty"] ?? d);
             if (val["Encoded"] is JsonNode e) return FromJson(e["ty"] ?? e);
+            if (val["Handle"] is JsonNode h)
+            {
+                var target = h["target"];
+                if (target?["Callback"] != null)
+                {
+                    return new BoltFfiType
+                    {
+                        Kind = BoltFfiTypeKind.Callback,
+                        CustomTypeName = target["Callback"]?.ToString() ?? string.Empty
+                    };
+                }
+                if (target?["Class"] != null)
+                {
+                    return new BoltFfiType
+                    {
+                        Kind = BoltFfiTypeKind.Class,
+                        CustomTypeName = target["Class"]?.ToString() ?? string.Empty
+                    };
+                }
+            }
+        }
+        if (node["Handle"] is JsonNode hnd)
+        {
+            var target = hnd["target"];
+            if (target?["Callback"] != null)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Callback,
+                    CustomTypeName = target["Callback"]?.ToString() ?? string.Empty
+                };
+            }
+            if (target?["Class"] != null)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Class,
+                    CustomTypeName = target["Class"]?.ToString() ?? string.Empty
+                };
+            }
         }
         if (node["Direct"] is JsonNode dir)
         {

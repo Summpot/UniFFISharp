@@ -24,6 +24,12 @@ public class ErrorBenchmarks
         return BenchOps.BenchParsePositive(42);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): Result Success")]
+    public long Result_Success_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchParsePositive(42);
+    }
+
     // --- Result Failure Path (Throws Exception) ---
     [Benchmark(Description = "UniFFI: Result Failure (Catch)")]
     public bool Result_Failure_UniFFI()
@@ -48,6 +54,20 @@ public class ErrorBenchmarks
             return false;
         }
         catch (DiplomatBench.BenchErrorException)
+        {
+            return true;
+        }
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): Result Failure (Catch)")]
+    public bool Result_Failure_BoltFFI()
+    {
+        try
+        {
+            UniffiBench.Bolt.UniffiBenchMethods.BoltBenchParsePositive(-1);
+            return false;
+        }
+        catch (UniFFISharp.Exceptions.UniffiException)
         {
             return true;
         }

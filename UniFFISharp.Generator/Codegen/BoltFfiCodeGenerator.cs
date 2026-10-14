@@ -556,25 +556,24 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
 
         // Proxy class wrapping BoltFFICallbackHandle
-        sb.AppendLine($"    public sealed class {proxyName} : {ifaceName}, IDisposable");
+        sb.AppendLine($"    public sealed unsafe class {proxyName} : {ifaceName}, IDisposable");
         sb.AppendLine("    {");
         sb.AppendLine("        private BoltFFICallbackHandle handle;");
-        sb.AppendLine($"        private {bridgeName}.VTable vtable;");
+        sb.AppendLine($"        private readonly {bridgeName}.VTable vtable;");
         sb.AppendLine();
         sb.AppendLine($"        internal {proxyName}(BoltFFICallbackHandle handle)");
         sb.AppendLine("        {");
         sb.AppendLine("            this.handle = handle;");
-        sb.AppendLine($"            this.vtable = Marshal.PtrToStructure<{bridgeName}.VTable>(handle.vtable);");
+        sb.AppendLine($"            this.vtable = *(({bridgeName}.VTable*)handle.vtable);");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        public void Dispose()");
         sb.AppendLine("        {");
         sb.AppendLine("            if (!handle.IsNull)");
         sb.AppendLine("            {");
-        sb.AppendLine($"                var free = Marshal.GetDelegateForFunctionPointer<{bridgeName}.FreeFn>(vtable.free);");
         sb.AppendLine("                ulong h = handle.handle;");
         sb.AppendLine("                handle = BoltFFICallbackHandle.Null;");
-        sb.AppendLine("                free(h);");
+        sb.AppendLine("                vtable.free(h);");
         sb.AppendLine("            }");
         sb.AppendLine("            GC.SuppressFinalize(this);");
         sb.AppendLine("        }");
@@ -596,14 +595,13 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"        public {retType} {mName}({string.Join(", ", mParams)})");
             sb.AppendLine("        {");
             sb.AppendLine($"            if (handle.IsNull) throw new global::System.ObjectDisposedException(nameof({proxyName}));");
-            sb.AppendLine($"            var fn = Marshal.GetDelegateForFunctionPointer<{bridgeName}.{mName}Fn>(vtable.{ToCamel(mName)});");
             if (retType == "void")
             {
-                sb.AppendLine($"            fn({string.Join(", ", mArgs)});");
+                sb.AppendLine($"            vtable.{ToCamel(mName)}({string.Join(", ", mArgs)});");
             }
             else
             {
-                sb.AppendLine($"            return fn({string.Join(", ", mArgs)});");
+                sb.AppendLine($"            return vtable.{ToCamel(mName)}({string.Join(", ", mArgs)});");
             }
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -612,53 +610,31 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
 
         // Bridge class with VTable and thread-safe handle map
-        sb.AppendLine($"    internal static class {bridgeName}");
+        sb.AppendLine($"    internal static unsafe class {bridgeName}");
         sb.AppendLine("    {");
         sb.AppendLine($"        private static readonly ConcurrentDictionary<ulong, {ifaceName}> Handles = new();");
         sb.AppendLine("        private static long nextHandle = 1;");
         sb.AppendLine("        private static readonly nint VTablePointer;");
         sb.AppendLine();
 
-        // Delegate types
-        sb.AppendLine("        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]");
-        sb.AppendLine("        internal delegate void FreeFn(ulong handle);");
-        sb.AppendLine("        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]");
-        sb.AppendLine("        internal delegate ulong CloneFn(ulong handle);");
-        sb.AppendLine();
-        foreach (var m in callback.Methods)
-        {
-            string mName = m.Name.ToPascalCase();
-            string retType = MapNativeType(m.ReturnType);
-            var fnParams = new List<string> { "ulong handle" };
-            foreach (var p in m.Parameters)
-            {
-                fnParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
-            }
-            sb.AppendLine("        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]");
-            sb.AppendLine($"        internal delegate {retType} {mName}Fn({string.Join(", ", fnParams)});");
-        }
-        sb.AppendLine();
-
         // VTable struct
         sb.AppendLine("        [StructLayout(LayoutKind.Sequential)]");
         sb.AppendLine("        internal struct VTable");
         sb.AppendLine("        {");
-        sb.AppendLine("            internal nint free;");
-        sb.AppendLine("            internal nint clone;");
+        sb.AppendLine("            internal delegate* unmanaged[Cdecl]<ulong, void> free;");
+        sb.AppendLine("            internal delegate* unmanaged[Cdecl]<ulong, ulong> clone;");
         foreach (var m in callback.Methods)
         {
-            sb.AppendLine($"            internal nint {ToCamel(m.Name.ToPascalCase())};");
+            var fnTypes = new List<string> { "ulong" };
+            foreach (var p in m.Parameters)
+            {
+                fnTypes.Add(MapNativeType(p.Type));
+            }
+            fnTypes.Add(m.ReturnType.Kind == BoltFfiTypeKind.Void ? "void" : MapNativeType(m.ReturnType));
+            string fnPtrType = $"delegate* unmanaged[Cdecl]<{string.Join(", ", fnTypes)}>";
+            sb.AppendLine($"            internal {fnPtrType} {ToCamel(m.Name.ToPascalCase())};");
         }
         sb.AppendLine("        }");
-        sb.AppendLine();
-
-        // Static delegate instances
-        sb.AppendLine("        private static readonly FreeFn FreeDelegate = Free;");
-        sb.AppendLine("        private static readonly CloneFn CloneDelegate = Clone;");
-        foreach (var m in callback.Methods)
-        {
-            sb.AppendLine($"        private static readonly {m.Name.ToPascalCase()}Fn {m.Name.ToPascalCase()}Delegate = {m.Name.ToPascalCase()}Impl;");
-        }
         sb.AppendLine();
 
         // Static constructor
@@ -666,15 +642,15 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        {");
         sb.AppendLine("            var table = new VTable");
         sb.AppendLine("            {");
-        sb.AppendLine("                free = Marshal.GetFunctionPointerForDelegate(FreeDelegate),");
-        sb.AppendLine("                clone = Marshal.GetFunctionPointerForDelegate(CloneDelegate),");
+        sb.AppendLine("                free = &Free,");
+        sb.AppendLine("                clone = &Clone,");
         foreach (var m in callback.Methods)
         {
-            sb.AppendLine($"                {ToCamel(m.Name.ToPascalCase())} = Marshal.GetFunctionPointerForDelegate({m.Name.ToPascalCase()}Delegate),");
+            sb.AppendLine($"                {ToCamel(m.Name.ToPascalCase())} = &{m.Name.ToPascalCase()}Impl,");
         }
         sb.AppendLine("            };");
-        sb.AppendLine("            VTablePointer = Marshal.AllocHGlobal(Marshal.SizeOf<VTable>());");
-        sb.AppendLine("            Marshal.StructureToPtr(table, VTablePointer, false);");
+        sb.AppendLine("            VTablePointer = Marshal.AllocHGlobal(sizeof(VTable));");
+        sb.AppendLine("            *(VTable*)VTablePointer = table;");
         if (!string.IsNullOrEmpty(callback.RegisterSymbol))
         {
             sb.AppendLine($"            NativeMethods.{callback.RegisterSymbol}(VTablePointer);");
@@ -704,7 +680,10 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
 
         // Free & Clone & Method Implementations
+        sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
         sb.AppendLine("        private static void Free(ulong handle) => Handles.TryRemove(handle, out _);");
+        sb.AppendLine();
+        sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
         sb.AppendLine("        private static ulong Clone(ulong handle) => handle;");
         sb.AppendLine();
         foreach (var m in callback.Methods)
@@ -718,6 +697,7 @@ public static class BoltFfiCodeGenerator
                 fnParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
                 callArgs.Add(ToCamel(p.Name));
             }
+            sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
             sb.AppendLine($"        private static {retType} {mName}Impl({string.Join(", ", fnParams)})");
             sb.AppendLine("        {");
             sb.AppendLine("            try");
@@ -899,7 +879,7 @@ public static class BoltFfiCodeGenerator
             if (!string.IsNullOrEmpty(func.AsyncPollSymbol) && emittedSymbols.Add(func.AsyncPollSymbol))
             {
                 sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.AsyncPollSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
-                sb.AppendLine($"        internal static extern void {func.AsyncPollSymbol}(nint future, ulong callbackData, BoltFfiAsync.RustFutureContinuationCallback callback);");
+                sb.AppendLine($"        internal static extern void {func.AsyncPollSymbol}(nint future, ulong callbackData, nint callback);");
                 sb.AppendLine();
             }
 
@@ -957,7 +937,10 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
-        sb.AppendLine("        [SuppressGCTransition]");
+        if (!func.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Callback))
+        {
+            sb.AppendLine("        [SuppressGCTransition]");
+        }
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
         if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
             sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
@@ -1028,7 +1011,7 @@ public static class BoltFfiCodeGenerator
             if (emittedSymbols.Add(pollSymbol))
             {
                 sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{pollSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
-                sb.AppendLine($"        internal static extern void {pollSymbol}(nint future, ulong callbackData, BoltFfiAsync.RustFutureContinuationCallback callback);");
+                sb.AppendLine($"        internal static extern void {pollSymbol}(nint future, ulong callbackData, nint callback);");
                 sb.AppendLine();
             }
 
@@ -1084,7 +1067,10 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
-        sb.AppendLine("        [SuppressGCTransition]");
+        if (!func.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Callback))
+        {
+            sb.AppendLine("        [SuppressGCTransition]");
+        }
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -1638,6 +1624,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Record => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
             BoltFfiTypeKind.Enum => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "int",
             BoltFfiTypeKind.Class => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
+            BoltFfiTypeKind.Callback => !string.IsNullOrEmpty(ty.CustomTypeName) ? $"I{ToPascal(ty.CustomTypeName)}" : "object",
             BoltFfiTypeKind.Option => $"{MapType(ty.InnerType ?? BoltFfiType.Void)}?",
             BoltFfiTypeKind.Sequence => $"global::System.Collections.Generic.List<{MapType(ty.InnerType ?? BoltFfiType.Void)}>",
             BoltFfiTypeKind.Map => $"global::System.Collections.Generic.Dictionary<{MapType(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String))}, {MapType(ty.ValueType ?? BoltFfiType.Void)}>",

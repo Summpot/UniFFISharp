@@ -40,6 +40,12 @@ public class SliceBenchmarks
         return BenchOps.BenchSumBytes(_smallBytes);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): BytesPass (64B)")]
+    public ulong BytesPass_Small_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchSumBytes(_smallBytes);
+    }
+
     // --- Medium Slice Passing (4KB) ---
     [Benchmark(Description = "UniFFI: BytesPass (4KB)")]
     public ulong BytesPass_Medium_UniFFI()
@@ -51,6 +57,12 @@ public class SliceBenchmarks
     public ulong BytesPass_Medium_Diplomat()
     {
         return BenchOps.BenchSumBytes(_mediumBytes);
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): BytesPass (4KB)")]
+    public ulong BytesPass_Medium_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchSumBytes(_mediumBytes);
     }
 
     // --- Large Slice Passing (64KB) ---
@@ -66,11 +78,23 @@ public class SliceBenchmarks
         return BenchOps.BenchSumBytes(_largeBytes);
     }
 
+    [Benchmark(Description = "UniFFISharp (BoltFFI): BytesPass (64KB)")]
+    public ulong BytesPass_Large_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchSumBytes(_largeBytes);
+    }
+
     // --- Bytes Returning (4KB) ---
     [Benchmark(Description = "UniFFI: BytesReturn (4KB to byte[])")]
     public byte[] BytesReturn_UniFFI()
     {
         return UniffiBenchMethods.BenchGenerateBytes(4096);
+    }
+
+    [Benchmark(Description = "UniFFISharp (BoltFFI): BytesReturn (4KB to byte[])")]
+    public byte[] BytesReturn_BoltFFI()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BenchGenerateBytes(4096);
     }
 
     [Benchmark(Description = "Diplomat: BytesReturn (4KB Zero-Copy RustVec)")]

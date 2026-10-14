@@ -248,9 +248,11 @@ public static class Program
         Console.WriteLine($"[✓] ResultFailure: UniFFI={uThrew}, BoltFFI={bThrew}, Diplomat={dThrew}, CsBindgen={cThrew}, Interoptopus={iThrew}");
 
         // 15. Callback
+        long uCbVal = ClassicBench.BenchInvokeCallback(new UniVerifySimpleCb(), 10);
+        long bCbVal = BoltBench.BoltBenchInvokeCallback(new BoltVerifySimpleCb(), 10);
         long iCbVal = Interoptopus.interop_bench_invoke_callback(val => val * 3, 10);
-        Debug.Assert(iCbVal == 30, $"Callback mismatch: {iCbVal}");
-        Console.WriteLine($"[✓] Callback: Interoptopus={iCbVal}");
+        Debug.Assert(uCbVal == 30 && bCbVal == 30 && iCbVal == 30, $"Callback mismatch: UniFFI={uCbVal}, BoltFFI={bCbVal}, Interoptopus={iCbVal}");
+        Console.WriteLine($"[✓] Callback: UniFFI={uCbVal}, BoltFFI={bCbVal}, Interoptopus={iCbVal}");
 
         // 16. Async Service (Tokio native async)
         using var iAsync = InteroptopusBench.BenchAsyncService.Create();
@@ -259,5 +261,15 @@ public static class Program
         Console.WriteLine($"[✓] AsyncService (Tokio): Interoptopus={iAsyncRes}");
 
         Console.WriteLine("\n ALL FIVE FRAMEWORKS (UniFFI, UniFFISharp-BoltFFI, Diplomat, CsBindgen, Interoptopus) PASSED FUNCTIONAL VERIFICATION!");
+    }
+
+    private sealed class UniVerifySimpleCb : IBenchSimpleCallback
+    {
+        public long OnInvoke(long val) => val * 3;
+    }
+
+    private sealed class BoltVerifySimpleCb : UniffiBench.Bolt.IBoltSimpleCallback
+    {
+        public long OnInvoke(long val) => val * 3;
     }
 }
