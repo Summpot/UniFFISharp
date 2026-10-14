@@ -508,7 +508,8 @@ namespace UniFFISharp
                                 boltTargetNs,
                                 boltMethodConfigs,
                                 additionalUsings: allUsings,
-                                typeToNamespace: typeToNs);
+                                typeToNamespace: typeToNs,
+                                options: codeGenOptions);
                             if (!string.IsNullOrEmpty(boltSource))
                             {
                                 productionContext.AddSource(

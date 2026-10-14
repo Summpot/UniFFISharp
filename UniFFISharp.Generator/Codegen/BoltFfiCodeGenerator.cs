@@ -17,6 +17,7 @@ public static class BoltFfiCodeGenerator
 {
     [ThreadStatic] private static string? s_currentNamespace;
     [ThreadStatic] private static IReadOnlyDictionary<string, string>? s_currentTypeToNamespace;
+    [ThreadStatic] private static CodeGeneratorOptions? s_currentOptions;
 
     public static string Generate(
         BoltFfiMetadataEnvelope envelope,
@@ -25,21 +26,24 @@ public static class BoltFfiCodeGenerator
         Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null,
         HashSet<string>? suppressTypeDefinitions = null,
         IEnumerable<string>? additionalUsings = null,
-        IReadOnlyDictionary<string, string>? typeToNamespace = null)
+        IReadOnlyDictionary<string, string>? typeToNamespace = null,
+        CodeGeneratorOptions? options = null)
     {
         var native = envelope.Bindings.Native;
         if (native == null) return string.Empty;
 
         s_currentNamespace = targetNamespace;
         s_currentTypeToNamespace = typeToNamespace;
+        s_currentOptions = options;
         try
         {
-            return GenerateInternal(envelope, native, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings);
+            return GenerateInternal(envelope, native, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings, options);
         }
         finally
         {
             s_currentNamespace = null;
             s_currentTypeToNamespace = null;
+            s_currentOptions = null;
         }
     }
 
@@ -50,7 +54,8 @@ public static class BoltFfiCodeGenerator
         string targetNamespace,
         Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs,
         HashSet<string>? suppressTypeDefinitions,
-        IEnumerable<string>? additionalUsings)
+        IEnumerable<string>? additionalUsings,
+        CodeGeneratorOptions? options)
     {
 
         var sb = new StringBuilder();
@@ -195,6 +200,96 @@ public static class BoltFfiCodeGenerator
         }
 
         // Tagged Union / Data Enum
+        long tagIndex = 0;
+        if (s_currentOptions?.EffectiveUseNativeUnions == true)
+        {
+            string caseTypes = string.Join(", ", enumDecl.Variants.Select(v => $"{enumName}.{v.Name}"));
+            sb.AppendLine($"    public partial union {enumName}({caseTypes})");
+            sb.AppendLine("    {");
+
+            // Decode
+            sb.AppendLine($"        internal static {enumName} Decode(WireReader reader) =>");
+            sb.AppendLine("            reader.ReadU32() switch");
+            sb.AppendLine("            {");
+            tagIndex = 0;
+            foreach (var v in enumDecl.Variants)
+            {
+                long tag = v.Discriminant ?? tagIndex;
+                tagIndex = tag + 1;
+                if (v.PayloadFields.Count == 0)
+                {
+                    sb.AppendLine($"                {tag} => new {enumName}(new {v.Name}()),");
+                }
+                else
+                {
+                    var readArgs = new List<string>();
+                    foreach (var f in v.PayloadFields)
+                    {
+                        readArgs.Add(WireReadExpr(f.Type));
+                    }
+                    sb.AppendLine($"                {tag} => new {enumName}(new {v.Name}({string.Join(", ", readArgs)})),");
+                }
+            }
+            sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
+            sb.AppendLine("            };");
+            sb.AppendLine();
+
+            // Encode
+            sb.AppendLine("        internal void Encode(WireWriter writer)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (this)");
+            sb.AppendLine("            {");
+            tagIndex = 0;
+            foreach (var v in enumDecl.Variants)
+            {
+                long tag = v.Discriminant ?? tagIndex;
+                tagIndex = tag + 1;
+                if (v.PayloadFields.Count == 0)
+                {
+                    sb.AppendLine($"                case {v.Name}:");
+                    sb.AppendLine($"                    writer.WriteU32({tag});");
+                    sb.AppendLine("                    break;");
+                }
+                else
+                {
+                    sb.AppendLine($"                case {v.Name} v:");
+                    sb.AppendLine($"                    writer.WriteU32({tag});");
+                    foreach (var f in v.PayloadFields)
+                    {
+                        sb.AppendLine($"                    {WireWriteStatement(f.Type, $"v.{ToPascal(f.Name)}")};");
+                    }
+                    sb.AppendLine("                    break;");
+                }
+            }
+            sb.AppendLine("                default:");
+            sb.AppendLine($"                    throw new global::System.InvalidOperationException($\"Unknown {enumName} variant\");");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // Variant child records
+            foreach (var v in enumDecl.Variants)
+            {
+                if (v.PayloadFields.Count == 0)
+                {
+                    sb.AppendLine($"        public sealed partial record {v.Name}();");
+                }
+                else
+                {
+                    var paramList = new List<string>();
+                    foreach (var f in v.PayloadFields)
+                    {
+                        paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}");
+                    }
+                    sb.AppendLine($"        public sealed partial record {v.Name}({string.Join(", ", paramList)});");
+                }
+            }
+
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            return;
+        }
+
         sb.AppendLine($"    public abstract partial record {enumName}");
         sb.AppendLine("    {");
 
@@ -202,7 +297,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine($"        internal static {enumName} Decode(WireReader reader) =>");
         sb.AppendLine("            reader.ReadU32() switch");
         sb.AppendLine("            {");
-        long tagIndex = 0;
+        tagIndex = 0;
         foreach (var v in enumDecl.Variants)
         {
             long tag = v.Discriminant ?? tagIndex;
@@ -1446,7 +1541,7 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.DateTime => $"{readerVar}.ReadOptionDateTime()",
                 BoltFfiTypeKind.Guid => $"{readerVar}.ReadOptionGuid()",
                 BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
-                BoltFfiTypeKind.Enum when ty.InnerType.IsCStyleEnum => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType, "r")})",
                 _ => $"{readerVar}.ReadOption(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})"
             },
             _ => $"{readerVar}.ReadI32()"
@@ -1497,7 +1592,7 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.DateTime => $"{writerVar}.WriteOptionDateTime({expr})",
                 BoltFfiTypeKind.Guid => $"{writerVar}.WriteOptionGuid({expr})",
                 BoltFfiTypeKind.Record => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})",
-                BoltFfiTypeKind.Enum when ty.InnerType.IsCStyleEnum => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType, "val", "w")})",
                 _ => $"{writerVar}.WriteOption({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})"
             },
             _ => $"{writerVar}.WriteI32({expr})"

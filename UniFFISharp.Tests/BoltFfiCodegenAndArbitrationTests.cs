@@ -744,6 +744,208 @@ public class BoltFfiCodegenAndArbitrationTests
     }
 
     [Fact]
+    public void BoltFfiCodeGenerator_GeneratesNativeUnionWhenOptionEnabled()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""geometry"", ""model""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""geometry"", ""model""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Enum"": {
+                                ""Data"": {
+                                    ""name"": { ""parts"": [""geometry"", ""item""] },
+                                    ""variants"": [
+                                        {
+                                            ""name"": ""Point"",
+                                            ""discriminant"": 0,
+                                            ""payload"": {
+                                                ""Tuple"": [
+                                                    { ""key"": { ""Index"": 0 }, ""ty"": { ""Primitive"": ""F64"" } },
+                                                    { ""key"": { ""Index"": 1 }, ""ty"": { ""Primitive"": ""F64"" } }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            ""name"": ""Circle"",
+                                            ""discriminant"": 1,
+                                            ""payload"": {
+                                                ""Struct"": [
+                                                    { ""key"": { ""Name"": ""radius"" }, ""ty"": { ""Primitive"": ""F64"" } }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            ""name"": ""Empty"",
+                                            ""discriminant"": 2
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""process"", ""item""] },
+                                ""symbol"": ""boltffi_function_process_item"",
+                                ""callable"": {
+                                    ""params"": [
+                                        { ""name"": { ""parts"": [""item""] }, ""ty"": { ""Option"": { ""Enum"": ""GeometryItem"" } } }
+                                    ],
+                                    ""returns"": { ""ty"": { ""Option"": { ""Enum"": ""GeometryItem"" } } }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        var options = new CodeGeneratorOptions
+        {
+            UseNativeUnions = true
+        };
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "geometry_model.dll", "Geometry.Model", options: options);
+
+        // 1. Verify C# 15 Native Union declaration matching UniFFI
+        Assert.Contains("public partial union GeometryItem(GeometryItem.Point, GeometryItem.Circle, GeometryItem.Empty)", source);
+        Assert.DoesNotContain("public abstract partial record GeometryItem", source);
+
+        // 2. Verify variant sealed records do NOT inherit from GeometryItem
+        Assert.Contains("public sealed partial record Point(double Item0, double Item1);", source);
+        Assert.DoesNotContain("public sealed partial record Point(double Item0, double Item1) : GeometryItem", source);
+        Assert.Contains("public sealed partial record Circle(double Radius);", source);
+        Assert.DoesNotContain("public sealed partial record Circle(double Radius) : GeometryItem", source);
+        Assert.Contains("public sealed partial record Empty();", source);
+        Assert.DoesNotContain("public sealed partial record Empty() : GeometryItem", source);
+
+        // 3. Verify Decode wraps union instances
+        Assert.Contains("0 => new GeometryItem(new Point(reader.ReadF64(), reader.ReadF64())),", source);
+        Assert.Contains("1 => new GeometryItem(new Circle(reader.ReadF64())),", source);
+        Assert.Contains("2 => new GeometryItem(new Empty()),", source);
+
+        // 4. Verify Encode switches over this
+        Assert.Contains("switch (this)", source);
+        Assert.Contains("case Point v:", source);
+        Assert.Contains("case Circle v:", source);
+        Assert.Contains("case Empty:", source);
+
+        // 5. Verify Option<NativeUnion> uses ReadOptionValue and WriteOptionValue (struct/value-type semantics)
+        Assert.Contains("ReadOptionValue", source);
+        Assert.Contains("WriteOptionValue", source);
+    }
+
+    [Fact]
+    public void BoltFfiAndUniFFI_NativeUnion_PublicSignaturesAreIdentical()
+    {
+        // 1. Construct UniFFI ComponentInterface
+        var ci = new ComponentInterface
+        {
+            CrateName = "drone_controller",
+            Namespace = "DroneController"
+        };
+        ci.Enums.Add(new EnumMetadata
+        {
+            Name = "flight_command",
+            Shape = EnumShape.Enum,
+            Variants = new List<VariantMetadata>
+            {
+                new() { Name = "hover" },
+                new()
+                {
+                    Name = "fly_to",
+                    Fields = new List<FieldMetadata>
+                    {
+                        new() { Name = "latitude", Type = UniFFIType.Primitive(TypeKind.Float64) },
+                        new() { Name = "longitude", Type = UniFFIType.Primitive(TypeKind.Float64) }
+                    }
+                }
+            }
+        });
+
+        // 2. Construct matching BoltFFI metadata
+        string boltJson = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": { ""name"": { ""parts"": [""drone"", ""controller""] } },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": { ""name"": { ""parts"": [""drone"", ""controller""] } },
+                    ""decls"": [
+                        {
+                            ""Enum"": {
+                                ""Data"": {
+                                    ""name"": { ""parts"": [""flight"", ""command""] },
+                                    ""variants"": [
+                                        { ""name"": ""Hover"", ""discriminant"": 0 },
+                                        {
+                                            ""name"": ""FlyTo"",
+                                            ""discriminant"": 1,
+                                            ""payload"": {
+                                                ""Struct"": [
+                                                    { ""key"": { ""Name"": ""latitude"" }, ""ty"": { ""Primitive"": ""F64"" } },
+                                                    { ""key"": { ""Name"": ""longitude"" }, ""ty"": { ""Primitive"": ""F64"" } }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(boltJson);
+        Assert.NotNull(env);
+
+        var options = new CodeGeneratorOptions
+        {
+            UseNativeUnions = true
+        };
+
+        string uniffiSource = CodeGenerator.Generate(ci, "drone.dll", null, options);
+        string boltSource = BoltFfiCodeGenerator.Generate(env!, "drone.dll", "DroneController", options: options);
+
+        // Assert public signature match exactly:
+        // 1) Union declaration
+        string unionDecl = "public partial union FlightCommand(FlightCommand.Hover, FlightCommand.FlyTo)";
+        Assert.Contains(unionDecl, uniffiSource);
+        Assert.Contains(unionDecl, boltSource);
+
+        // 2) Hover variant (empty)
+        string hoverDecl = "public sealed partial record Hover();";
+        Assert.Contains(hoverDecl, uniffiSource);
+        Assert.Contains(hoverDecl, boltSource);
+
+        // 3) FlyTo variant (fields)
+        string flyToDecl = "public sealed partial record FlyTo(double Latitude, double Longitude);";
+        Assert.Contains(flyToDecl, uniffiSource);
+        Assert.Contains(flyToDecl, boltSource);
+
+        // 4) Neither should inherit from FlightCommand in native union mode
+        Assert.DoesNotContain("Hover() : FlightCommand", uniffiSource);
+        Assert.DoesNotContain("Hover() : FlightCommand", boltSource);
+        Assert.DoesNotContain("FlyTo(double Latitude, double Longitude) : FlightCommand", uniffiSource);
+        Assert.DoesNotContain("FlyTo(double Latitude, double Longitude) : FlightCommand", boltSource);
+    }
+
+    [Fact]
     public void BoltFfiCodeGenerator_GeneratesCallbackInterface()
     {
         string json = @"
