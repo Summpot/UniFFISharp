@@ -168,7 +168,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
 
         // Decode
-        sb.AppendLine("        internal static " + recordName + " Decode(WireReader reader)");
+        sb.AppendLine("        internal static " + recordName + " Decode(ref WireReader reader)");
         sb.AppendLine("        {");
         foreach (var f in record.Fields)
         {
@@ -223,7 +223,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("    {");
 
             // Decode
-            sb.AppendLine($"        internal static {enumName} Decode(WireReader reader) =>");
+            sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
             sb.AppendLine("            reader.ReadU32() switch");
             sb.AppendLine("            {");
             tagIndex = 0;
@@ -309,7 +309,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
 
         // Decode
-        sb.AppendLine($"        internal static {enumName} Decode(WireReader reader) =>");
+        sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
         sb.AppendLine("            reader.ReadU32() switch");
         sb.AppendLine("            {");
         tagIndex = 0;
@@ -1271,7 +1271,7 @@ public static class BoltFfiCodeGenerator
             if (func.ErrorType != null && func.ErrorType.Kind != BoltFfiTypeKind.Void)
             {
                 sb.AppendLine($"{curIndent}        var errReader = new WireReader(errBuf);");
-                sb.AppendLine($"{curIndent}        var errObj = {WireReadExpr(func.ErrorType)};");
+                sb.AppendLine($"{curIndent}        var errObj = {WireReadExpr(func.ErrorType, "errReader")};");
                 sb.AppendLine($"{curIndent}        if (errObj is global::System.Exception ex) throw ex;");
                 sb.AppendLine($"{curIndent}        throw new UniFFISharp.Exceptions.UniffiException(errObj?.ToString() ?? \"BoltFFI Error\");");
             }
@@ -1459,7 +1459,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("                    try");
             sb.AppendLine("                    {");
             sb.AppendLine("                        var reader = new WireReader(buf);");
-            sb.AppendLine($"                        return reader.ReadArray(r => {WireReadExpr(stream.ItemType)});");
+            sb.AppendLine($"                        return reader.ReadArray((ref WireReader r) => {WireReadExpr(stream.ItemType, "r")});");
             sb.AppendLine("                    }");
             sb.AppendLine("                    finally");
             sb.AppendLine("                    {");
@@ -1497,6 +1497,10 @@ public static class BoltFfiCodeGenerator
 
     private static string WireReadExpr(BoltFfiType ty, string readerVar = "reader")
     {
+        string elemVar = readerVar == "reader" ? "r" : (readerVar.StartsWith("r") ? readerVar + "_" : "r");
+        string keyVar = readerVar == "reader" ? "rk" : readerVar + "k";
+        string valVar = readerVar == "reader" ? "rv" : readerVar + "v";
+
         return ty.Kind switch
         {
             BoltFfiTypeKind.Bool => $"{readerVar}.ReadBool()",
@@ -1516,11 +1520,11 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.DateTime => $"{readerVar}.ReadDateTime()",
             BoltFfiTypeKind.Guid => $"{readerVar}.ReadGuid()",
             BoltFfiTypeKind.Uri => $"{readerVar}.ReadUri()",
-            BoltFfiTypeKind.Record => $"{QualifyType(ty)}.Decode({readerVar})",
-            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode({readerVar})",
-            BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
-            BoltFfiTypeKind.Map => $"{readerVar}.ReadMap(r => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "r")}, r => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, "r")})",
-            BoltFfiTypeKind.Set => $"{readerVar}.ReadSet(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
+            BoltFfiTypeKind.Record => $"{QualifyType(ty)}.Decode(ref {readerVar})",
+            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode(ref {readerVar})",
+            BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
+            BoltFfiTypeKind.Map => $"{readerVar}.ReadMap((ref WireReader {keyVar}) => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), keyVar)}, (ref WireReader {valVar}) => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, valVar)})",
+            BoltFfiTypeKind.Set => $"{readerVar}.ReadSet((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
             {
                 BoltFfiTypeKind.Bool => $"{readerVar}.ReadOptionBool()",
@@ -1539,9 +1543,9 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.Duration => $"{readerVar}.ReadOptionDuration()",
                 BoltFfiTypeKind.DateTime => $"{readerVar}.ReadOptionDateTime()",
                 BoltFfiTypeKind.Guid => $"{readerVar}.ReadOptionGuid()",
-                BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
-                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType, "r")})",
-                _ => $"{readerVar}.ReadOption(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})"
+                BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType, elemVar)})",
+                _ => $"{readerVar}.ReadOption((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})"
             },
             _ => $"{readerVar}.ReadI32()"
         };

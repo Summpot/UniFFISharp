@@ -91,13 +91,13 @@ public class BoltFfiRuntimeTests
 
         var reader = new WireReader(writer.ToArray());
 
-        var readList = reader.ReadList(r => r.ReadString());
+        var readList = reader.ReadList((ref WireReader r) => r.ReadString());
         Assert.Equal(list, readList);
 
-        var readDict = reader.ReadMap(r => r.ReadString(), r => r.ReadI32());
+        var readDict = reader.ReadMap((ref WireReader r) => r.ReadString(), (ref WireReader r) => r.ReadI32());
         Assert.Equal(dict, readDict);
 
-        var readSet = reader.ReadSet(r => r.ReadI32());
+        var readSet = reader.ReadSet((ref WireReader r) => r.ReadI32());
         Assert.Equal(set, readSet);
 
         Assert.Equal("present", reader.ReadOptionString());
@@ -225,4 +225,27 @@ public class BoltFfiRuntimeTests
         Assert.True(unsubscribed);
         Assert.True(freed);
     }
+
+    [Fact]
+    public unsafe void WireReader_StackallocAndSpan_ZeroAllocAndAdvancesPosition()
+    {
+        Span<byte> buffer = stackalloc byte[32];
+        var writer = new WireWriter();
+        writer.WriteI32(123456);
+        writer.WriteString("ZeroAlloc");
+        var written = writer.WrittenSpan;
+        written.CopyTo(buffer);
+
+        // Construct directly from Span - no heap allocation, completely safe ref struct
+        var reader = new WireReader(buffer.Slice(0, written.Length));
+        Assert.Equal(0, reader.Position);
+        Assert.Equal(written.Length, reader.Length);
+
+        Assert.Equal(123456, reader.ReadI32());
+        Assert.Equal(4, reader.Position);
+
+        Assert.Equal("ZeroAlloc", reader.ReadString());
+        Assert.Equal(written.Length, reader.Position);
+    }
 }
+

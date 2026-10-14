@@ -138,7 +138,7 @@ public class BoltFfiCodegenAndArbitrationTests
 
         // 3. Direct Struct (Blittable)
         Assert.Contains("public partial record struct Point(double X, double Y)", source);
-        Assert.Contains("internal static Point Decode(WireReader reader)", source);
+        Assert.Contains("internal static Point Decode(ref WireReader reader)", source);
 
         // 4. Enum
         Assert.Contains("public enum ShapeKind", source);
@@ -718,7 +718,7 @@ public class BoltFfiCodegenAndArbitrationTests
 
         // Verify abstract partial record
         Assert.Contains("public abstract partial record GeometryItem", source);
-        Assert.Contains("internal static GeometryItem Decode(WireReader reader) =>", source);
+        Assert.Contains("internal static GeometryItem Decode(ref WireReader reader) =>", source);
         Assert.Contains("0 => new Point(reader.ReadF64(), reader.ReadF64()),", source);
         Assert.Contains("1 => new Circle(reader.ReadF64()),", source);
         Assert.Contains("2 => new Empty(),", source);
