@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace UniFFISharp.Generator.Arbitration;
 
@@ -106,3 +107,35 @@ public sealed class UserTypePreferenceInfo : IEquatable<UserTypePreferenceInfo>
         }
     }
 }
+
+public sealed class CallbackImplementationInfo : IEquatable<CallbackImplementationInfo>
+{
+    public string FullyQualifiedTypeName { get; }
+    public string TypeName { get; }
+    public bool IsSealed { get; }
+    public List<string> ImplementedInterfaces { get; }
+
+    public CallbackImplementationInfo(
+        string fullyQualifiedTypeName,
+        string typeName,
+        bool isSealed,
+        List<string> implementedInterfaces)
+    {
+        FullyQualifiedTypeName = fullyQualifiedTypeName ?? string.Empty;
+        TypeName = typeName ?? string.Empty;
+        IsSealed = isSealed;
+        ImplementedInterfaces = implementedInterfaces ?? new List<string>();
+    }
+
+    public bool Equals(CallbackImplementationInfo? other)
+    {
+        if (other is null) return false;
+        if (ReferenceEquals(this, other)) return true;
+        return string.Equals(FullyQualifiedTypeName, other.FullyQualifiedTypeName, StringComparison.Ordinal);
+    }
+
+    public override bool Equals(object? obj) => Equals(obj as CallbackImplementationInfo);
+
+    public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(FullyQualifiedTypeName);
+}
+

@@ -7,6 +7,7 @@ using BenchmarkDotNet.Order;
 using CsBindgenBench;
 using InteroptopusBench;
 using UniffiBench;
+using UniffiBench.Bolt;
 
 using ClassicBench = UniffiBench.UniffiBenchMethods;
 
@@ -33,12 +34,26 @@ public unsafe class CallbackBenchmarks
         }
     }
 
-    private sealed class BoltSimpleCb : UniffiBench.Bolt.IBoltSimpleCallback
+    public sealed class BoltSimpleCb : IBoltSimpleCallback
     {
         public long OnInvoke(long val) => val * 2;
     }
 
-    private sealed class BoltProgressCb : UniffiBench.Bolt.IBoltProgressCallback
+    private sealed class BoltSimpleFallbackCb : IBoltSimpleCallback
+    {
+        public long OnInvoke(long val) => val * 2;
+    }
+
+    public sealed class BoltProgressCb : IBoltProgressCallback
+    {
+        public ulong LastCurrent;
+        public void OnProgress(ulong current, ulong total, double percentage)
+        {
+            LastCurrent = current;
+        }
+    }
+
+    private sealed class BoltProgressFallbackCb : IBoltProgressCallback
     {
         public ulong LastCurrent;
         public void OnProgress(ulong current, ulong total, double percentage)
@@ -64,7 +79,9 @@ public unsafe class CallbackBenchmarks
     private UniFfiSimpleCb _uSimple = null!;
     private UniFfiProgressCb _uProgress = null!;
     private BoltSimpleCb _bSimple = null!;
+    private BoltSimpleFallbackCb _bSimpleFallback = null!;
     private BoltProgressCb _bProgress = null!;
+    private BoltProgressFallbackCb _bProgressFallback = null!;
     private CsSimpleCb _cSimple = null!;
     private CsProgressCb _cProgress = null!;
     private GCHandle _cSimpleHandle;
@@ -109,7 +126,9 @@ public unsafe class CallbackBenchmarks
         _uSimple = new UniFfiSimpleCb();
         _uProgress = new UniFfiProgressCb();
         _bSimple = new BoltSimpleCb();
+        _bSimpleFallback = new BoltSimpleFallbackCb();
         _bProgress = new BoltProgressCb();
+        _bProgressFallback = new BoltProgressFallbackCb();
         _cSimple = new CsSimpleCb();
         _cProgress = new CsProgressCb();
 
@@ -139,10 +158,16 @@ public unsafe class CallbackBenchmarks
         return ClassicBench.BenchInvokeCallback(_uSimple, 42);
     }
 
-    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
-    public long SimpleCallback_BoltFFI()
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI Guarded Devirtualized)")]
+    public long SimpleCallback_BoltFFI_GuardedDevirtualized()
     {
         return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimple, 42);
+    }
+
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI Interface Fallback)")]
+    public long SimpleCallback_BoltFFI_InterfaceFallback()
+    {
+        return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimpleFallback, 42);
     }
 
     [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Instance Context Cached)")]
@@ -190,10 +215,16 @@ public unsafe class CallbackBenchmarks
         ClassicBench.BenchTriggerProgress(_uProgress, 100);
     }
 
-    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
-    public void ProgressCallback_100x_BoltFFI()
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI Guarded Devirtualized)")]
+    public void ProgressCallback_100x_BoltFFI_GuardedDevirtualized()
     {
         UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgress, 100);
+    }
+
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI Interface Fallback)")]
+    public void ProgressCallback_100x_BoltFFI_InterfaceFallback()
+    {
+        UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgressFallback, 100);
     }
 
     [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Instance Context Cached)")]
@@ -231,4 +262,3 @@ public unsafe class CallbackBenchmarks
         InteroptopusBench.Interop.interop_bench_trigger_progress(_iProgress, 100);
     }
 }
-

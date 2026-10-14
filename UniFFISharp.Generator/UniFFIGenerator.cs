@@ -226,6 +226,7 @@ namespace UniFFISharp
 
             var userPartialMethods = userSyntaxItems.OfType<UserPartialMethodInfo>().ToList();
             var userTypePreferences = userSyntaxItems.OfType<UserTypePreferenceInfo>().ToList();
+            var callbackImplementations = userSyntaxItems.OfType<CallbackImplementationInfo>().ToList();
             var crateCiOptions = new Dictionary<string, CodeGeneratorOptions>(StringComparer.OrdinalIgnoreCase);
 
             var nsConfig = new NamespaceConfig(customNamespace);
@@ -526,7 +527,8 @@ namespace UniFFISharp
                                 boltMethodConfigs,
                                 additionalUsings: allUsings,
                                 typeToNamespace: typeToNs,
-                                options: codeGenOptions);
+                                options: codeGenOptions,
+                                callbackImplementations: callbackImplementations);
                             if (!string.IsNullOrEmpty(boltSource))
                             {
                                 productionContext.AddSource(
@@ -591,7 +593,8 @@ namespace UniFFISharp
         }
         if (node is ClassDeclarationSyntax c)
         {
-            return c.Modifiers.Any(SyntaxKind.PartialKeyword) && c.AttributeLists.Count > 0;
+            return (c.Modifiers.Any(SyntaxKind.PartialKeyword) && c.AttributeLists.Count > 0) ||
+                   (c.BaseList != null && c.BaseList.Types.Count > 0);
         }
         return false;
     }
@@ -658,6 +661,47 @@ namespace UniFFISharp
                 if (TryResolveEngine(attr, out var resolved))
                 {
                     return new UserTypePreferenceInfo(ns, typeName, resolved);
+                }
+            }
+
+            bool isAccessible = true;
+            for (INamedTypeSymbol? cur = symbol; cur != null; cur = cur.ContainingType)
+            {
+                if (cur.DeclaredAccessibility != Accessibility.Public &&
+                    cur.DeclaredAccessibility != Accessibility.Internal)
+                {
+                    isAccessible = false;
+                    break;
+                }
+            }
+
+            if (!symbol.IsAbstract && !symbol.IsGenericType && isAccessible)
+            {
+                var ifaces = new List<string>();
+                if (classDecl.BaseList != null)
+                {
+                    foreach (var baseType in classDecl.BaseList.Types)
+                    {
+                        string name = baseType.Type.ToString();
+                        ifaces.Add(name);
+                        int lastDot = name.LastIndexOf('.');
+                        if (lastDot >= 0) ifaces.Add(name.Substring(lastDot + 1));
+                    }
+                }
+                foreach (var iface in symbol.AllInterfaces)
+                {
+                    ifaces.Add(iface.Name);
+                    ifaces.Add(iface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+                }
+
+                if (ifaces.Count > 0)
+                {
+                    return new CallbackImplementationInfo(
+                        fullyQualifiedTypeName: symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        typeName: symbol.Name,
+                        isSealed: symbol.IsSealed,
+                        implementedInterfaces: ifaces
+                    );
                 }
             }
         }

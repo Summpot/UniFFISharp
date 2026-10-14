@@ -18,6 +18,7 @@ public static class BoltFfiCodeGenerator
     [ThreadStatic] private static string? s_currentNamespace;
     [ThreadStatic] private static IReadOnlyDictionary<string, string>? s_currentTypeToNamespace;
     [ThreadStatic] private static CodeGeneratorOptions? s_currentOptions;
+    [ThreadStatic] private static IReadOnlyList<Arbitration.CallbackImplementationInfo>? s_currentCallbackImplementations;
 
     public static string Generate(
         BoltFfiMetadataEnvelope envelope,
@@ -27,7 +28,8 @@ public static class BoltFfiCodeGenerator
         HashSet<string>? suppressTypeDefinitions = null,
         IEnumerable<string>? additionalUsings = null,
         IReadOnlyDictionary<string, string>? typeToNamespace = null,
-        CodeGeneratorOptions? options = null)
+        CodeGeneratorOptions? options = null,
+        IReadOnlyList<Arbitration.CallbackImplementationInfo>? callbackImplementations = null)
     {
         var native = envelope.Bindings.Native;
         if (native == null) return string.Empty;
@@ -35,6 +37,7 @@ public static class BoltFfiCodeGenerator
         s_currentNamespace = targetNamespace;
         s_currentTypeToNamespace = typeToNamespace;
         s_currentOptions = options;
+        s_currentCallbackImplementations = callbackImplementations;
         try
         {
             return GenerateInternal(envelope, native, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings, options);
@@ -44,6 +47,7 @@ public static class BoltFfiCodeGenerator
             s_currentNamespace = null;
             s_currentTypeToNamespace = null;
             s_currentOptions = null;
+            s_currentCallbackImplementations = null;
         }
     }
 
@@ -611,7 +615,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
 
         // Bridge class with VTable and thread-safe handle map
-        sb.AppendLine($"    internal static unsafe class {bridgeName}");
+        sb.AppendLine($"    internal static unsafe partial class {bridgeName}");
         sb.AppendLine("    {");
         sb.AppendLine($"        private static readonly ConcurrentHandleMap<{ifaceName}> Handles = new();");
         sb.AppendLine("        private static readonly nint VTablePointer;");
@@ -685,17 +689,35 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
         sb.AppendLine("        private static ulong Clone(ulong handle) => handle;");
         sb.AppendLine();
+        var matchedImplementations = s_currentCallbackImplementations?
+            .Where(impl => impl.ImplementedInterfaces.Any(i => i == ifaceName || i.EndsWith("." + ifaceName, StringComparison.Ordinal)))
+            .ToList();
+
         foreach (var m in callback.Methods)
         {
             string mName = m.Name.ToPascalCase();
             string retType = MapNativeType(m.ReturnType);
             var fnParams = new List<string> { "ulong handle" };
             var callArgs = new List<string>();
+            var devirtParams = new List<string> { $"{ifaceName} target" };
             foreach (var p in m.Parameters)
             {
                 fnParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
                 callArgs.Add(ToCamel(p.Name));
+                devirtParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
+            if (m.ReturnType.Kind == BoltFfiTypeKind.Void)
+            {
+                devirtParams.Add("ref bool handled");
+                sb.AppendLine($"        static partial void TryDevirtualize{mName}({string.Join(", ", devirtParams)});");
+            }
+            else
+            {
+                devirtParams.Add($"ref {retType} result");
+                devirtParams.Add("ref bool handled");
+                sb.AppendLine($"        static partial void TryDevirtualize{mName}({string.Join(", ", devirtParams)});");
+            }
+            sb.AppendLine();
             sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
             sb.AppendLine($"        private static {retType} {mName}Impl({string.Join(", ", fnParams)})");
             sb.AppendLine("        {");
@@ -705,6 +727,24 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("                {");
             if (m.ReturnType.Kind == BoltFfiTypeKind.Void)
             {
+                var devirtCallArgs = new List<string> { "cb" };
+                devirtCallArgs.AddRange(callArgs);
+                devirtCallArgs.Add("ref handled");
+                sb.AppendLine("                    bool handled = false;");
+                sb.AppendLine($"                    TryDevirtualize{mName}({string.Join(", ", devirtCallArgs)});");
+                sb.AppendLine("                    if (handled) return;");
+                if (matchedImplementations != null && matchedImplementations.Count > 0)
+                {
+                    for (int i = 0; i < matchedImplementations.Count; i++)
+                    {
+                        var impl = matchedImplementations[i];
+                        sb.AppendLine($"                    if (cb is {impl.FullyQualifiedTypeName} direct{i})");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine($"                        direct{i}.{mName}({string.Join(", ", callArgs)});");
+                        sb.AppendLine("                        return;");
+                        sb.AppendLine("                    }");
+                    }
+                }
                 sb.AppendLine($"                    cb.{mName}({string.Join(", ", callArgs)});");
                 sb.AppendLine("                }");
                 sb.AppendLine("            }");
@@ -715,6 +755,25 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
+                var devirtCallArgs = new List<string> { "cb" };
+                devirtCallArgs.AddRange(callArgs);
+                devirtCallArgs.Add("ref result");
+                devirtCallArgs.Add("ref handled");
+                sb.AppendLine("                    bool handled = false;");
+                sb.AppendLine($"                    {retType} result = default!;");
+                sb.AppendLine($"                    TryDevirtualize{mName}({string.Join(", ", devirtCallArgs)});");
+                sb.AppendLine("                    if (handled) return result;");
+                if (matchedImplementations != null && matchedImplementations.Count > 0)
+                {
+                    for (int i = 0; i < matchedImplementations.Count; i++)
+                    {
+                        var impl = matchedImplementations[i];
+                        sb.AppendLine($"                    if (cb is {impl.FullyQualifiedTypeName} direct{i})");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine($"                        return direct{i}.{mName}({string.Join(", ", callArgs)});");
+                        sb.AppendLine("                    }");
+                    }
+                }
                 sb.AppendLine($"                    return cb.{mName}({string.Join(", ", callArgs)});");
                 sb.AppendLine("                }");
                 sb.AppendLine("                return default!;");
@@ -724,6 +783,7 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine("                return default!;");
                 sb.AppendLine("            }");
             }
+
             sb.AppendLine("        }");
             sb.AppendLine();
         }
