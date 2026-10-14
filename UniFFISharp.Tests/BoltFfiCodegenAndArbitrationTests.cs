@@ -875,7 +875,7 @@ public class BoltFfiCodegenAndArbitrationTests
             }
         });
 
-        // 2. Construct matching BoltFFI metadata
+        // 2. Construct matching BoltFFI metadata with Record preceding Enum in source JSON
         string boltJson = @"
         {
             ""magic"": ""boltffi.bindings"",
@@ -886,6 +886,16 @@ public class BoltFfiCodegenAndArbitrationTests
                 ""Native"": {
                     ""package"": { ""name"": { ""parts"": [""drone"", ""controller""] } },
                     ""decls"": [
+                        {
+                            ""Record"": {
+                                ""Direct"": {
+                                    ""name"": { ""parts"": [""geo"", ""point""] },
+                                    ""fields"": [
+                                        { ""key"": { ""Name"": ""x"" }, ""ty"": { ""Primitive"": ""F64"" } }
+                                    ]
+                                }
+                            }
+                        },
                         {
                             ""Enum"": {
                                 ""Data"": {
@@ -919,6 +929,15 @@ public class BoltFfiCodegenAndArbitrationTests
             UseNativeUnions = true
         };
 
+        ci.Records.Add(new RecordMetadata
+        {
+            Name = "geo_point",
+            Fields = new List<FieldMetadata>
+            {
+                new() { Name = "x", Type = UniFFIType.Primitive(TypeKind.Float64) }
+            }
+        });
+
         string uniffiSource = CodeGenerator.Generate(ci, "drone.dll", null, options);
         string boltSource = BoltFfiCodeGenerator.Generate(env!, "drone.dll", "DroneController", options: options);
 
@@ -943,6 +962,15 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.DoesNotContain("Hover() : FlightCommand", boltSource);
         Assert.DoesNotContain("FlyTo(double Latitude, double Longitude) : FlightCommand", uniffiSource);
         Assert.DoesNotContain("FlyTo(double Latitude, double Longitude) : FlightCommand", boltSource);
+
+        // 5) Native Union must be emitted before Records (workaround for Roslyn #86005)
+        int uniffiUnionPos = uniffiSource.IndexOf(unionDecl, StringComparison.Ordinal);
+        int uniffiRecordPos = uniffiSource.IndexOf("GeoPoint", StringComparison.Ordinal);
+        Assert.True(uniffiUnionPos < uniffiRecordPos, "UniFFI must emit union before records");
+
+        int boltUnionPos = boltSource.IndexOf(unionDecl, StringComparison.Ordinal);
+        int boltRecordPos = boltSource.IndexOf("GeoPoint", StringComparison.Ordinal);
+        Assert.True(boltUnionPos < boltRecordPos, "BoltFFI must emit union before records even if record appeared first in JSON");
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Microsoft.CodeAnalysis.CSharp;
 using UniFFISharp.Generator.Codegen;
@@ -174,4 +175,27 @@ public class CSharp15UnionTests
         Assert.Contains("public abstract partial record FlightCommand", code);
         Assert.DoesNotContain("public partial union FlightCommand", code);
     }
+
+    [Fact]
+    public void TestUniFFISuppressesNativeUnionDeclarationWhenInSuppressTypeDefinitions()
+    {
+        var ci = CreateTestComponentInterface();
+        var options = new CodeGeneratorOptions
+        {
+            UseNativeUnions = true,
+            SuppressTypeDefinitions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "FlightCommand" }
+        };
+
+        string code = CodeGenerator.Generate(ci, "drone.dll", null, options);
+
+        // Union declaration and variants must be suppressed
+        Assert.DoesNotContain("public partial union FlightCommand", code);
+        Assert.DoesNotContain("public sealed partial record Hover", code);
+        Assert.DoesNotContain("public sealed partial record FlyTo", code);
+
+        // But FfiConverterTypeFlightCommand must still be generated!
+        Assert.Contains("public sealed partial class FfiConverterTypeFlightCommand : FfiConverterRustBuffer<FlightCommand>", code);
+        Assert.Contains("return new FlightCommand(new FlightCommand.Hover());", code);
+    }
 }
+

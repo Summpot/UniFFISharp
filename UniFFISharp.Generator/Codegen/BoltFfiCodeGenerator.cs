@@ -103,8 +103,22 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine($"namespace {ns}");
         sb.AppendLine("{");
 
-        // 3. Data Types (Records, Enums, Classes, Callbacks)
-        foreach (var decl in native.Decls)
+        // 3. Data Types (Enums with native unions first to keep offset minimal for partial union definitions, avoiding Roslyn #86005)
+        int GetDeclPriority(BoltFfiDecl d)
+        {
+            if (d.Kind == BoltFfiDeclKind.Enum && d.Enum != null)
+            {
+                if (s_currentOptions?.EffectiveUseNativeUnions == true && !d.Enum.IsCStyle)
+                    return 0;
+                return 1;
+            }
+            if (d.Kind == BoltFfiDeclKind.Record) return 2;
+            if (d.Kind == BoltFfiDeclKind.Class) return 3;
+            if (d.Kind == BoltFfiDeclKind.Callback) return 4;
+            return 5;
+        }
+
+        foreach (var decl in native.Decls.OrderBy(GetDeclPriority))
         {
             if (suppressTypeDefinitions != null && !string.IsNullOrEmpty(decl.DeclName) &&
                 suppressTypeDefinitions.Contains(decl.DeclName))

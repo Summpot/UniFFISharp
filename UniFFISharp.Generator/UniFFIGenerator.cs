@@ -12,6 +12,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using UniFFISharp.Generator.Arbitration;
 using UniFFISharp.Generator.Codegen;
+using UniFFISharp.Generator.Metadata;
 using UniFFISharp.Generator.Metadata.BoltFfi;
 using UniFFISharp.Generator.PeParser;
 
@@ -349,10 +350,14 @@ namespace UniFFISharp
                                 }
                                 else
                                 {
-                                    // Drop colliding enums from BoltFFI so UniFFI's canonical enum representations are preserved
+                                    // Drop colliding C-style enums and error enums from BoltFFI so UniFFI's canonical representations
+                                    // (1-indexed flat enums and UniffiException error hierarchies) are preserved.
+                                    // Tagged unions / data enums are preserved in BoltFFI so they can emit C# 15 native unions with Decode/Encode.
                                     env.Bindings.Native.Decls.RemoveAll(d =>
                                         d.Kind == BoltFfiDeclKind.Enum &&
-                                        matchedCi.Enums.Any(e => string.Equals(e.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)));
+                                        matchedCi.Enums.Any(e =>
+                                            string.Equals(e.Name, d.DeclName, StringComparison.OrdinalIgnoreCase) &&
+                                            (e.Shape == EnumShape.ErrorFlat || e.Shape == EnumShape.ErrorComplex || (e.Shape == EnumShape.Enum && e.Variants.All(v => v.Fields.Count == 0)))));
 
                                     boltMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                     uniffiMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
@@ -446,9 +451,11 @@ namespace UniFFISharp
                                         }
                                     }
 
-                                    suppressTypeDefinitions = boltSymbols;
-                                    matchedCi.Objects.RemoveAll(o => boltSymbols.Contains(o.Name));
-                                    matchedCi.CallbackInterfaces.RemoveAll(ci => boltSymbols.Contains(ci.Name));
+                                    suppressTypeDefinitions = new HashSet<string>(
+                                        env.Bindings.Native.Decls.Where(d => !string.IsNullOrEmpty(d.DeclName)).Select(d => d.DeclName),
+                                        StringComparer.OrdinalIgnoreCase);
+                                    matchedCi.Objects.RemoveAll(o => suppressTypeDefinitions.Contains(o.Name));
+                                    matchedCi.CallbackInterfaces.RemoveAll(ci => suppressTypeDefinitions.Contains(ci.Name));
 
                                     var ciOptions = codeGenOptions.Clone();
                                     ciOptions.MethodConfigs = uniffiMethodConfigs;
@@ -502,11 +509,10 @@ namespace UniFFISharp
                                 }
                             }
 
-                            // Types defined in the current BoltFFI crate belong to boltTargetNs (unless suppressed)
+                            // Types defined in the current BoltFFI crate belong to boltTargetNs
                             foreach (var decl in env.Bindings.Native.Decls)
                             {
-                                if (!string.IsNullOrEmpty(decl.DeclName) &&
-                                    (suppressTypeDefinitions == null || !suppressTypeDefinitions.Contains(decl.DeclName)))
+                                if (!string.IsNullOrEmpty(decl.DeclName))
                                 {
                                     typeToNs[decl.DeclName] = boltTargetNs;
                                     typeToNs[TypeHelper.ToPascalCase(decl.DeclName)] = boltTargetNs;
