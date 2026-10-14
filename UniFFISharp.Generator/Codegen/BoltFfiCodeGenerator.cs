@@ -15,15 +15,43 @@ namespace UniFFISharp.Generator.Codegen;
 /// </summary>
 public static class BoltFfiCodeGenerator
 {
+    [ThreadStatic] private static string? s_currentNamespace;
+    [ThreadStatic] private static IReadOnlyDictionary<string, string>? s_currentTypeToNamespace;
+
     public static string Generate(
         BoltFfiMetadataEnvelope envelope,
         string libraryFileName,
         string targetNamespace,
         Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null,
-        HashSet<string>? suppressTypeDefinitions = null)
+        HashSet<string>? suppressTypeDefinitions = null,
+        IEnumerable<string>? additionalUsings = null,
+        IReadOnlyDictionary<string, string>? typeToNamespace = null)
     {
         var native = envelope.Bindings.Native;
         if (native == null) return string.Empty;
+
+        s_currentNamespace = targetNamespace;
+        s_currentTypeToNamespace = typeToNamespace;
+        try
+        {
+            return GenerateInternal(envelope, native, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings);
+        }
+        finally
+        {
+            s_currentNamespace = null;
+            s_currentTypeToNamespace = null;
+        }
+    }
+
+    private static string GenerateInternal(
+        BoltFfiMetadataEnvelope envelope,
+        BoltFfiNativeBindings native,
+        string libraryFileName,
+        string targetNamespace,
+        Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs,
+        HashSet<string>? suppressTypeDefinitions,
+        IEnumerable<string>? additionalUsings)
+    {
 
         var sb = new StringBuilder();
         string crateNorm = TypeHelper.SanitizeIdentifier((envelope.Package.PackageName ?? string.Empty).Replace('-', '_'));
@@ -49,10 +77,24 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("using System.Threading;");
         sb.AppendLine("using System.Threading.Tasks;");
         sb.AppendLine("using UniFFISharp.BoltFfi;");
+        sb.AppendLine("using UniFFISharp.Exceptions;");
+        if (additionalUsings != null)
+        {
+            foreach (var extraNs in additionalUsings)
+            {
+                if (!string.IsNullOrWhiteSpace(extraNs))
+                {
+                    string trimmed = extraNs.Trim();
+                    if (trimmed.StartsWith("global::")) trimmed = trimmed.Substring("global::".Length);
+                    sb.AppendLine($"using {trimmed};");
+                }
+            }
+        }
         sb.AppendLine();
 
         // 2. Namespace
         string ns = string.IsNullOrWhiteSpace(targetNamespace) ? cratePascal : targetNamespace;
+        if (ns.StartsWith("global::")) ns = ns.Substring("global::".Length);
         sb.AppendLine($"namespace {ns}");
         sb.AppendLine("{");
 
@@ -101,42 +143,33 @@ public static class BoltFfiCodeGenerator
 
         var paramList = record.Fields.Select(f => $"{MapType(f.Type)} {ToPascal(f.Name)}");
 
-        if (record.IsDirect)
+        sb.AppendLine("    [StructLayout(LayoutKind.Sequential)]");
+        sb.AppendLine($"    public partial record struct {recordName}({string.Join(", ", paramList)})");
+        sb.AppendLine("    {");
+
+        // Decode
+        sb.AppendLine("        internal static " + recordName + " Decode(WireReader reader)");
+        sb.AppendLine("        {");
+        foreach (var f in record.Fields)
         {
-            sb.AppendLine("    [StructLayout(LayoutKind.Sequential)]");
-            sb.AppendLine($"    public partial record struct {recordName}({string.Join(", ", paramList)});");
+            sb.AppendLine($"            var {ToCamel(f.Name)} = {WireReadExpr(f.Type)};");
         }
-        else
+        var consArgs = record.Fields.Select(f => ToCamel(f.Name));
+        sb.AppendLine($"            return new {recordName}({string.Join(", ", consArgs)});");
+        sb.AppendLine("        }");
+
+        // Encode
+        sb.AppendLine();
+        sb.AppendLine("        internal void Encode(WireWriter writer)");
+        sb.AppendLine("        {");
+        foreach (var f in record.Fields)
         {
-            // Encoded record
-            sb.AppendLine("    [StructLayout(LayoutKind.Sequential)]");
-            sb.AppendLine($"    public partial record struct {recordName}({string.Join(", ", paramList)})");
-            sb.AppendLine("    {");
-
-            // Decode
-            sb.AppendLine("        internal static " + recordName + " Decode(WireReader reader)");
-            sb.AppendLine("        {");
-            foreach (var f in record.Fields)
-            {
-                sb.AppendLine($"            var {ToCamel(f.Name)} = {WireReadExpr(f.Type)};");
-            }
-            var consArgs = record.Fields.Select(f => ToCamel(f.Name));
-            sb.AppendLine($"            return new {recordName}({string.Join(", ", consArgs)});");
-            sb.AppendLine("        }");
-
-            // Encode
-            sb.AppendLine();
-            sb.AppendLine("        internal void Encode(WireWriter writer)");
-            sb.AppendLine("        {");
-            foreach (var f in record.Fields)
-            {
-                string fName = ToPascal(f.Name);
-                sb.AppendLine($"            {WireWriteStatement(f.Type, fName)};");
-            }
-            sb.AppendLine("        }");
-
-            sb.AppendLine("    }");
+            string fName = ToPascal(f.Name);
+            sb.AppendLine($"            {WireWriteStatement(f.Type, fName)};");
         }
+        sb.AppendLine("        }");
+
+        sb.AppendLine("    }");
         sb.AppendLine();
     }
 
@@ -1368,102 +1401,106 @@ public static class BoltFfiCodeGenerator
         };
     }
 
-    private static string WireReadExpr(BoltFfiType ty)
+    private static string WireReadExpr(BoltFfiType ty, string readerVar = "reader")
     {
         return ty.Kind switch
         {
-            BoltFfiTypeKind.Bool => "reader.ReadBool()",
-            BoltFfiTypeKind.Int8 => "reader.ReadI8()",
-            BoltFfiTypeKind.UInt8 => "reader.ReadU8()",
-            BoltFfiTypeKind.Int16 => "reader.ReadI16()",
-            BoltFfiTypeKind.UInt16 => "reader.ReadU16()",
-            BoltFfiTypeKind.Int32 => "reader.ReadI32()",
-            BoltFfiTypeKind.UInt32 => "reader.ReadU32()",
-            BoltFfiTypeKind.Int64 => "reader.ReadI64()",
-            BoltFfiTypeKind.UInt64 => "reader.ReadU64()",
-            BoltFfiTypeKind.Float32 => "reader.ReadF32()",
-            BoltFfiTypeKind.Float64 => "reader.ReadF64()",
-            BoltFfiTypeKind.String => "reader.ReadString()",
-            BoltFfiTypeKind.Bytes => "reader.ReadBytes()",
-            BoltFfiTypeKind.Duration => "reader.ReadDuration()",
-            BoltFfiTypeKind.DateTime => "reader.ReadDateTime()",
-            BoltFfiTypeKind.Guid => "reader.ReadGuid()",
-            BoltFfiTypeKind.Uri => "reader.ReadUri()",
-            BoltFfiTypeKind.Record => $"{MapType(ty)}.Decode(reader)",
-            BoltFfiTypeKind.Enum => $"{MapType(ty)}.Decode(reader)",
-            BoltFfiTypeKind.Sequence => $"reader.ReadList(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void)})",
-            BoltFfiTypeKind.Map => $"reader.ReadMap(r => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String))}, r => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void)})",
-            BoltFfiTypeKind.Set => $"reader.ReadSet(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void)})",
+            BoltFfiTypeKind.Bool => $"{readerVar}.ReadBool()",
+            BoltFfiTypeKind.Int8 => $"{readerVar}.ReadI8()",
+            BoltFfiTypeKind.UInt8 => $"{readerVar}.ReadU8()",
+            BoltFfiTypeKind.Int16 => $"{readerVar}.ReadI16()",
+            BoltFfiTypeKind.UInt16 => $"{readerVar}.ReadU16()",
+            BoltFfiTypeKind.Int32 => $"{readerVar}.ReadI32()",
+            BoltFfiTypeKind.UInt32 => $"{readerVar}.ReadU32()",
+            BoltFfiTypeKind.Int64 => $"{readerVar}.ReadI64()",
+            BoltFfiTypeKind.UInt64 => $"{readerVar}.ReadU64()",
+            BoltFfiTypeKind.Float32 => $"{readerVar}.ReadF32()",
+            BoltFfiTypeKind.Float64 => $"{readerVar}.ReadF64()",
+            BoltFfiTypeKind.String => $"{readerVar}.ReadString()",
+            BoltFfiTypeKind.Bytes => $"{readerVar}.ReadBytes()",
+            BoltFfiTypeKind.Duration => $"{readerVar}.ReadDuration()",
+            BoltFfiTypeKind.DateTime => $"{readerVar}.ReadDateTime()",
+            BoltFfiTypeKind.Guid => $"{readerVar}.ReadGuid()",
+            BoltFfiTypeKind.Uri => $"{readerVar}.ReadUri()",
+            BoltFfiTypeKind.Record => $"{QualifyType(ty)}.Decode({readerVar})",
+            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode({readerVar})",
+            BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
+            BoltFfiTypeKind.Map => $"{readerVar}.ReadMap(r => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "r")}, r => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, "r")})",
+            BoltFfiTypeKind.Set => $"{readerVar}.ReadSet(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
             {
-                BoltFfiTypeKind.Bool => "reader.ReadOptionBool()",
-                BoltFfiTypeKind.Int8 => "reader.ReadOptionI8()",
-                BoltFfiTypeKind.UInt8 => "reader.ReadOptionU8()",
-                BoltFfiTypeKind.Int16 => "reader.ReadOptionI16()",
-                BoltFfiTypeKind.UInt16 => "reader.ReadOptionU16()",
-                BoltFfiTypeKind.Int32 => "reader.ReadOptionI32()",
-                BoltFfiTypeKind.UInt32 => "reader.ReadOptionU32()",
-                BoltFfiTypeKind.Int64 => "reader.ReadOptionI64()",
-                BoltFfiTypeKind.UInt64 => "reader.ReadOptionU64()",
-                BoltFfiTypeKind.Float32 => "reader.ReadOptionF32()",
-                BoltFfiTypeKind.Float64 => "reader.ReadOptionF64()",
-                BoltFfiTypeKind.String => "reader.ReadOptionString()",
-                BoltFfiTypeKind.Bytes => "reader.ReadOptionBytes()",
-                BoltFfiTypeKind.Duration => "reader.ReadOptionDuration()",
-                BoltFfiTypeKind.DateTime => "reader.ReadOptionDateTime()",
-                BoltFfiTypeKind.Guid => "reader.ReadOptionGuid()",
-                _ => $"reader.ReadOption(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void)})"
+                BoltFfiTypeKind.Bool => $"{readerVar}.ReadOptionBool()",
+                BoltFfiTypeKind.Int8 => $"{readerVar}.ReadOptionI8()",
+                BoltFfiTypeKind.UInt8 => $"{readerVar}.ReadOptionU8()",
+                BoltFfiTypeKind.Int16 => $"{readerVar}.ReadOptionI16()",
+                BoltFfiTypeKind.UInt16 => $"{readerVar}.ReadOptionU16()",
+                BoltFfiTypeKind.Int32 => $"{readerVar}.ReadOptionI32()",
+                BoltFfiTypeKind.UInt32 => $"{readerVar}.ReadOptionU32()",
+                BoltFfiTypeKind.Int64 => $"{readerVar}.ReadOptionI64()",
+                BoltFfiTypeKind.UInt64 => $"{readerVar}.ReadOptionU64()",
+                BoltFfiTypeKind.Float32 => $"{readerVar}.ReadOptionF32()",
+                BoltFfiTypeKind.Float64 => $"{readerVar}.ReadOptionF64()",
+                BoltFfiTypeKind.String => $"{readerVar}.ReadOptionString()",
+                BoltFfiTypeKind.Bytes => $"{readerVar}.ReadOptionBytes()",
+                BoltFfiTypeKind.Duration => $"{readerVar}.ReadOptionDuration()",
+                BoltFfiTypeKind.DateTime => $"{readerVar}.ReadOptionDateTime()",
+                BoltFfiTypeKind.Guid => $"{readerVar}.ReadOptionGuid()",
+                BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
+                BoltFfiTypeKind.Enum when ty.InnerType.IsCStyleEnum => $"{readerVar}.ReadOptionValue(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})",
+                _ => $"{readerVar}.ReadOption(r => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, "r")})"
             },
-            _ => "reader.ReadI32()"
+            _ => $"{readerVar}.ReadI32()"
         };
     }
 
-    private static string WireWriteStatement(BoltFfiType ty, string expr)
+    private static string WireWriteStatement(BoltFfiType ty, string expr, string writerVar = "writer")
     {
         return ty.Kind switch
         {
-            BoltFfiTypeKind.Bool => $"writer.WriteBool({expr})",
-            BoltFfiTypeKind.Int8 => $"writer.WriteI8({expr})",
-            BoltFfiTypeKind.UInt8 => $"writer.WriteU8({expr})",
-            BoltFfiTypeKind.Int16 => $"writer.WriteI16({expr})",
-            BoltFfiTypeKind.UInt16 => $"writer.WriteU16({expr})",
-            BoltFfiTypeKind.Int32 => $"writer.WriteI32({expr})",
-            BoltFfiTypeKind.UInt32 => $"writer.WriteU32({expr})",
-            BoltFfiTypeKind.Int64 => $"writer.WriteI64({expr})",
-            BoltFfiTypeKind.UInt64 => $"writer.WriteU64({expr})",
-            BoltFfiTypeKind.Float32 => $"writer.WriteF32({expr})",
-            BoltFfiTypeKind.Float64 => $"writer.WriteF64({expr})",
-            BoltFfiTypeKind.String => $"writer.WriteString({expr})",
-            BoltFfiTypeKind.Bytes => $"writer.WriteBytes({expr})",
-            BoltFfiTypeKind.Duration => $"writer.WriteDuration({expr})",
-            BoltFfiTypeKind.DateTime => $"writer.WriteDateTime({expr})",
-            BoltFfiTypeKind.Guid => $"writer.WriteGuid({expr})",
-            BoltFfiTypeKind.Uri => $"writer.WriteUri({expr})",
-            BoltFfiTypeKind.Record => $"({expr}).Encode(writer)",
-            BoltFfiTypeKind.Enum => $"({expr}).Encode(writer)",
-            BoltFfiTypeKind.Sequence => $"writer.WriteList({expr}, (w, item) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "item")})",
-            BoltFfiTypeKind.Map => $"writer.WriteMap({expr}, (w, k) => {WireWriteStatement(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "k")}, (w, v) => {WireWriteStatement(ty.ValueType ?? BoltFfiType.Void, "v")})",
+            BoltFfiTypeKind.Bool => $"{writerVar}.WriteBool({expr})",
+            BoltFfiTypeKind.Int8 => $"{writerVar}.WriteI8({expr})",
+            BoltFfiTypeKind.UInt8 => $"{writerVar}.WriteU8({expr})",
+            BoltFfiTypeKind.Int16 => $"{writerVar}.WriteI16({expr})",
+            BoltFfiTypeKind.UInt16 => $"{writerVar}.WriteU16({expr})",
+            BoltFfiTypeKind.Int32 => $"{writerVar}.WriteI32({expr})",
+            BoltFfiTypeKind.UInt32 => $"{writerVar}.WriteU32({expr})",
+            BoltFfiTypeKind.Int64 => $"{writerVar}.WriteI64({expr})",
+            BoltFfiTypeKind.UInt64 => $"{writerVar}.WriteU64({expr})",
+            BoltFfiTypeKind.Float32 => $"{writerVar}.WriteF32({expr})",
+            BoltFfiTypeKind.Float64 => $"{writerVar}.WriteF64({expr})",
+            BoltFfiTypeKind.String => $"{writerVar}.WriteString({expr})",
+            BoltFfiTypeKind.Bytes => $"{writerVar}.WriteBytes({expr})",
+            BoltFfiTypeKind.Duration => $"{writerVar}.WriteDuration({expr})",
+            BoltFfiTypeKind.DateTime => $"{writerVar}.WriteDateTime({expr})",
+            BoltFfiTypeKind.Guid => $"{writerVar}.WriteGuid({expr})",
+            BoltFfiTypeKind.Uri => $"{writerVar}.WriteUri({expr})",
+            BoltFfiTypeKind.Record => $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"{writerVar}.WriteI32((int)({expr}))" : $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Sequence => $"{writerVar}.WriteList({expr}, (w, item) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "item", "w")})",
+            BoltFfiTypeKind.Map => $"{writerVar}.WriteMap({expr}, (w, k) => {WireWriteStatement(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "k", "w")}, (w, v) => {WireWriteStatement(ty.ValueType ?? BoltFfiType.Void, "v", "w")})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
             {
-                BoltFfiTypeKind.Bool => $"writer.WriteOptionBool({expr})",
-                BoltFfiTypeKind.Int8 => $"writer.WriteOptionI8({expr})",
-                BoltFfiTypeKind.UInt8 => $"writer.WriteOptionU8({expr})",
-                BoltFfiTypeKind.Int16 => $"writer.WriteOptionI16({expr})",
-                BoltFfiTypeKind.UInt16 => $"writer.WriteOptionU16({expr})",
-                BoltFfiTypeKind.Int32 => $"writer.WriteOptionI32({expr})",
-                BoltFfiTypeKind.UInt32 => $"writer.WriteOptionU32({expr})",
-                BoltFfiTypeKind.Int64 => $"writer.WriteOptionI64({expr})",
-                BoltFfiTypeKind.UInt64 => $"writer.WriteOptionU64({expr})",
-                BoltFfiTypeKind.Float32 => $"writer.WriteOptionF32({expr})",
-                BoltFfiTypeKind.Float64 => $"writer.WriteOptionF64({expr})",
-                BoltFfiTypeKind.String => $"writer.WriteOptionString({expr})",
-                BoltFfiTypeKind.Bytes => $"writer.WriteOptionBytes({expr})",
-                BoltFfiTypeKind.Duration => $"writer.WriteOptionDuration({expr})",
-                BoltFfiTypeKind.DateTime => $"writer.WriteOptionDateTime({expr})",
-                BoltFfiTypeKind.Guid => $"writer.WriteOptionGuid({expr})",
-                _ => $"writer.WriteOption({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val")})"
+                BoltFfiTypeKind.Bool => $"{writerVar}.WriteOptionBool({expr})",
+                BoltFfiTypeKind.Int8 => $"{writerVar}.WriteOptionI8({expr})",
+                BoltFfiTypeKind.UInt8 => $"{writerVar}.WriteOptionU8({expr})",
+                BoltFfiTypeKind.Int16 => $"{writerVar}.WriteOptionI16({expr})",
+                BoltFfiTypeKind.UInt16 => $"{writerVar}.WriteOptionU16({expr})",
+                BoltFfiTypeKind.Int32 => $"{writerVar}.WriteOptionI32({expr})",
+                BoltFfiTypeKind.UInt32 => $"{writerVar}.WriteOptionU32({expr})",
+                BoltFfiTypeKind.Int64 => $"{writerVar}.WriteOptionI64({expr})",
+                BoltFfiTypeKind.UInt64 => $"{writerVar}.WriteOptionU64({expr})",
+                BoltFfiTypeKind.Float32 => $"{writerVar}.WriteOptionF32({expr})",
+                BoltFfiTypeKind.Float64 => $"{writerVar}.WriteOptionF64({expr})",
+                BoltFfiTypeKind.String => $"{writerVar}.WriteOptionString({expr})",
+                BoltFfiTypeKind.Bytes => $"{writerVar}.WriteOptionBytes({expr})",
+                BoltFfiTypeKind.Duration => $"{writerVar}.WriteOptionDuration({expr})",
+                BoltFfiTypeKind.DateTime => $"{writerVar}.WriteOptionDateTime({expr})",
+                BoltFfiTypeKind.Guid => $"{writerVar}.WriteOptionGuid({expr})",
+                BoltFfiTypeKind.Record => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})",
+                BoltFfiTypeKind.Enum when ty.InnerType.IsCStyleEnum => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})",
+                _ => $"{writerVar}.WriteOption({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})"
             },
-            _ => $"writer.WriteI32({expr})"
+            _ => $"{writerVar}.WriteI32({expr})"
         };
     }
 
@@ -1528,7 +1565,27 @@ public static class BoltFfiCodeGenerator
     private static string ToCamel(string name)
     {
         string pascal = ToPascal(name);
-        if (string.IsNullOrEmpty(pascal)) return string.Empty;
         return char.ToLowerInvariant(pascal[0]) + (pascal.Length > 1 ? pascal.Substring(1) : string.Empty);
+    }
+
+    private static string QualifyType(BoltFfiType ty)
+    {
+        string typeName = !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object";
+        if (s_currentTypeToNamespace != null)
+        {
+            if (s_currentTypeToNamespace.TryGetValue(typeName, out var ns) ||
+                (!string.IsNullOrEmpty(ty.CustomTypeName) && s_currentTypeToNamespace.TryGetValue(ty.CustomTypeName, out ns)))
+            {
+                if (ns.StartsWith("global::")) ns = ns.Substring("global::".Length);
+                return $"global::{ns}.{typeName}";
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(s_currentNamespace))
+        {
+            string ns = s_currentNamespace!;
+            if (ns.StartsWith("global::")) ns = ns.Substring("global::".Length);
+            return $"global::{ns}.{typeName}";
+        }
+        return typeName;
     }
 }

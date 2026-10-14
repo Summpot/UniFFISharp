@@ -9,7 +9,8 @@ internal static class BoltFfiCoexistence
 {
     internal static IReadOnlyList<BoltFfiMetadataEnvelope> Prepare(
         IReadOnlyList<BoltFfiMetadataEnvelope> envelopes,
-        IEnumerable<string> crateNames)
+        IEnumerable<string> crateNames,
+        IReadOnlyDictionary<string, string>? typeToCrate = null)
     {
         var crates = crateNames.Select(n => n.Replace('-', '_')).OrderByDescending(n => n.Length).ToArray();
         var groups = new Dictionary<string, BoltFfiMetadataEnvelope>(StringComparer.OrdinalIgnoreCase);
@@ -20,45 +21,66 @@ internal static class BoltFfiCoexistence
             foreach (var decl in envelope.Bindings.Native.Decls)
             {
                 string? symbol = null;
+                BoltFfiCanonicalName? canonName = null;
                 if (decl.Function != null)
                 {
                     if (!CanBind(decl.Function)) continue;
                     symbol = decl.Function.Symbol;
+                    canonName = decl.Function.Name;
                 }
                 else if (decl.Callback != null)
                 {
                     symbol = decl.Callback.RegisterSymbol ?? decl.Callback.Name.ToSnakeCase();
+                    canonName = decl.Callback.Name;
                 }
                 else if (decl.Stream != null)
                 {
                     symbol = decl.Stream.SubscribeSymbol ?? decl.Stream.Name.ToSnakeCase();
+                    canonName = decl.Stream.Name;
                 }
                 else if (decl.Constant != null)
                 {
                     symbol = decl.Constant.Name.ToSnakeCase();
+                    canonName = decl.Constant.Name;
                 }
                 else if (decl.Record != null)
                 {
                     symbol = decl.Record.Name.ToSnakeCase();
+                    canonName = decl.Record.Name;
                 }
                 else if (decl.Enum != null)
                 {
                     symbol = decl.Enum.Name.ToSnakeCase();
+                    canonName = decl.Enum.Name;
                 }
                 else if (decl.Class != null)
                 {
                     symbol = decl.Class.Name.ToSnakeCase();
+                    canonName = decl.Class.Name;
                 }
 
-                if (symbol != null && !symbols.Add(symbol)) continue;
+                string? crate = null;
+                if (canonName != null && typeToCrate != null && (
+                    typeToCrate.TryGetValue(canonName.ToPascalCase(), out var mc) ||
+                    typeToCrate.TryGetValue(canonName.ToSnakeCase(), out mc) ||
+                    (!string.IsNullOrEmpty(canonName.SourceSpelling) && typeToCrate.TryGetValue(canonName.SourceSpelling!, out mc))))
+                {
+                    crate = mc;
+                }
+                if (crate == null && symbol != null)
+                {
+                    crate = crates.FirstOrDefault(n =>
+                        symbol.StartsWith("boltffi_function_" + n + "_", StringComparison.Ordinal) ||
+                        symbol.StartsWith("boltffi_callback_" + n + "_", StringComparison.Ordinal) ||
+                        symbol.StartsWith("boltffi_stream_" + n + "_", StringComparison.Ordinal) ||
+                        symbol.StartsWith("boltffi_constant_" + n + "_", StringComparison.Ordinal) ||
+                        symbol.StartsWith("boltffi_class_" + n + "_", StringComparison.Ordinal) ||
+                        symbol.StartsWith(n + "_", StringComparison.Ordinal));
+                }
+                crate ??= envelope.Package.PackageName;
+                crate = crate.Replace('-', '_');
 
-                string crate = (symbol != null ? crates.FirstOrDefault(n =>
-                    symbol.StartsWith("boltffi_function_" + n + "_", StringComparison.Ordinal) ||
-                    symbol.StartsWith("boltffi_callback_" + n + "_", StringComparison.Ordinal) ||
-                    symbol.StartsWith("boltffi_stream_" + n + "_", StringComparison.Ordinal) ||
-                    symbol.StartsWith("boltffi_constant_" + n + "_", StringComparison.Ordinal) ||
-                    symbol.StartsWith("boltffi_class_" + n + "_", StringComparison.Ordinal) ||
-                    symbol.StartsWith(n + "_", StringComparison.Ordinal)) : null) ?? envelope.Package.PackageName;
+                if (symbol != null && !symbols.Add($"{crate}::{symbol}")) continue;
 
                 if (!groups.TryGetValue(crate, out var group))
                 {

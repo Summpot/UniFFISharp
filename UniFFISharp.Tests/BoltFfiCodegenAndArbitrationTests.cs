@@ -137,8 +137,8 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains("using UniFFISharp.BoltFfi;", source);
 
         // 3. Direct Struct (Blittable)
-        Assert.Contains("[StructLayout(LayoutKind.Sequential)]", source);
-        Assert.Contains("public partial record struct Point(double X, double Y);", source);
+        Assert.Contains("public partial record struct Point(double X, double Y)", source);
+        Assert.Contains("internal static Point Decode(WireReader reader)", source);
 
         // 4. Enum
         Assert.Contains("public enum ShapeKind", source);
@@ -412,7 +412,7 @@ public class BoltFfiCodegenAndArbitrationTests
 
             var boltTree = runResult.GeneratedTrees.First(t => t.FilePath.Contains("BoltFFIBindings.mock_pkg.g.cs"));
             string text = boltTree.GetText().ToString();
-            Assert.Contains("public partial record struct SampleData(int Id);", text);
+            Assert.Contains("public partial record struct SampleData(int Id)", text);
         }
         finally
         {

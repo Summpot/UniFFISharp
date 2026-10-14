@@ -254,8 +254,19 @@ namespace UniFFISharp
 
                 var validCis = ciList != null ? ciList.Where(c => !c.IsEmpty).ToList() : new List<Metadata.ComponentInterface>();
 
+                var typeToCrate = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in validCis)
+                {
+                    string norm = c.CrateName.Replace('-', '_');
+                    foreach (var r in c.Records) { typeToCrate[r.Name] = norm; typeToCrate[TypeHelper.ToPascalCase(r.Name)] = norm; }
+                    foreach (var e in c.Enums) { typeToCrate[e.Name] = norm; typeToCrate[TypeHelper.ToPascalCase(e.Name)] = norm; }
+                    foreach (var o in c.Objects) { typeToCrate[o.Name] = norm; typeToCrate[TypeHelper.ToPascalCase(o.Name)] = norm; }
+                    foreach (var cb in c.CallbackInterfaces) { typeToCrate[cb.Name] = norm; typeToCrate[TypeHelper.ToPascalCase(cb.Name)] = norm; }
+                    foreach (var fn in c.Functions) { typeToCrate[fn.Name] = norm; typeToCrate[TypeHelper.ToPascalCase(fn.Name)] = norm; }
+                }
+
                 if (validCis.Count > 0)
-                    boltEnvelopes = BoltFfiCoexistence.Prepare(boltEnvelopes, validCis.Select(c => c.CrateName));
+                    boltEnvelopes = BoltFfiCoexistence.Prepare(boltEnvelopes, validCis.Select(c => c.CrateName), typeToCrate);
 
                 for (int i = 0; i < validCis.Count; i++)
                 {
@@ -338,6 +349,11 @@ namespace UniFFISharp
                                 }
                                 else
                                 {
+                                    // Drop colliding enums from BoltFFI so UniFFI's canonical enum representations are preserved
+                                    env.Bindings.Native.Decls.RemoveAll(d =>
+                                        d.Kind == BoltFfiDeclKind.Enum &&
+                                        matchedCi.Enums.Any(e => string.Equals(e.Name, d.DeclName, StringComparison.OrdinalIgnoreCase)));
+
                                     boltMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                     uniffiMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                     string methodsClassName = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
@@ -467,7 +483,32 @@ namespace UniFFISharp
                         // Emit BoltFFI bindings
                         if (generatedBoltFFICrates.Add(crateNorm))
                         {
-                            string boltSource = BoltFfiCodeGenerator.Generate(env, Path.GetFileName(libPath), boltTargetNs, boltMethodConfigs);
+                            var allUsings = crateToNs.Values
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Select(s => s.StartsWith("global::") ? s.Substring("global::".Length) : s)
+                                .Where(s => !string.Equals(s, boltTargetNs.StartsWith("global::") ? boltTargetNs.Substring("global::".Length) : boltTargetNs, StringComparison.OrdinalIgnoreCase))
+                                .Distinct()
+                                .ToList();
+
+                            var typeToNs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            if (typeToCrate != null)
+                            {
+                                foreach (var kvp in typeToCrate)
+                                {
+                                    if (crateToNs.TryGetValue(kvp.Value, out var n))
+                                    {
+                                        typeToNs[kvp.Key] = n;
+                                    }
+                                }
+                            }
+
+                            string boltSource = BoltFfiCodeGenerator.Generate(
+                                env,
+                                Path.GetFileName(libPath),
+                                boltTargetNs,
+                                boltMethodConfigs,
+                                additionalUsings: allUsings,
+                                typeToNamespace: typeToNs);
                             if (!string.IsNullOrEmpty(boltSource))
                             {
                                 productionContext.AddSource(

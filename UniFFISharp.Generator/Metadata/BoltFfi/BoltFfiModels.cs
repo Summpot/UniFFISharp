@@ -189,6 +189,8 @@ public sealed class BoltFfiNativeBindings
             var recordDirectMap = new Dictionary<string, bool>();
             var classMap = new Dictionary<string, string>();
             var enumMap = new Dictionary<string, string>();
+            var enumCStyleMap = new Dictionary<string, bool>();
+            var callbackMap = new Dictionary<string, string>();
 
             foreach (var decl in nat.Decls)
             {
@@ -211,8 +213,21 @@ public sealed class BoltFfiNativeBindings
                 if (decl.Enum != null)
                 {
                     string eName = decl.Enum.Name.ToPascalCase();
-                    string? id = decl.RawNode?["Enum"]?["id"]?.ToString();
-                    if (!string.IsNullOrEmpty(id)) enumMap[id!] = eName;
+                    string? id = decl.RawNode?["Enum"]?["CStyle"]?["id"]?.ToString()
+                        ?? decl.RawNode?["Enum"]?["Data"]?["id"]?.ToString()
+                        ?? decl.RawNode?["Enum"]?["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id))
+                    {
+                        enumMap[id!] = eName;
+                        enumCStyleMap[id!] = decl.Enum.IsCStyle;
+                    }
+                    enumCStyleMap[eName] = decl.Enum.IsCStyle;
+                }
+                if (decl.Callback != null)
+                {
+                    string cbName = decl.Callback.Name.ToPascalCase();
+                    string? id = decl.RawNode?["Callback"]?["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id)) callbackMap[id!] = cbName;
                 }
             }
 
@@ -232,8 +247,19 @@ public sealed class BoltFfiNativeBindings
                 }
                 else if (ty.Kind == BoltFfiTypeKind.Class && classMap.TryGetValue(ty.CustomTypeName, out var cName))
                     ty.CustomTypeName = cName;
-                else if (ty.Kind == BoltFfiTypeKind.Enum && enumMap.TryGetValue(ty.CustomTypeName, out var eName))
-                    ty.CustomTypeName = eName;
+                else if (ty.Kind == BoltFfiTypeKind.Enum)
+                {
+                    if (enumCStyleMap.TryGetValue(ty.CustomTypeName, out var isCStyle))
+                        ty.IsCStyleEnum = isCStyle;
+                    if (enumMap.TryGetValue(ty.CustomTypeName, out var eName))
+                    {
+                        ty.CustomTypeName = eName;
+                        if (enumCStyleMap.TryGetValue(eName, out var isCStyle2))
+                            ty.IsCStyleEnum = isCStyle2;
+                    }
+                }
+                else if (ty.Kind == BoltFfiTypeKind.Callback && callbackMap.TryGetValue(ty.CustomTypeName, out var cbName))
+                    ty.CustomTypeName = cbName;
 
                 if (ty.InnerType != null) ResolveType(ty.InnerType);
                 if (ty.KeyType != null) ResolveType(ty.KeyType);
@@ -265,6 +291,21 @@ public sealed class BoltFfiNativeBindings
                 if (decl.Record != null)
                 {
                     foreach (var f in decl.Record.Fields) ResolveType(f.Type);
+                }
+                if (decl.Enum != null)
+                {
+                    foreach (var v in decl.Enum.Variants)
+                    {
+                        foreach (var f in v.PayloadFields) ResolveType(f.Type);
+                    }
+                }
+                if (decl.Callback != null)
+                {
+                    foreach (var m in decl.Callback.Methods)
+                    {
+                        ResolveType(m.ReturnType);
+                        foreach (var p in m.Parameters) ResolveType(p.Type);
+                    }
                 }
                 if (decl.Stream != null)
                 {
@@ -838,6 +879,7 @@ public sealed class BoltFfiType
     public BoltFfiType? KeyType { get; set; }
     public BoltFfiType? ValueType { get; set; }
     public bool IsDirectRecord { get; set; } = true;
+    public bool IsCStyleEnum { get; set; } = true;
 
     public static BoltFfiType Void => new() { Kind = BoltFfiTypeKind.Void };
     public static BoltFfiType Primitive(BoltFfiTypeKind kind) => new() { Kind = kind };

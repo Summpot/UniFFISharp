@@ -346,7 +346,7 @@ public static class CodeGenerator
             TypeKind.UInt8 or TypeKind.Int8 or TypeKind.UInt16 or TypeKind.Int16 or
             TypeKind.UInt32 or TypeKind.Int32 or TypeKind.UInt64 or TypeKind.Int64 or
             TypeKind.Float32 or TypeKind.Float64 or TypeKind.Boolean or
-            TypeKind.Timestamp or TypeKind.Duration => true,
+            TypeKind.Timestamp or TypeKind.Duration or TypeKind.Record => true,
             _ => false
         };
     }
