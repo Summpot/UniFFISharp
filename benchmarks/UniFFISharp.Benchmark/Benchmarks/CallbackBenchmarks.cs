@@ -47,10 +47,30 @@ public unsafe class CallbackBenchmarks
         }
     }
 
+    private sealed class CsSimpleCb
+    {
+        public long OnInvoke(long val) => val * 2;
+    }
+
+    private sealed class CsProgressCb
+    {
+        public ulong LastCurrent;
+        public void OnProgress(ulong current, ulong total, double percentage)
+        {
+            LastCurrent = current;
+        }
+    }
+
     private UniFfiSimpleCb _uSimple = null!;
     private UniFfiProgressCb _uProgress = null!;
     private BoltSimpleCb _bSimple = null!;
     private BoltProgressCb _bProgress = null!;
+    private CsSimpleCb _cSimple = null!;
+    private CsProgressCb _cProgress = null!;
+    private GCHandle _cSimpleHandle;
+    private GCHandle _cProgressHandle;
+    private void* _cSimpleContext;
+    private void* _cProgressContext;
 
     private BenchSimpleCallbackDelegate _iSimple = null!;
     private BenchProgressCallbackDelegate _iProgress = null!;
@@ -67,6 +87,22 @@ public unsafe class CallbackBenchmarks
         s_csLastCurrent = current;
     }
 
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static long CsSimpleCallbackContext(long val, void* context)
+    {
+        var handle = GCHandle.FromIntPtr((IntPtr)context);
+        var target = (CsSimpleCb)handle.Target!;
+        return target.OnInvoke(val);
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static void CsProgressCallbackContext(ulong current, ulong total, double percentage, void* context)
+    {
+        var handle = GCHandle.FromIntPtr((IntPtr)context);
+        var target = (CsProgressCb)handle.Target!;
+        target.OnProgress(current, total, percentage);
+    }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -74,9 +110,23 @@ public unsafe class CallbackBenchmarks
         _uProgress = new UniFfiProgressCb();
         _bSimple = new BoltSimpleCb();
         _bProgress = new BoltProgressCb();
+        _cSimple = new CsSimpleCb();
+        _cProgress = new CsProgressCb();
+
+        _cSimpleHandle = GCHandle.Alloc(_cSimple);
+        _cProgressHandle = GCHandle.Alloc(_cProgress);
+        _cSimpleContext = (void*)GCHandle.ToIntPtr(_cSimpleHandle);
+        _cProgressContext = (void*)GCHandle.ToIntPtr(_cProgressHandle);
 
         _iSimple = val => val * 2;
         _iProgress = (cur, tot, pct) => { _iLastCurrent = cur; };
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        if (_cSimpleHandle.IsAllocated) _cSimpleHandle.Free();
+        if (_cProgressHandle.IsAllocated) _cProgressHandle.Free();
     }
 
     // =========================================================================
@@ -95,8 +145,30 @@ public unsafe class CallbackBenchmarks
         return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimple, 42);
     }
 
-    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Raw FnPtr)")]
-    public long SimpleCallback_CsBindgen()
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Instance Context Cached)")]
+    public long SimpleCallback_CsBindgen_ContextCached()
+    {
+        delegate* unmanaged[Cdecl]<long, void*, long> fn = &CsSimpleCallbackContext;
+        return CsBindgenNative.cs_bench_invoke_callback_context(fn, _cSimpleContext, 42);
+    }
+
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Instance Context PerCall Alloc)")]
+    public long SimpleCallback_CsBindgen_ContextAlloc()
+    {
+        var handle = GCHandle.Alloc(_cSimple);
+        try
+        {
+            delegate* unmanaged[Cdecl]<long, void*, long> fn = &CsSimpleCallbackContext;
+            return CsBindgenNative.cs_bench_invoke_callback_context(fn, (void*)GCHandle.ToIntPtr(handle), 42);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "CsBindgen (Raw FnPtr Static)")]
+    public long SimpleCallback_CsBindgen_Raw()
     {
         delegate* unmanaged[Cdecl]<long, long> fn = &CsSimpleCallback;
         return CsBindgenNative.cs_bench_invoke_callback(fn, 42);
@@ -124,8 +196,30 @@ public unsafe class CallbackBenchmarks
         UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgress, 100);
     }
 
-    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Raw FnPtr)")]
-    public void ProgressCallback_100x_CsBindgen()
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Instance Context Cached)")]
+    public void ProgressCallback_100x_CsBindgen_ContextCached()
+    {
+        delegate* unmanaged[Cdecl]<ulong, ulong, double, void*, void> fn = &CsProgressCallbackContext;
+        CsBindgenNative.cs_bench_trigger_progress_context(fn, _cProgressContext, 100);
+    }
+
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Instance Context PerCall Alloc)")]
+    public void ProgressCallback_100x_CsBindgen_ContextAlloc()
+    {
+        var handle = GCHandle.Alloc(_cProgress);
+        try
+        {
+            delegate* unmanaged[Cdecl]<ulong, ulong, double, void*, void> fn = &CsProgressCallbackContext;
+            CsBindgenNative.cs_bench_trigger_progress_context(fn, (void*)GCHandle.ToIntPtr(handle), 100);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "CsBindgen (Raw FnPtr Static)")]
+    public void ProgressCallback_100x_CsBindgen_Raw()
     {
         delegate* unmanaged[Cdecl]<ulong, ulong, double, void> fn = &CsProgressCallback;
         CsBindgenNative.cs_bench_trigger_progress(fn, 100);
@@ -137,3 +231,4 @@ public unsafe class CallbackBenchmarks
         InteroptopusBench.Interop.interop_bench_trigger_progress(_iProgress, 100);
     }
 }
+

@@ -75,6 +75,12 @@ namespace CsBindgenBench
         [DllImport(__DllName, EntryPoint = "cs_bench_trigger_progress", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern void cs_bench_trigger_progress(delegate* unmanaged[Cdecl]<ulong, ulong, double, void> cb, uint times);
 
+        [DllImport(__DllName, EntryPoint = "cs_bench_invoke_callback_context", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern long cs_bench_invoke_callback_context(delegate* unmanaged[Cdecl]<long, void*, long> cb, void* context, long val);
+
+        [DllImport(__DllName, EntryPoint = "cs_bench_trigger_progress_context", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void cs_bench_trigger_progress_context(delegate* unmanaged[Cdecl]<ulong, ulong, double, void*, void> cb, void* context, uint times);
+
         [DllImport(__DllName, EntryPoint = "cs_bench_process_large_buffer", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern void cs_bench_process_large_buffer(byte* ptr, nuint len);
 

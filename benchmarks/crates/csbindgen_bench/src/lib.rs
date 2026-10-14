@@ -196,6 +196,29 @@ pub unsafe extern "C" fn cs_bench_trigger_progress(cb: extern "C" fn(u64, u64, f
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_invoke_callback_context(
+    cb: extern "C" fn(i64, *mut std::ffi::c_void) -> i64,
+    context: *mut std::ffi::c_void,
+    val: i64,
+) -> i64 {
+    cb(val, context)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cs_bench_trigger_progress_context(
+    cb: extern "C" fn(u64, u64, f64, *mut std::ffi::c_void),
+    context: *mut std::ffi::c_void,
+    times: u32,
+) {
+    for i in 1..=times {
+        let cur = i as u64;
+        let tot = times as u64;
+        cb(cur, tot, (cur as f64) / (tot as f64) * 100.0, context);
+    }
+}
+
+
 // 8. Large Buffer
 #[no_mangle]
 pub unsafe extern "C" fn cs_bench_process_large_buffer(ptr: *mut u8, len: usize) {

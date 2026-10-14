@@ -82,6 +82,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("using System.Threading;");
         sb.AppendLine("using System.Threading.Tasks;");
         sb.AppendLine("using UniFFISharp.BoltFfi;");
+        sb.AppendLine("using UniFFISharp.Collections;");
         sb.AppendLine("using UniFFISharp.Exceptions;");
         if (additionalUsings != null)
         {
@@ -612,8 +613,7 @@ public static class BoltFfiCodeGenerator
         // Bridge class with VTable and thread-safe handle map
         sb.AppendLine($"    internal static unsafe class {bridgeName}");
         sb.AppendLine("    {");
-        sb.AppendLine($"        private static readonly ConcurrentDictionary<ulong, {ifaceName}> Handles = new();");
-        sb.AppendLine("        private static long nextHandle = 1;");
+        sb.AppendLine($"        private static readonly ConcurrentHandleMap<{ifaceName}> Handles = new();");
         sb.AppendLine("        private static readonly nint VTablePointer;");
         sb.AppendLine();
 
@@ -664,8 +664,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("            _ = VTablePointer;");
         sb.AppendLine("            if (callback == null) return BoltFFICallbackHandle.Null;");
         sb.AppendLine($"            if (callback is {proxyName} proxy) return new BoltFFICallbackHandle {{ handle = 1, vtable = VTablePointer }};");
-        sb.AppendLine("            ulong id = (ulong)global::System.Threading.Interlocked.Increment(ref nextHandle);");
-        sb.AppendLine("            Handles[id] = callback;");
+        sb.AppendLine("            ulong id = Handles.Insert(callback);");
         if (!string.IsNullOrEmpty(callback.CreateHandleSymbol))
         {
             sb.AppendLine($"            return NativeMethods.{callback.CreateHandleSymbol}(id);");
@@ -681,7 +680,7 @@ public static class BoltFfiCodeGenerator
 
         // Free & Clone & Method Implementations
         sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
-        sb.AppendLine("        private static void Free(ulong handle) => Handles.TryRemove(handle, out _);");
+        sb.AppendLine("        private static void Free(ulong handle) => Handles.Remove(handle);");
         sb.AppendLine();
         sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
         sb.AppendLine("        private static ulong Clone(ulong handle) => handle;");
@@ -702,7 +701,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("        {");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
-            sb.AppendLine("                if (Handles.TryGetValue(handle, out var cb))");
+            sb.AppendLine("                if (Handles.TryGet(handle, out var cb))");
             sb.AppendLine("                {");
             if (m.ReturnType.Kind == BoltFfiTypeKind.Void)
             {
