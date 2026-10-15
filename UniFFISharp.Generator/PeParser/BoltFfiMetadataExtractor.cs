@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -16,6 +17,8 @@ namespace UniFFISharp.Generator.PeParser;
 public static class BoltFfiMetadataExtractor
 {
     private static readonly byte[] RecordMagic = Encoding.ASCII.GetBytes("BFFIMD01");
+    private static readonly ConcurrentDictionary<string, (long Ticks, long Length, IReadOnlyList<BoltFfiMetadataEnvelope> Envelopes)> s_cache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Extracts all BoltFFI metadata envelopes from a library or archive file path.
@@ -26,6 +29,48 @@ public static class BoltFfiMetadataExtractor
 
         try
         {
+            string fullPath = Path.GetFullPath(filePath);
+            var fi = new FileInfo(fullPath);
+            long ticks = fi.LastWriteTimeUtc.Ticks;
+            long len = fi.Length;
+
+            if (s_cache.TryGetValue(fullPath, out var cached) && cached.Ticks == ticks && cached.Length == len)
+            {
+                return cached.Envelopes;
+            }
+
+            var results = ExtractAllInternal(fullPath);
+            s_cache[fullPath] = (ticks, len, results);
+            return results;
+        }
+        catch
+        {
+            return Array.Empty<BoltFfiMetadataEnvelope>();
+        }
+    }
+
+    private static IReadOnlyList<BoltFfiMetadataEnvelope> ExtractAllInternal(string filePath)
+    {
+        if (!File.Exists(filePath)) return Array.Empty<BoltFfiMetadataEnvelope>();
+
+        try
+        {
+            if (filePath.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) ||
+                filePath.EndsWith(".a", StringComparison.OrdinalIgnoreCase))
+            {
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                if (ArchiveMetadataExtractor.IsArchive(fs))
+                {
+                    var rawSections = ExtractSectionsFromArchive(fs);
+                    var envelopes = new List<BoltFfiMetadataEnvelope>();
+                    foreach (var sec in rawSections)
+                    {
+                        envelopes.AddRange(DecodeSectionBytes(sec));
+                    }
+                    return envelopes;
+                }
+            }
+
             byte[] fileBytes = File.ReadAllBytes(filePath);
             return ExtractAll(fileBytes);
         }
@@ -346,8 +391,13 @@ public static class BoltFfiMetadataExtractor
 
     private static List<byte[]> ExtractSectionsFromArchive(byte[] archiveBytes)
     {
-        var list = new List<byte[]>();
         using var stream = new MemoryStream(archiveBytes, false);
+        return ExtractSectionsFromArchive(stream);
+    }
+
+    private static List<byte[]> ExtractSectionsFromArchive(Stream stream)
+    {
+        var list = new List<byte[]>();
         var memberOffsets = ArchiveMetadataExtractor.GetAllMemberOffsets(stream);
         byte[] headerBuf = new byte[60];
 

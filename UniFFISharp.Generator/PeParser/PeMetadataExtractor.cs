@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using AsmResolver.PE;
@@ -9,6 +10,9 @@ namespace UniFFISharp.Generator.PeParser;
 
 public static class PeMetadataExtractor
 {
+    private static readonly ConcurrentDictionary<string, (long Ticks, long Length, IReadOnlyList<ComponentInterface> Metadata)> s_cache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public static ComponentInterface? Extract(string dllPath)
     {
         var all = ExtractAll(dllPath);
@@ -22,6 +26,37 @@ public static class PeMetadataExtractor
     }
 
     public static IReadOnlyList<ComponentInterface> ExtractAll(string dllPath)
+    {
+        if (!File.Exists(dllPath))
+        {
+            return Array.Empty<ComponentInterface>();
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(dllPath);
+            string libCandidate = Path.ChangeExtension(fullPath, ".lib");
+            string fileToInspect = File.Exists(libCandidate) ? libCandidate : fullPath;
+            var fi = new FileInfo(fileToInspect);
+            long ticks = fi.LastWriteTimeUtc.Ticks;
+            long len = fi.Length;
+
+            if (s_cache.TryGetValue(fullPath, out var cached) && cached.Ticks == ticks && cached.Length == len)
+            {
+                return cached.Metadata;
+            }
+
+            var result = ExtractAllInternal(fullPath);
+            s_cache[fullPath] = (ticks, len, result);
+            return result;
+        }
+        catch
+        {
+            return ExtractAllInternal(dllPath);
+        }
+    }
+
+    private static IReadOnlyList<ComponentInterface> ExtractAllInternal(string dllPath)
     {
         if (!File.Exists(dllPath))
         {

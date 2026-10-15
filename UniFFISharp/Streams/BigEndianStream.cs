@@ -155,11 +155,24 @@ public unsafe ref struct BigEndianStream
     public void WriteString(string value)
     {
         value ??= string.Empty;
-        int byteCount = Encoding.UTF8.GetByteCount(value);
-        WriteInt32(byteCount);
-        if (_pos + byteCount > _len) throw new StreamUnderflowException();
-        Encoding.UTF8.GetBytes(value.AsSpan(), new Span<byte>(_ptr + _pos, byteCount));
-        _pos += byteCount;
+        if (_pos + 4 > _len) throw new StreamUnderflowException();
+        if (value.Length == 0)
+        {
+            WriteInt32(0);
+            return;
+        }
+
+        long remaining = _len - (_pos + 4);
+        if (remaining < 0) throw new StreamUnderflowException();
+        int available = remaining > int.MaxValue ? int.MaxValue : (int)remaining;
+
+        if (!Encoding.UTF8.TryGetBytes(value.AsSpan(), new Span<byte>(_ptr + _pos + 4, available), out int bytesWritten))
+        {
+            throw new StreamUnderflowException();
+        }
+
+        BinaryPrimitives.WriteInt32BigEndian(new Span<byte>(_ptr + _pos, 4), bytesWritten);
+        _pos += 4 + bytesWritten;
     }
 
     public void WriteBytes(byte[] bytes)

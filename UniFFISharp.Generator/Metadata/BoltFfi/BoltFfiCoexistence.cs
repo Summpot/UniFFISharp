@@ -102,7 +102,7 @@ internal static class BoltFfiCoexistence
                 group.Bindings.Native!.Decls.Add(decl);
             }
         }
-        return groups.Values.ToArray();
+        return groups.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Value).ToArray();
     }
 
     internal static bool CanBind(BoltFfiFunctionDecl function)

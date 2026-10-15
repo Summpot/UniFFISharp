@@ -8,6 +8,8 @@ namespace UniFFISharp.BoltFfi;
 
 public sealed class WireWriter
 {
+    private const int MaxCachedBufferCapacity = 64 * 1024;
+
     [ThreadStatic]
     private static WireWriter? t_cached;
 
@@ -21,6 +23,11 @@ public sealed class WireWriter
         {
             w = new WireWriter(128);
             t_cached = w;
+        }
+        else if (w.buffer.Length > MaxCachedBufferCapacity)
+        {
+            w.buffer = new byte[128];
+            w.position = 0;
         }
         else
         {

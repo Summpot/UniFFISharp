@@ -2103,7 +2103,7 @@ public static class CodeGenerator
                 {
                     using (cb.Block("while (!cancellationToken.IsCancellationRequested)"))
                     {
-                        cb.AppendLine($"var item = await {nextMethodName}().WaitAsync(cancellationToken).ConfigureAwait(false);");
+                        cb.AppendLine($"var item = await {nextMethodName}(cancellationToken).ConfigureAwait(false);");
                         if (streamDesc.IsValueType)
                         {
                             using (cb.Block("if (!item.HasValue)"))
