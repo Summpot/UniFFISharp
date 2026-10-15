@@ -109,9 +109,10 @@ In the example above:
 
 ## BoltFFI Dual-Engine Coexistence (v0.3.0+)
 
-UniFFISharp supports seamless coexistence between **UniFFI** and **BoltFFI** (`.boltffi` section, zero-copy blittable structs, direct P/Invoke calls).
+UniFFISharp supports seamless coexistence between its two engines, **UniFFISharp (UniFFI)** and **UniFFISharp (BoltFFI)** (`.boltffi` section, zero-copy blittable structs, direct P/Invoke calls).
 
 - **Automatic Selection (`Auto`)**: When both contracts export a function, the generator selects its engine by signature. UniFFI-only functions remain available even when BoltFFI is preferred. Aggregate BoltFFI exports retain their original component namespaces.
+  The [engine selection rules](benchmarks/README.md#auto-engine-selection) favor UniFFI for fallible scalar calls, simple string returns, and encoded record returns (including collection wrappers). Direct records and encoded record inputs use BoltFFI. Explicit engine preferences take precedence when both exports exist.
 - **Compatible Managed APIs**: During coexistence, synchronous free functions with supported scalar, string, and byte-buffer signatures can use BoltFFI. Async protocols, engine-specific object handles, callbacks, and unsupported aggregate signatures retain their UniFFI bindings and managed types.
 - **Inlined Lightweight Runtime**: Generated BoltFFI bindings inline `FfiBuf`, `BoltFfiStatus`, `WireReader`, and `WireWriter` directly into `.g.cs` files, requiring zero external runtime dependencies.
 - **Engine Control**:

@@ -26,7 +26,7 @@ public class StringBenchmarks
     }
 
     // --- Small String Passing ---
-    [Benchmark(Baseline = true, Description = "UniFFI: StringPass (16B ASCII)")]
+    [Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): StringPass (16B ASCII)")]
     public ulong StringPass_Small_UniFFI()
     {
         return UniffiBenchMethods.BenchStringLength(_smallAscii);
@@ -45,7 +45,7 @@ public class StringBenchmarks
     }
 
     // --- Medium String Passing (1 KB) ---
-    [Benchmark(Description = "UniFFI: StringPass (1KB ASCII)")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): StringPass (1KB ASCII)")]
     public ulong StringPass_Medium_UniFFI()
     {
         return UniffiBenchMethods.BenchStringLength(_mediumAscii);
@@ -64,7 +64,7 @@ public class StringBenchmarks
     }
 
     // --- Large String Passing (32 KB) ---
-    [Benchmark(Description = "UniFFI: StringPass (32KB ASCII)")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): StringPass (32KB ASCII)")]
     public ulong StringPass_Large_UniFFI()
     {
         return UniffiBenchMethods.BenchStringLength(_largeAscii);
@@ -83,7 +83,7 @@ public class StringBenchmarks
     }
 
     // --- Unicode String Passing ---
-    [Benchmark(Description = "UniFFI: StringPass (Unicode/Emoji)")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): StringPass (Unicode/Emoji)")]
     public ulong StringPass_Unicode_UniFFI()
     {
         return UniffiBenchMethods.BenchStringLength(_unicodeStr);
@@ -102,7 +102,7 @@ public class StringBenchmarks
     }
 
     // --- String Returning (Rust -> C#) ---
-    [Benchmark(Description = "UniFFI: StringReturn")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): StringReturn")]
     public string StringReturn_UniFFI()
     {
         return UniffiBenchMethods.BenchStringGreeting("World");
@@ -121,7 +121,7 @@ public class StringBenchmarks
     }
 
     // --- String Roundtrip ---
-    [Benchmark(Description = "UniFFI: StringRoundtrip")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): StringRoundtrip")]
     public string StringRoundtrip_UniFFI()
     {
         return UniffiBenchMethods.BenchStringRoundtrip("BenchmarkPayload");

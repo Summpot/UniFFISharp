@@ -349,7 +349,7 @@ public class SignatureArbitrationAndPartialMethodTests
             ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.UInt64 },
             Parameters = new List<BoltFfiParamDecl>
             {
-                new() { Name = "entities", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Sequence, InnerType = new BoltFfiType { Kind = BoltFfiTypeKind.Record, CustomTypeName = "BenchComplexEntity" } } }
+                new() { Name = "entities", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Sequence, InnerType = new BoltFfiType { Kind = BoltFfiTypeKind.Record, IsDirectRecord = false, CustomTypeName = "BenchComplexEntity" } } }
             }
         };
 

@@ -9,7 +9,7 @@ using InteroptopusBench;
 using UniffiBench;
 using UniffiBench.Bolt;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
 
@@ -152,19 +152,19 @@ public unsafe class CallbackBenchmarks
     // 1. Single Callback Invocation
     // =========================================================================
 
-    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Baseline = true, Description = "UniFFI (Classic)")]
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public long SimpleCallback_UniFFI()
     {
-        return ClassicBench.BenchInvokeCallback(_uSimple, 42);
+        return UniFfiBench.BenchInvokeCallback(_uSimple, 42);
     }
 
-    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI Guarded Devirtualized)")]
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI): Guarded Devirtualized")]
     public long SimpleCallback_BoltFFI_GuardedDevirtualized()
     {
         return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimple, 42);
     }
 
-    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI Interface Fallback)")]
+    [BenchmarkCategory("01_SimpleCallback"), Benchmark(Description = "UniFFISharp (BoltFFI): Interface Fallback")]
     public long SimpleCallback_BoltFFI_InterfaceFallback()
     {
         return UniffiBench.Bolt.UniffiBenchMethods.BoltBenchInvokeCallback(_bSimpleFallback, 42);
@@ -209,19 +209,19 @@ public unsafe class CallbackBenchmarks
     // 2. High Frequency Progress Callback (100 triggers per call)
     // =========================================================================
 
-    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Baseline = true, Description = "UniFFI (Classic)")]
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public void ProgressCallback_100x_UniFFI()
     {
-        ClassicBench.BenchTriggerProgress(_uProgress, 100);
+        UniFfiBench.BenchTriggerProgress(_uProgress, 100);
     }
 
-    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI Guarded Devirtualized)")]
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI): Guarded Devirtualized")]
     public void ProgressCallback_100x_BoltFFI_GuardedDevirtualized()
     {
         UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgress, 100);
     }
 
-    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI Interface Fallback)")]
+    [BenchmarkCategory("02_ProgressCallback_100x"), Benchmark(Description = "UniFFISharp (BoltFFI): Interface Fallback")]
     public void ProgressCallback_100x_BoltFFI_InterfaceFallback()
     {
         UniffiBench.Bolt.UniffiBenchMethods.BoltBenchTriggerProgress(_bProgressFallback, 100);

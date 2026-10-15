@@ -59,7 +59,7 @@ public class AsyncStreamBenchmarks
     // 1. Consume 50 Items via `await foreach (var item in stream)`
     // =========================================================================
 
-    [BenchmarkCategory("01_AsyncStream50Items"), Benchmark(Baseline = true, Description = "UniFFISharp (Inferred IAsyncEnumerable)")]
+    [BenchmarkCategory("01_AsyncStream50Items"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Inferred IAsyncEnumerable")]
     public async Task<int> AsyncStream_UniFFISharp()
     {
         using var engine = new BenchAsyncStreamEngine(StreamItemCount);

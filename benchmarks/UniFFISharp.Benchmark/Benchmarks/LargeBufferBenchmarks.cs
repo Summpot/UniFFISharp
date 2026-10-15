@@ -7,7 +7,7 @@ using InteroptopusBench;
 using UniffiBench;
 using UniffiBench.Bolt;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 using BoltBench = UniffiBench.Bolt.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
@@ -44,10 +44,10 @@ public unsafe class LargeBufferBenchmarks
     // 1. 100 KB Buffer Processing (Crosses LOH Threshold)
     // =========================================================================
 
-    [BenchmarkCategory("01_LargeBuffer100KB"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer)")]
+    [BenchmarkCategory("01_LargeBuffer100KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer")]
     public int LargeBuffer100KB_UniFFI()
     {
-        var res = ClassicBench.BenchProcessLargeBuffer(_buf100KB);
+        var res = UniFfiBench.BenchProcessLargeBuffer(_buf100KB);
         return res.Length;
     }
 
@@ -80,10 +80,10 @@ public unsafe class LargeBufferBenchmarks
     // 2. 1 MB Buffer Processing
     // =========================================================================
 
-    [BenchmarkCategory("02_LargeBuffer1MB"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer)")]
+    [BenchmarkCategory("02_LargeBuffer1MB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer")]
     public int LargeBuffer1MB_UniFFI()
     {
-        var res = ClassicBench.BenchProcessLargeBuffer(_buf1MB);
+        var res = UniFfiBench.BenchProcessLargeBuffer(_buf1MB);
         return res.Length;
     }
 
@@ -116,10 +116,10 @@ public unsafe class LargeBufferBenchmarks
     // 3. 5 MB Buffer Processing
     // =========================================================================
 
-    [BenchmarkCategory("03_LargeBuffer5MB"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer)")]
+    [BenchmarkCategory("03_LargeBuffer5MB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer")]
     public int LargeBuffer5MB_UniFFI()
     {
-        var res = ClassicBench.BenchProcessLargeBuffer(_buf5MB);
+        var res = UniFfiBench.BenchProcessLargeBuffer(_buf5MB);
         return res.Length;
     }
 

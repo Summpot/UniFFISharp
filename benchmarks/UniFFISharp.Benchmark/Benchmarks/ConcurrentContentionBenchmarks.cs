@@ -50,7 +50,7 @@ public unsafe class ConcurrentContentionBenchmarks
     // 1. Concurrent Read Contention (16 parallel threads reading shared state)
     // =========================================================================
 
-    [BenchmarkCategory("01_ConcurrentReads_16Threads"), Benchmark(Baseline = true, Description = "UniFFI (Arc<T> Shared Read)")]
+    [BenchmarkCategory("01_ConcurrentReads_16Threads"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Arc<T> Shared Read")]
     public long ConcurrentReads_UniFFI()
     {
         long total = 0;
@@ -66,7 +66,7 @@ public unsafe class ConcurrentContentionBenchmarks
         return total;
     }
 
-    [BenchmarkCategory("01_ConcurrentReads_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI Atomic Read)")]
+    [BenchmarkCategory("01_ConcurrentReads_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI): Atomic Read")]
     public ulong ConcurrentReads_BoltFFI()
     {
         ulong total = 0;
@@ -118,7 +118,7 @@ public unsafe class ConcurrentContentionBenchmarks
     // 2. Concurrent Read/Write Contention (16 threads reading + mutating state)
     // =========================================================================
 
-    [BenchmarkCategory("02_ConcurrentReadWrite_16Threads"), Benchmark(Baseline = true, Description = "UniFFI (Arc<T> Shared Read/Write)")]
+    [BenchmarkCategory("02_ConcurrentReadWrite_16Threads"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Arc<T> Shared Read/Write")]
     public long ConcurrentReadWrite_UniFFI()
     {
         long total = 0;
@@ -134,7 +134,7 @@ public unsafe class ConcurrentContentionBenchmarks
         return total;
     }
 
-    [BenchmarkCategory("02_ConcurrentReadWrite_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI Atomic Read/Write)")]
+    [BenchmarkCategory("02_ConcurrentReadWrite_16Threads"), Benchmark(Description = "UniFFISharp (BoltFFI): Atomic Read/Write")]
     public ulong ConcurrentReadWrite_BoltFFI()
     {
         ulong total = 0;

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    UniFFISharp vs BoltFFI vs Diplomat vs CsBindgen vs Interoptopus .NET Interop Benchmark Build & Run Script
+    UniFFISharp (UniFFI) vs UniFFISharp (BoltFFI) vs Diplomat vs CsBindgen vs Interoptopus .NET Interop Benchmark Build & Run Script
 .DESCRIPTION
     Automates Rust workspace compilation, Diplomat & Interoptopus C# bindings generation, and .NET BenchmarkDotNet execution.
 #>

@@ -32,7 +32,7 @@ public class ObjectBenchmarks
     }
 
     // --- Object Lifecycle (Create & Destroy) ---
-    [Benchmark(Baseline = true, Description = "UniFFI: Object Create & Destroy")]
+    [Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Object Create & Destroy")]
     public void Object_CreateDestroy_UniFFI()
     {
         using var counter = new UniffiBench.BenchCounter(42);
@@ -54,7 +54,7 @@ public class ObjectBenchmarks
     }
 
     // --- Object Method Calls (Stateful Dispatch) ---
-    [Benchmark(Description = "UniFFI: Object Method Calls")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): Object Method Calls")]
     public ulong Object_MethodCalls_UniFFI()
     {
         _uCounter.Increment(5);

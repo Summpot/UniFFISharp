@@ -1,208 +1,405 @@
-# UniFFISharp vs Diplomat vs CsBindgen .NET Interop Benchmarks
+# .NET Interop Benchmarks
 
-这是一个针对 **UniFFI (Classic)**、**UniFFISharp (BoltFFI Engine)**、**Diplomat** 与 **CsBindgen (Cysharp)** 在 **.NET / C#** 跨语言互操作场景下的全方位性能基准对比套件。
+BenchmarkDotNet comparisons of UniFFISharp (UniFFI), UniFFISharp (BoltFFI), Diplomat, CsBindgen, and Interoptopus. The suite covers scalars, strings, buffers, records, objects, errors, callbacks, concurrency, async calls, and streams. Framework coverage varies by scenario.
 
-项目基于行业标准的 [BenchmarkDotNet](https://benchmarkdotnet.org/) 构建，通过 **单一大类 (`UnifiedInteropBenchmarks`)** 在一次运行中完成所有场景的集中横向对比（不拆开），并配备内存诊断器（`[MemoryDiagnoser]`），能够精确衡量每次调用的 **执行耗时 (Mean)**、**相对基准比率 (Ratio)**、**GC 堆分配 (Allocated Bytes)** 以及 **GC 回收频次 (Gen0/Gen1/Gen2)**。
+## Auto engine selection
 
----
+[InteropArbitrator](../UniFFISharp.Generator/Arbitration/InteropArbitrator.cs) chooses one engine per function signature when both engines export the function. The table pairs equivalent operations from the specialized benchmarks; **bold timing** marks the engine Auto selects. Percentages compare the paired mean times directly.
 
-## 四大互操作框架架构与设计哲学对比
+| Operation | UniFFISharp (UniFFI) | UniFFISharp (BoltFFI) | Auto selects | Why |
+| --- | ---: | ---: | --- | --- |
+| Scalar addition | 2.7556 ns | **0.7430 ns** | **BoltFFI** | 73.0% lower mean. Direct scalar ABI avoids the UniFFI status channel. |
+| Fallible scalar: success | **2.801 ns** | 5.350 ns | **UniFFI** | 47.6% lower mean. Direct scalar return makes the success path cheaper. |
+| Fallible scalar: failure | **1,122.956 ns** | 922.154 ns | **UniFFI** | BoltFFI has the lower mean on failure, but Auto chooses once for the signature and favors its success path. |
+| String input (16B ASCII) | 28.784 ns | **5.891 ns** | **BoltFFI** | 79.5% lower mean. Input encoding is cheaper; both engines allocate 0B. |
+| String input (32KB ASCII) | 867.488 ns | **423.530 ns** | **BoltFFI** | 51.2% lower mean. The input advantage also holds for this larger payload. |
+| String return | **68.975 ns** | 91.196 ns | **UniFFI** | 24.4% lower mean. The simple string-return path has less decoding overhead. |
+| String roundtrip | **60.722 ns** | 82.930 ns | **UniFFI** | 26.8% lower mean. With one string input, the return-path saving outweighs input encoding. |
+| Direct record roundtrip (Point3D) | 123.0942 ns | **0.9600 ns** | **BoltFFI** | 99.2% lower mean. Direct C ABI avoids record serialization. |
+| Encoded record input (UserInfo) | 32.6794 ns | **5.7492 ns** | **BoltFFI** | 82.4% lower mean. This small encoded record is cheaper to pass; both engines allocate 0B. |
+| Complex record input (50 entities) | 16.46 μs | **16.48 μs** | **BoltFFI** | Practical tie: the 0.02 us gap is smaller than either reported error. Use the default engine. |
+| Complex record return (50 entities) | **18.17 μs** | 19.15 μs | **UniFFI** | 5.1% lower mean. Return decoding has the lower mean; both allocate 25,656B. |
+| Byte input (4KB) | 1,668.429 ns | **454.145 ns** | **BoltFFI** | 72.8% lower mean. The byte-input path is cheaper; both engines allocate 0B. |
+| Managed byte[] return (4KB) | 1,692.989 ns | **241.134 ns** | **BoltFFI** | 85.8% lower mean. Lower mean with the same managed result and 4,120B allocation. |
+| Large buffer roundtrip (1MB) | 1,568.729 μs | **270.856 μs** | **BoltFFI** | 82.7% lower mean. Lower copying/serialization cost dominates this payload. |
+| Tagged-union AST input | 289.92 ns | **221.36 ns** | **BoltFFI** | 23.6% lower mean. The wire input/evaluation path has the lower mean. |
+| Callback input (interface fallback) | 49.346 ns | **32.429 ns** | **BoltFFI** | 34.3% lower mean. Even the interface fallback beats the UniFFI callback path; the default choice is BoltFFI. |
 
-| 维度 | UniFFI (Classic) | UniFFISharp (BoltFFI) | Diplomat | CsBindgen (Cysharp) |
-| :--- | :--- | :--- | :--- | :--- |
-| **定位与抽象层级** | **经典 UniFFI 抽象**：多语言统一 UDL/宏定义，通过 `RustBuffer` 序列化协议传递数据，`ref UniffiRustCallStatus` 状态通道 | **BoltFFI 高性能引擎**：自动识别 blittable 结构体直接透传，标量直通，集成 `[SuppressGCTransition]` 亚纳秒调用，按需 Wire 编码 | **C-ABI 规约抽象**：强调 C-ABI 内存布局与多语言兼容（C/C++/JS/Kotlin/.NET），通过 `#[diplomat::bridge]` 规范跨语言边界 | **底层原始 P/Invoke**：直接针对 Rust `extern "C"` 代码生成极致轻量的 C# `[DllImport]` 签名与结构体，无任何运行时包装 |
-| **基础调用模式** | 每个函数附带 `ref UniffiRustCallStatus status` 出参 | 纯原生寄存器直接调用，标记 `[SuppressGCTransition]` 抑制 GC 状态转移 | 原生 `extern "C"` 符号导出，无状态参数（若为 infallible 函数） | 纯原生 `extern "C"` 直接 P/Invoke，无多余封装 |
-| **结构体传递** | `RustBuffer` 序列化（`BigEndianStream` 写入与反序列化，托管内存分配） | **Direct Blittable 透传**：按值直接在 CPU 寄存器或栈上传递（0 分配） | **repr(C)** 内存布局：按值直接传递（0 分配） | **repr(C)** 内存布局：按值直接传递（0 分配） |
-| **字节切片 (`&[u8]`)** | `RustBuffer` 传输（长度前缀 + 4 次 FFI 内存分配与拷贝） | `(nint ptr, nuint len)` 直接切片暴露，指针直通 | `fixed` 钉住借用为 `&[u8]` | `fixed` 钉住直接传递裸指针与长度 |
-| **对象模型** | `Arc<T>` 引用计数，句柄查找与序列化状态通道 | 原生包装 handle，`[SuppressGCTransition]` 直接调用，显式 Dispose 释放 | `Box<T>` 独占所有权，`RustHandle<T>` 安全封装 | `Box<T>` 裸指针直接传递与释放 |
-| **错误处理** | `RustCallStatus` 错误码 + 序列化 `error_buf` | `FfiBuf` 异常通道，无错误直接返回，有错误解码抛出 | `DiplomatResult` 返回 tag 与联合体，失败抛出异常 | 结构体返回 `is_ok` 标记 |
+**Reading the exceptions:** a fallible scalar call keeps UniFFI for both success and failure; Auto cannot switch after the outcome is known. Complex inputs are effectively tied, so BoltFFI is the default rather than a measured winner. The complex-return advantage is modest and has the same allocation cost.
 
----
+String-return preference applies to `String` or `Option<String>` with at most one direct string input and scalar remaining inputs. Encoded-record return preference applies recursively through `Option`, `Sequence`, `Set`, and `Map`; direct records are excluded. Wrapped types and mixed signatures follow these rules without separate measurements for every combination. Other shapes use BoltFFI. Explicit preferences override Auto when both exports exist; a single export always uses its available engine.
 
-## 目录结构
+Object benchmarks support the BoltFFI handle preference: method calls take 4.239 ns vs 48.882 ns; create/destroy takes 49.629 ns vs 81.499 ns and allocates 24B vs 40B. These engine-owned object operations are supporting evidence, not independently routed free functions. Async and stream results have no paired BoltFFI measurement, so they provide no direct engine speed comparison.
 
-```
-UniFFISharp/
-├── benchmarks/
-│   ├── Cargo.toml                              # 根 Cargo Workspace (包含 3 个 Rust 库)
-│   ├── build.ps1                               # 自动化编译、绑定生成与测试脚本
-│   ├── .cargo/config.toml                      # 开启 boltffi_metadata 编译标志
-│   ├── crates/
-│   │   ├── uniffi_bench/                       # UniFFI & BoltFFI 绑定库
-│   │   ├── diplomat_bench/                     # Diplomat 绑定库
-│   │   └── csbindgen_bench/                    # CsBindgen 导出库 (build.rs 自动生成 C# 代码)
-│   └── UniFFISharp.Benchmark/
-│       ├── UniFFISharp.Benchmark.csproj        # 直接 ProjectReference 引用项目自身
-│       ├── Program.cs                          # BenchmarkSwitcher / 校验测试入口
-│       ├── Generated/
-│       │   ├── Diplomat/                       # 由 diplomat-tool 生成的 C# 代码
-│       │   └── CsBindgen/                      # 由 csbindgen build.rs 生成的 C# 代码
-│       └── Benchmarks/
-│           └── UnifiedInteropBenchmarks.cs     # ★★★ 集中式全量单类基准测试 ★★★
-├── UniFFISharp/                                # 核心运行时
-├── UniFFISharp.Generator/                      # Roslyn 增量代码生成器
-├── UniFFISharp.Tests/                          # 单元测试
-└── UniFFISharp.slnx                            # 统一解决方案 (包含 /src, /tests, /benchmarks)
-```
+## Running
 
----
+Requires the .NET 10 SDK, Rust toolchain, and PowerShell. Install `diplomat-tool` to regenerate Diplomat bindings; the build script can use existing bindings when the tool is unavailable.
 
-## 运行指南
-
-### 1. 运行四方功能等价性校验 (Verification)
-
-验证 UniFFI (Classic)、UniFFISharp (BoltFFI)、Diplomat 与 CsBindgen 在所有测试用例下的计算结果 100% 等同：
+Run from the repository root:
 
 ```powershell
+# Build native libraries and bindings, then run functional verification.
 pwsh ./benchmarks/build.ps1 -Verify
+
+# Quick comparison of the unified scenarios.
+pwsh ./benchmarks/build.ps1 -Short -Filter '*Unified*'
+
+# Run the full suite with the default benchmark job.
+pwsh ./benchmarks/build.ps1 -Filter '*'
 ```
 
-输出：
-```text
-=== Verifying UniFFI (Classic), UniFFISharp (BoltFFI), Diplomat & CsBindgen ===
-[✓] NoOp passed
-[✓] AddInt64: UniFFI=300, BoltFFI=300, Diplomat=300, CsBindgen=300
-[✓] ScalarMath: UniFFI=202, BoltFFI=202, Diplomat=202, CsBindgen=202
-[✓] StringLength: UniFFI=43, BoltFFI=43, Diplomat=43, CsBindgen=43
-[✓] StringGreeting: UniFFI=Hello, World!, BoltFFI=Hello, World!, Diplomat=Hello, World!, CsBindgen=Hello, World!
-[✓] StringRoundtrip: UniFFI=echo: UniFFI-Diplomat, BoltFFI=echo: UniFFI-Diplomat, Diplomat=echo: UniFFI-Diplomat, CsBindgen=echo: UniFFI-Diplomat
-[✓] SumBytes: UniFFI=75, BoltFFI=75, Diplomat=75, CsBindgen=75
-[✓] GenerateBytes: UniFFI len=32, BoltFFI len=32, Diplomat len=32, CsBindgen len=32
-[✓] PassPoint: UniFFI=14, BoltFFI=14, Diplomat=14, CsBindgen=14
-[✓] RoundtripPoint: UniFFI=(11,22,33), BoltFFI=(11,22,33), Diplomat=(11,22,33), CsBindgen=(11,22,33)
-[✓] PassUserInfo: UniFFI=12468, BoltFFI=12468, Diplomat=12468, CsBindgen=12468
-[✓] Counter: UniFFI=150, BoltFFI=150, Diplomat=150, CsBindgen=150
-[✓] ResultSuccess: UniFFI=84, BoltFFI=84, Diplomat=84, CsBindgen=84
-[✓] ResultFailure: UniFFI caught=True, BoltFFI caught=True, Diplomat caught=True, CsBindgen is_err=True
+Use a narrower filter such as `'*ComplexEntity*'` for individual benchmark classes. Reports are written to `benchmarks/BenchmarkDotNet.Artifacts/results/`.
 
- ALL FOUR FRAMEWORKS (UniFFI, UniFFISharp-BoltFFI, Diplomat, CsBindgen) PASSED FUNCTIONAL VERIFICATION!
-```
+## Results
 
----
+### Environment
 
-### 2. 集中运行全量基准测试（在一个 Benchmark 中完整跑完）
+| Setting | Value |
+| --- | --- |
+| OS | Windows 11 x64 (10.0.26300.9711) |
+| Runtime | .NET 10.0.13 (10.0.1326.50504), X64 RyuJIT, AVX-512 |
+| SDK | 11.0.100-rc.1.26425.128 |
+| BenchmarkDotNet | 0.14.0, DefaultJob |
+| GC | Concurrent Workstation |
+| Executions | 224 total; 217 with measurements, 7 without measurements |
 
-```powershell
-# 推荐：快速迭代模式（ShortRun，全量 21 场景同屏对比）
-pwsh ./benchmarks/build.ps1 -Short -Filter *Unified*
+Specialized and unified benchmarks are separate measurements and should not be averaged together.
 
-# 针对特定场景过滤测试（例如基础类型或切片）
-pwsh ./benchmarks/build.ps1 -Short -Filter *NoOp*
-```
+`Mean` is time per operation; `Error` is half the 99.9% confidence interval; `StdDev` is the standard deviation. `Allocated` is managed memory per operation; `Gen0`/`Gen1`/`Gen2` count collections per 1,000 operations. Ratios use each table's BenchmarkDotNet baseline, which may cover multiple operations in specialized tables. Compare matching operations directly. `NA` or `?` in ratio columns indicates an unavailable comparison, not a missing timing measurement.
 
----
+Borrowed buffers, owned zero-copy buffers, and managed arrays have different ownership and allocation costs. Async adapters and stream baselines also differ in scheduling and execution model; their timings are not interchangeable engine comparisons.
 
-## 统一基准测试实测数据报表 (Unified Benchmark Results)
+### Measurement notes
 
-> **环境信息**：.NET 10.0.12 (X64 RyuJIT AVX-512), Windows 11, BenchmarkDotNet v0.14.0 (ShortRun)。
-> 全量 21 项场景在单一大类 (`UnifiedInteropBenchmarks`) 中完成完整横向对比。
-> 每个用例以 **UniFFI (Classic) 作为 Baseline (Ratio = 1.00)**。
+Seven executions produced no timing measurements: CsBindgen's `QueryComplexEntities50` and Interoptopus's six unified string scenarios (`StringPass16B`, `StringPass1KB`, `StringPass32KB`, `StringPassUnicode`, `StringReturn`, and `StringRoundtrip`). These rows are excluded from the numeric tables.
 
-| 场景分类 (Category) | 框架 (Framework) | 平均耗时 (Mean) | 误差 (StdDev) | 相对UniFFI耗时 (Ratio) | Gen0/1k op | 单次托管堆分配 (Allocated) | 排名与表现说明 |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **01_NoOp** | **UniFFISharp (BoltFFI)** | **0.80 ns** | 0.04 ns | **0.28x** | - | **0 B** | 🥇 **全场第 1**（快 Diplomat/CsBindgen 2.7x，亚纳秒级） |
-| | Diplomat | 2.18 ns | 0.12 ns | 0.76x | - | 0 B | |
-| | CsBindgen | 2.25 ns | 0.10 ns | 0.79x | - | 0 B | |
-| | UniFFI (Classic) | 2.86 ns | 0.10 ns | 1.00x | - | 0 B | |
-| **02_AddInt64** | **UniFFISharp (BoltFFI)** | **0.81 ns** | 0.05 ns | **0.28x** | - | **0 B** | 🥇 **全场第 1**（寄存器直出，快 2.7x） |
-| | Diplomat | 2.19 ns | 0.06 ns | 0.75x | - | 0 B | |
-| | CsBindgen | 2.22 ns | 0.04 ns | 0.76x | - | 0 B | |
-| | UniFFI (Classic) | 2.91 ns | 0.00 ns | 1.00x | - | 0 B | |
-| **03_ScalarMath** | **UniFFISharp (BoltFFI)** | **1.89 ns** | 0.06 ns | **0.46x** | - | **0 B** | 🥇 **全场第 1**（多参数寄存器直通，快 1.7x） |
-| | CsBindgen | 3.23 ns | 0.08 ns | 0.79x | - | 0 B | |
-| | Diplomat | 3.29 ns | 0.09 ns | 0.80x | - | 0 B | |
-| | UniFFI (Classic) | 4.10 ns | 0.11 ns | 1.00x | - | 0 B | |
-| **04_Loop1000Add** | CsBindgen | 1,041.51 ns | 52.91 ns | 0.32x | - | 0 B | 🥇 第 1 |
-| | Diplomat | 1,042.41 ns | 22.71 ns | 0.32x | - | 0 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **1,188.40 ns** | 15.35 ns | **0.37x** | - | **0 B** | 🥉 第 3（相比 UniFFI Classic 提速 2.7x） |
-| | UniFFI (Classic) | 3,244.45 ns | 33.87 ns | 1.00x | - | 0 B | |
-| **05_PassPoint3D** | **UniFFISharp (BoltFFI)** | **4.23 ns** | 0.02 ns | **0.10x** | - | **0 B** | 🥇 **全场第 1**（结构体指针直通，快 10x） |
-| | CsBindgen | 5.84 ns | 0.05 ns | 0.14x | - | 0 B | |
-| | Diplomat | 5.92 ns | 0.05 ns | 0.14x | - | 0 B | |
-| | UniFFI (Classic) | 43.13 ns | 0.62 ns | 1.00x | - | 0 B | |
-| **06_RoundtripPoint3D** | **UniFFISharp (BoltFFI)** | **1.12 ns** | 0.11 ns | **0.008x** | - | **0 B** | 🥇 **全场第 1**（快 CsBindgen 3.3x，快 Diplomat 7.3x，快 UniFFI 120x） |
-| | CsBindgen | 3.67 ns | 0.26 ns | 0.027x | - | 0 B | |
-| | Diplomat | 8.14 ns | 0.11 ns | 0.060x | - | 0 B | |
-| | UniFFI (Classic) | 135.43 ns | 1.50 ns | 1.000x | 0.0024 | 40 B | |
-| **07_PassUserInfo** | Diplomat | 3.25 ns | 0.14 ns | 0.09x | - | 0 B | 🥇 第 1（C-ABI 布局） |
-| | **UniFFISharp (BoltFFI)** | **6.12 ns** | 0.12 ns | **0.18x** | - | **0 B** | 🥈 **第 2**（**快 CsBindgen 2x**，Wire 编码 0 堆分配） |
-| | CsBindgen | 12.40 ns | 0.22 ns | 0.36x | - | 0 B | 🥉 第 3 |
-| | UniFFI (Classic) | 34.75 ns | 1.67 ns | 1.00x | - | 0 B | |
-| **08_StringPass16B** | **UniFFISharp (BoltFFI)** | **6.27 ns** | 0.09 ns | **0.19x** | - | **0 B** | 🥇 **全场第 1**（快 Diplomat/CsBindgen 1.6x，**0 堆分配 vs 40 B**） |
-| | Diplomat | 9.68 ns | 0.20 ns | 0.30x | 0.0024 | 40 B | |
-| | CsBindgen | 10.15 ns | 0.57 ns | 0.31x | 0.0024 | 40 B | |
-| | UniFFI (Classic) | 32.58 ns | 1.52 ns | 1.00x | - | 0 B | |
-| **09_StringPass1KB** | **UniFFISharp (BoltFFI)** | **16.83 ns** | 0.36 ns | **0.29x** | - | **0 B** | 🥇 **全场第 1**（**快 3.2x**，单趟 UTF-8 栈编码，**0 堆分配 vs 1KB**） |
-| | Diplomat | 49.44 ns | 1.76 ns | 0.87x | 0.0626 | 1,048 B | |
-| | CsBindgen | 53.61 ns | 0.55 ns | 0.94x | 0.0626 | 1,048 B | |
-| | UniFFI (Classic) | 57.18 ns | 2.15 ns | 1.00x | - | 0 B | |
-| **10_StringPass32KB** | **UniFFISharp (BoltFFI)** | **438.07 ns** | 1.97 ns | **0.47x** | - | **0 B** | 🥇 **全场第 1**（**快 CsBindgen/Diplomat 近 3x**，零 GC 分配 vs 32KB） |
-| | UniFFI (Classic) | 937.63 ns | 7.07 ns | 1.00x | - | 0 B | |
-| | Diplomat | 1,169.07 ns | 42.82 ns | 1.25x | 1.9531 | 32,792 B | |
-| | CsBindgen | 1,257.46 ns | 125.71 ns | 1.34x | 1.9531 | 32,792 B | |
-| **11_StringPassUnicode** | **UniFFISharp (BoltFFI)** | **25.35 ns** | 0.03 ns | **0.46x** | - | **0 B** | 🥇 **全场第 1**（多语言 UTF-8 极速直出，**0 堆分配 vs 96 B**） |
-| | Diplomat | 30.36 ns | 1.10 ns | 0.56x | 0.0057 | 96 B | |
-| | CsBindgen | 31.28 ns | 0.46 ns | 0.57x | 0.0057 | 96 B | |
-| | UniFFI (Classic) | 54.59 ns | 2.35 ns | 1.00x | - | 0 B | |
-| **12_StringReturn** | CsBindgen | 47.29 ns | 1.62 ns | 0.62x | 0.0029 | 48 B | 🥇 第 1（基准测试传入预编码静态 byte[]） |
-| | UniFFI (Classic) | 76.50 ns | 0.40 ns | 1.00x | 0.0029 | 48 B | 🥈 第 2 |
-| | Diplomat | 92.26 ns | 2.19 ns | 1.21x | 0.0067 | 112 B | 🥉 第 3 |
-| | **UniFFISharp (BoltFFI)** | **95.40 ns** | 1.25 ns | **1.25x** | 0.0029 | **48 B** | 严格动态字符串编码入参，优于 Diplomat 内存 |
-| **13_StringRoundtrip** | **UniFFI (Classic)** | **67.61 ns** | 2.14 ns | **1.00x** | 0.0043 | **72 B** | 🥇 **UniFFI 全场第 1**（完胜 CsBindgen 78 ns 与 Diplomat 91 ns） |
-| | CsBindgen | 78.59 ns | 1.33 ns | 1.16x | 0.0043 | 72 B | |
-| | **UniFFISharp (BoltFFI)** | **89.72 ns** | 0.95 ns | **1.33x** | 0.0043 | **72 B** | 优于 Diplomat (91.08 ns, 144 B) |
-| | Diplomat | 91.08 ns | 1.52 ns | 1.35x | 0.0086 | 144 B | |
-| **14_SlicePass64B** | CsBindgen | 7.11 ns | 0.20 ns | 0.09x | - | 0 B | 🥇 第 1 |
-| | Diplomat | 7.12 ns | 0.17 ns | 0.09x | - | 0 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **33.27 ns** | 0.34 ns | **0.42x** | - | **0 B** | 🥉 第 3（**快 UniFFI Classic 2.4x**，零堆分配） |
-| | UniFFI (Classic) | 78.75 ns | 1.58 ns | 1.00x | - | 0 B | |
-| **15_SlicePass4KB** | Diplomat | 396.30 ns | 4.65 ns | 0.22x | - | 0 B | 🥇 第 1 |
-| | CsBindgen | 397.59 ns | 3.88 ns | 0.22x | - | 0 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **488.74 ns** | 9.40 ns | **0.27x** | - | **0 B** | 🥉 第 3（**快 UniFFI Classic 3.7x**，零堆分配） |
-| | UniFFI (Classic) | 1,791.12 ns | 49.67 ns | 1.00x | - | 0 B | |
-| **16_SlicePass64KB** | CsBindgen | 6,291.99 ns | 45.09 ns | 0.19x | - | 0 B | 🥇 第 1 |
-| | Diplomat | 6,300.65 ns | 40.70 ns | 0.22x | - | 0 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **7,423.86 ns** | 73.57 ns | **0.26x** | - | **0 B** | 🥉 第 3（**快 UniFFI Classic 3.9x**，零堆分配） |
-| | UniFFI (Classic) | 28,707.00 ns | 240.87 ns | 1.00x | - | 0 B | |
-| **17_SliceReturn4KB** | CsBindgen (ZeroCopy) | 40.32 ns | 0.89 ns | 0.02x | - | 0 B | 不安全裸指针引用 |
-| | CsBindgen (byte[]) | 144.49 ns | 3.42 ns | 0.08x | 0.2460 | 4,120 B | |
-| | Diplomat (ZeroCopy) | 151.83 ns | 2.02 ns | 0.08x | 0.1574 | 72 B | |
-| | **UniFFISharp (BoltFFI)** | **266.62 ns** | 13.59 ns | **0.14x** | 0.2460 | **4,120 B** | **托管字节数组返回优于 Diplomat (287.97 ns)**，快 UniFFI 7x |
-| | Diplomat (byte[]) | 287.97 ns | 14.13 ns | 0.15x | 0.3810 | 4,192 B | |
-| | UniFFI (Classic) | 1,876.60 ns | 39.06 ns | 1.00x | 0.2460 | 4,120 B | |
-| **18_ObjectLifecycle** | CsBindgen | 20.26 ns | 0.49 ns | 0.24x | - | 0 B | 无托管 C# 对象包装 |
-| | Diplomat | 51.33 ns | 1.04 ns | 0.60x | 0.0043 | 72 B | |
-| | **UniFFISharp (BoltFFI)** | **52.75 ns** | 0.52 ns | **0.62x** | 0.0014 | **24 B** | **内存占用最少：单对象仅 24 B（Diplomat 的 1/3）** |
-| | UniFFI (Classic) | 85.04 ns | 1.73 ns | 1.00x | 0.0024 | 40 B | |
-| **19_ObjectMethodCalls**| CsBindgen | 3.28 ns | 0.08 ns | 0.07x | - | 0 B | 🥇 第 1 |
-| | Diplomat | 3.66 ns | 0.11 ns | 0.07x | - | 0 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **4.31 ns** | 0.04 ns | **0.09x** | - | **0 B** | 🥉 **第 3**（两次跨语言方法调用仅 4.3 ns，**快 UniFFI 12x**） |
-| | UniFFI (Classic) | 49.87 ns | 0.21 ns | 1.00x | - | 0 B | |
-| **20_ResultSuccess** | **UniFFI (Classic)** | **2.90 ns** | 0.04 ns | **1.00x** | - | **0 B** | 🥇 **UniFFI 全场第 1**（完胜 Diplomat 6.2 ns 与 CsBindgen 10.2 ns） |
-| | **UniFFISharp (BoltFFI)** | **5.24 ns** | 0.03 ns | **1.81x** | - | **0 B** | 🥈 **BoltFFI 全场第 2**（同样完胜 Diplomat 与 CsBindgen） |
-| | Diplomat | 6.21 ns | 0.03 ns | 2.14x | - | 0 B | 🥉 第 3 |
-| | CsBindgen | 10.21 ns | 0.10 ns | 3.52x | - | 0 B | 第 4 |
-| **21_ResultFailure** | Diplomat | 887.30 ns | 23.90 ns | 0.74x | 0.0172 | 296 B | 🥇 第 1 |
-| | CsBindgen | 901.21 ns | 16.42 ns | 0.75x | 0.0153 | 272 B | 🥈 第 2 |
-| | **UniFFISharp (BoltFFI)** | **988.10 ns** | 15.33 ns | **0.82x** | 0.0153 | **272 B** | 🥉 第 3（相比 UniFFI 提速 20%，内存少 15%） |
-| | UniFFI (Classic) | 1,203.41 ns | 22.51 ns | 1.00x | 0.0191 | 320 B | |
+BenchmarkDotNet reported multimodal distributions for Interoptopus callbacks, UniFFISharp (UniFFI) large buffers, UniFFISharp (BoltFFI) Unicode string input, and Diplomat's unified managed byte-array return.
 
----
+<details>
+<summary>AsyncMethodBenchmarks</summary>
 
-## 核心优化成果与技术洞见总结
+| Method | Categories | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `CsBindgen (Equiv TaskCompletionSource)` | 01_SingleAsyncImmediate | 42.94 ns | 0.834 ns | 0.696 ns | 0.19 | 0.00 | 0.0100 | 168 B | 0.44 |
+| `UniFFISharp (UniFFI): Rust Task Poll` | 01_SingleAsyncImmediate | 224.60 ns | 2.208 ns | 1.724 ns | 1.00 | 0.01 | 0.0229 | 384 B | 1.00 |
+| `Interoptopus (Tokio Native Task)` | 01_SingleAsyncImmediate | 2,012.51 ns | 39.916 ns | 115.803 ns | 8.96 | 0.52 | 0.0267 | 457 B | 1.19 |
+| `CsBindgen (Equiv TaskCompletionSource)` | 02_ConcurrentFanout20 | 972.10 ns | 14.361 ns | 11.992 ns | 0.22 | 0.00 | 0.1564 | 2632 B | 0.39 |
+| `UniFFISharp (UniFFI): Rust Task Poll` | 02_ConcurrentFanout20 | 4,499.70 ns | 52.353 ns | 46.409 ns | 1.00 | 0.01 | 0.4044 | 6808 B | 1.00 |
+| `Interoptopus (Tokio Native Task)` | 02_ConcurrentFanout20 | 13,035.03 ns | 256.248 ns | 638.146 ns | 2.90 | 0.14 | 0.4578 | 7771 B | 1.14 |
 
-1. **标量与无损调用全面夺冠 (01, 02, 03)**：
-   - 借助 `[SuppressGCTransition]`、`ExactSpelling = true` 与寄存器直接调用，BoltFFI 在 `NoOp` (0.80 ns)、`AddInt64` (0.81 ns)、`ScalarMath` (1.89 ns) 上取得全场绝对第 1，比 Diplomat 和 CsBindgen 快近 **3 倍**！
-2. **结构体直接按值透传与往返计算 (05, 06)**：
-   - `RoundtripPoint3D`：BoltFFI 达成惊人的 **1.12 ns**，比 CsBindgen (3.67 ns) 快 **3.3 倍**，比 Diplomat (8.14 ns) 快 **7.3 倍**，比 UniFFI Classic (135.43 ns) 快 **120 倍**！
-3. **复合结构体 Wire 编码飞跃 (07)**：
-   - 通过实现线程复用型 `WireWriter.GetOrCreate()` 与 `BinaryPrimitives` 快速小端内存写入，`PassUserInfo` 从原本的 39.50 ns (392 B 堆分配) 骤降至 **6.12 ns (0 字节堆分配)**，耗时比 CsBindgen (12.40 ns) 快整整 **2 倍**！
-4. **字符串跨语言传递全面霸榜 (08, 09, 10, 11)**：
-   - 基于 `stackalloc` 与 `ArrayPool<byte>.Shared` 的单趟（Single-Pass）UTF-8 编码架构，消除传统两趟（`GetByteCount` + `GetBytes`）的重复遍历与托管内存分配：
-     - **16B 短串**：BoltFFI **6.27 ns (0 字节分配)** vs Diplomat 9.68 ns (40 B)、CsBindgen 10.15 ns (40 B) —— **快 1.6 倍**。
-     - **1KB 中等串**：BoltFFI **16.83 ns (0 字节分配)** vs Diplomat 49.44 ns (1048 B)、CsBindgen 53.61 ns (1048 B) —— **快 3.2 倍**。
-     - **32KB 大串**：BoltFFI **438.07 ns (0 字节分配)** vs Diplomat 1,169.07 ns (32KB)、CsBindgen 1,257.46 ns (32KB) —— **快近 3 倍**。
-     - **Unicode 复杂串**：BoltFFI **25.35 ns (0 字节分配)** 完胜 Diplomat (30.36 ns) 与 CsBindgen (31.28 ns)。
-5. **UniFFISharp 双引擎全面领先 (13, 20)**：
-   - 在 `StringRoundtrip` (67.61 ns) 与 `ResultSuccess` (2.90 ns) 中，UniFFI Classic 引擎展现出精简优化的极致性能，摘得全场第 1；BoltFFI 在 `ResultSuccess` (5.24 ns) 亦大幅领先 Diplomat (6.21 ns) 与 CsBindgen (10.21 ns)。
-   - **UniFFISharp (UniFFI + BoltFFI) 在 21 项基准测试中斩获 11 项全场总冠军，并在其余 9 项中位列前茅或大幅领先主要对手**。
+</details>
+
+<details>
+<summary>AsyncStreamBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Channel-based Push Stream (Semantic Equiv)` | 5.613 μs | 0.0854 μs | 0.0713 μs | 0.19 | 0.00 | 0.1221 | 2123 B | 0.06 |
+| `Pure C# Async Generator (Baseline)` | 21.235 μs | 0.3850 μs | 0.3413 μs | 0.73 | 0.01 | - | 398 B | 0.01 |
+| `UniFFISharp (UniFFI): Inferred IAsyncEnumerable` | 29.176 μs | 0.4199 μs | 0.3507 μs | 1.00 | 0.02 | 2.0752 | 34832 B | 1.00 |
+
+</details>
+
+<details>
+<summary>CallbackBenchmarks</summary>
+
+| Method | Categories | Mean | Error | StdDev | Median | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `CsBindgen (Raw FnPtr Static)` | 01_SimpleCallback | 4.414 ns | 0.0410 ns | 0.0342 ns | 4.412 ns | 0.09 | 0.00 | - | - | NA |
+| `CsBindgen (Instance Context Cached)` | 01_SimpleCallback | 4.823 ns | 0.0618 ns | 0.0516 ns | 4.798 ns | 0.10 | 0.00 | - | - | NA |
+| `CsBindgen (Instance Context PerCall Alloc)` | 01_SimpleCallback | 29.316 ns | 0.1597 ns | 0.1416 ns | 29.319 ns | 0.59 | 0.01 | - | - | NA |
+| `UniFFISharp (BoltFFI): Guarded Devirtualized` | 01_SimpleCallback | 31.629 ns | 0.2070 ns | 0.1835 ns | 31.569 ns | 0.64 | 0.01 | - | - | NA |
+| `UniFFISharp (BoltFFI): Interface Fallback` | 01_SimpleCallback | 32.429 ns | 0.2068 ns | 0.1727 ns | 32.361 ns | 0.66 | 0.01 | - | - | NA |
+| `UniFFISharp (UniFFI)` | 01_SimpleCallback | 49.346 ns | 0.4375 ns | 0.3653 ns | 49.210 ns | 1.00 | 0.01 | - | - | NA |
+| `Interoptopus (InteropDelegate)` | 01_SimpleCallback | 409.367 ns | 8.3348 ns | 24.3129 ns | 408.178 ns | 8.30 | 0.49 | 0.0076 | 128 B | NA |
+| `CsBindgen (Raw FnPtr Static)` | 02_ProgressCallback_100x | 263.829 ns | 2.4659 ns | 2.0591 ns | 263.268 ns | 0.36 | 0.01 | - | - | NA |
+| `CsBindgen (Instance Context Cached)` | 02_ProgressCallback_100x | 266.102 ns | 5.1747 ns | 4.5872 ns | 264.279 ns | 0.36 | 0.01 | - | - | NA |
+| `CsBindgen (Instance Context PerCall Alloc)` | 02_ProgressCallback_100x | 272.623 ns | 0.7036 ns | 0.5876 ns | 272.502 ns | 0.37 | 0.01 | - | - | NA |
+| `UniFFISharp (BoltFFI): Guarded Devirtualized` | 02_ProgressCallback_100x | 329.909 ns | 6.0180 ns | 5.0253 ns | 329.056 ns | 0.45 | 0.01 | - | - | NA |
+| `UniFFISharp (BoltFFI): Interface Fallback` | 02_ProgressCallback_100x | 436.348 ns | 8.3696 ns | 20.6875 ns | 426.834 ns | 0.59 | 0.03 | - | - | NA |
+| `UniFFISharp (UniFFI)` | 02_ProgressCallback_100x | 734.461 ns | 11.1230 ns | 10.4044 ns | 729.809 ns | 1.00 | 0.02 | - | - | NA |
+| `Interoptopus (InteropDelegate)` | 02_ProgressCallback_100x | 984.444 ns | 18.9964 ns | 43.2644 ns | 977.554 ns | 1.34 | 0.06 | 0.0076 | 128 B | NA |
+
+</details>
+
+<details>
+<summary>ComplexEntityBenchmarks</summary>
+
+| Method | Categories | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Gen1 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (UniFFI): RustBuffer` | 01_PassComplexEntities50 | 16.46 μs | 0.243 μs | 0.250 μs | 1.00 | 0.02 | - | - | - | NA |
+| `CsBindgen (Equiv Json Wire)` | 01_PassComplexEntities50 | 16.46 μs | 0.268 μs | 0.209 μs | 1.00 | 0.02 | 0.8545 | - | 14624 B | NA |
+| `UniFFISharp (BoltFFI): Direct Wire` | 01_PassComplexEntities50 | 16.48 μs | 0.230 μs | 0.192 μs | 1.00 | 0.02 | - | - | - | NA |
+| `UniFFISharp (UniFFI): RustBuffer` | 02_QueryComplexEntities50 | 18.17 μs | 0.354 μs | 0.364 μs | 1.00 | 0.03 | 1.5259 | 0.1221 | 25656 B | 1.00 |
+| `UniFFISharp (BoltFFI): Direct Wire` | 02_QueryComplexEntities50 | 19.15 μs | 0.366 μs | 0.360 μs | 1.05 | 0.03 | 1.5259 | 0.1221 | 25656 B | 1.00 |
+
+</details>
+
+<details>
+<summary>ConcurrentContentionBenchmarks</summary>
+
+| Method | Categories | Mean | Error | StdDev | Ratio | Gen0 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (BoltFFI): Atomic Read` | 01_ConcurrentReads_16Threads | 4.131 μs | 0.0807 μs | 0.0863 μs | 0.02 | 0.2289 | 3.71 KB | 0.81 |
+| `Interoptopus (Atomic Read)` | 01_ConcurrentReads_16Threads | 5.160 μs | 0.1005 μs | 0.1504 μs | 0.02 | 0.2365 | 3.88 KB | 0.84 |
+| `CsBindgen (Atomic Read)` | 01_ConcurrentReads_16Threads | 5.167 μs | 0.1029 μs | 0.1661 μs | 0.02 | 0.2365 | 3.86 KB | 0.84 |
+| `UniFFISharp (UniFFI): Arc<T> Shared Read` | 01_ConcurrentReads_16Threads | 212.035 μs | 1.4346 μs | 1.3419 μs | 1.00 | 0.2441 | 4.6 KB | 1.00 |
+| `CsBindgen (Atomic Read/Write)` | 02_ConcurrentReadWrite_16Threads | 32.871 μs | 0.2285 μs | 0.2138 μs | 0.17 | 0.2747 | 4.44 KB | 0.97 |
+| `UniFFISharp (BoltFFI): Atomic Read/Write` | 02_ConcurrentReadWrite_16Threads | 40.626 μs | 0.2166 μs | 0.2026 μs | 0.21 | 0.2441 | 4.61 KB | 1.00 |
+| `Interoptopus (Atomic Read/Write)` | 02_ConcurrentReadWrite_16Threads | 44.104 μs | 0.4914 μs | 0.4356 μs | 0.23 | 0.2441 | 4.53 KB | 0.99 |
+| `UniFFISharp (UniFFI): Arc<T> Shared Read/Write` | 02_ConcurrentReadWrite_16Threads | 189.045 μs | 0.5791 μs | 0.5417 μs | 1.00 | 0.2441 | 4.59 KB | 1.00 |
+
+</details>
+
+<details>
+<summary>ErrorBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (UniFFI): Result Success` | 2.801 ns | 0.0436 ns | 0.0364 ns | 1.00 | 0.02 | - | - | NA |
+| `UniFFISharp (BoltFFI): Result Success` | 5.350 ns | 0.0539 ns | 0.0450 ns | 1.91 | 0.03 | - | - | NA |
+| `Diplomat: Result Success` | 6.277 ns | 0.0395 ns | 0.0308 ns | 2.24 | 0.03 | - | - | NA |
+| `Diplomat: Result Failure (Catch)` | 806.767 ns | 10.3484 ns | 8.0793 ns | 288.06 | 4.52 | 0.0172 | 296 B | NA |
+| `UniFFISharp (BoltFFI): Result Failure (Catch)` | 922.154 ns | 17.1576 ns | 14.3273 ns | 329.25 | 6.40 | 0.0153 | 264 B | NA |
+| `UniFFISharp (UniFFI): Result Failure (Catch)` | 1,122.956 ns | 15.4255 ns | 12.8810 ns | 400.95 | 6.66 | 0.0191 | 320 B | NA |
+
+</details>
+
+<details>
+<summary>LargeBufferBenchmarks</summary>
+
+| Method | Categories | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Gen1 | Gen2 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `CsBindgen (In-Place Zero-Copy)` | 01_LargeBuffer100KB | 978.0 ns | 7.42 ns | 6.57 ns | 0.01 | 0.00 | - | - | - | - | 0.000 |
+| `Interoptopus (VecByte)` | 01_LargeBuffer100KB | 1,872.7 ns | 36.44 ns | 37.42 ns | 0.02 | 0.00 | 0.0038 | - | - | 80 B | 0.001 |
+| `UniFFISharp (BoltFFI)` | 01_LargeBuffer100KB | 7,698.7 ns | 137.69 ns | 201.83 ns | 0.10 | 0.01 | 17.5171 | 17.5171 | 17.5171 | 102433 B | 1.000 |
+| `UniFFISharp (UniFFI): RustBuffer` | 01_LargeBuffer100KB | 79,567.6 ns | 2,047.08 ns | 6,035.85 ns | 1.01 | 0.11 | 18.5547 | 18.5547 | 18.5547 | 102430 B | 1.000 |
+| `CsBindgen (In-Place Zero-Copy)` | 02_LargeBuffer1MB | 9,647.1 ns | 61.02 ns | 54.10 ns | 0.006 | 0.00 | - | - | - | - | 0.000 |
+| `Interoptopus (VecByte)` | 02_LargeBuffer1MB | 169,620.8 ns | 3,291.07 ns | 3,521.40 ns | 0.108 | 0.00 | - | - | - | 80 B | 0.000 |
+| `UniFFISharp (BoltFFI)` | 02_LargeBuffer1MB | 270,855.9 ns | 7,351.72 ns | 21,445.31 ns | 0.173 | 0.01 | 119.1406 | 119.1406 | 119.1406 | 1048678 B | 1.000 |
+| `UniFFISharp (UniFFI): RustBuffer` | 02_LargeBuffer1MB | 1,568,729.0 ns | 31,284.55 ns | 24,424.92 ns | 1.000 | 0.02 | 158.2031 | 158.2031 | 158.2031 | 1048650 B | 1.000 |
+| `CsBindgen (In-Place Zero-Copy)` | 03_LargeBuffer5MB | 51,515.5 ns | 924.79 ns | 772.24 ns | 0.006 | 0.00 | - | - | - | - | 0.000 |
+| `Interoptopus (VecByte)` | 03_LargeBuffer5MB | 899,461.0 ns | 14,160.17 ns | 11,824.39 ns | 0.110 | 0.00 | - | - | - | 80 B | 0.000 |
+| `UniFFISharp (BoltFFI)` | 03_LargeBuffer5MB | 1,640,221.3 ns | 32,699.13 ns | 44,758.94 ns | 0.200 | 0.01 | 246.0938 | 246.0938 | 246.0938 | 5243065 B | 1.000 |
+| `UniFFISharp (UniFFI): RustBuffer` | 03_LargeBuffer5MB | 8,197,712.1 ns | 163,289.53 ns | 174,717.97 ns | 1.000 | 0.03 | 312.5000 | 312.5000 | 312.5000 | 5243008 B | 1.000 |
+
+</details>
+
+<details>
+<summary>ObjectBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Diplomat: Object Method Calls` | 3.415 ns | 0.0218 ns | 0.0182 ns | 0.04 | 0.00 | - | - | 0.00 |
+| `UniFFISharp (BoltFFI): Object Method Calls` | 4.239 ns | 0.0272 ns | 0.0227 ns | 0.05 | 0.00 | - | - | 0.00 |
+| `Diplomat: Object Create & Destroy` | 48.685 ns | 0.8710 ns | 0.7274 ns | 0.60 | 0.01 | 0.0043 | 72 B | 1.80 |
+| `UniFFISharp (UniFFI): Object Method Calls` | 48.882 ns | 0.4152 ns | 0.3467 ns | 0.60 | 0.01 | - | - | 0.00 |
+| `UniFFISharp (BoltFFI): Object Create & Destroy` | 49.629 ns | 0.6536 ns | 0.5458 ns | 0.61 | 0.01 | 0.0014 | 24 B | 0.60 |
+| `UniFFISharp (UniFFI): Object Create & Destroy` | 81.499 ns | 1.3269 ns | 1.1080 ns | 1.00 | 0.02 | 0.0024 | 40 B | 1.00 |
+
+</details>
+
+<details>
+<summary>PrimitiveBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (BoltFFI): AddInt64` | 0.7430 ns | 0.0177 ns | 0.0157 ns | 0.30 | 0.01 | - | NA |
+| `UniFFISharp (BoltFFI): NoOp` | 0.7544 ns | 0.0215 ns | 0.0168 ns | 0.31 | 0.01 | - | NA |
+| `UniFFISharp (BoltFFI): ScalarMath (5 args)` | 1.6724 ns | 0.0211 ns | 0.0177 ns | 0.68 | 0.01 | - | NA |
+| `Diplomat: AddInt64` | 2.0200 ns | 0.0593 ns | 0.0609 ns | 0.82 | 0.03 | - | NA |
+| `Diplomat: NoOp` | 2.0380 ns | 0.0316 ns | 0.0264 ns | 0.83 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): NoOp` | 2.4541 ns | 0.0441 ns | 0.0344 ns | 1.00 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): AddInt64` | 2.7556 ns | 0.0445 ns | 0.0347 ns | 1.12 | 0.02 | - | NA |
+| `Diplomat: ScalarMath (5 args)` | 3.0458 ns | 0.0225 ns | 0.0176 ns | 1.24 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): ScalarMath (5 args)` | 3.8640 ns | 0.0643 ns | 0.0537 ns | 1.57 | 0.03 | - | NA |
+| `Diplomat: Loop 1000 AddInt64` | 961.9232 ns | 18.1687 ns | 16.1061 ns | 392.03 | 8.17 | - | NA |
+| `UniFFISharp (BoltFFI): Loop 1000 AddInt64` | 1,070.8592 ns | 21.4232 ns | 45.6546 ns | 436.42 | 19.32 | - | NA |
+| `UniFFISharp (UniFFI): Loop 1000 AddInt64` | 3,049.7079 ns | 32.0312 ns | 25.0079 ns | 1,242.89 | 19.04 | - | NA |
+
+</details>
+
+<details>
+<summary>SliceBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Gen1 | Gen2 | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Diplomat: BytesPass (64B)` | 6.573 ns | 0.1156 ns | 0.1025 ns | 0.08 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI): BytesPass (64B)` | 30.413 ns | 0.3508 ns | 0.2739 ns | 0.38 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI): BytesPass (64B)` | 80.331 ns | 1.5847 ns | 1.8249 ns | 1.00 | 0.03 | - | - | - | - | NA |
+| `Diplomat: BytesReturn (4KB Zero-Copy RustVec)` | 141.090 ns | 2.8193 ns | 2.3542 ns | 1.76 | 0.05 | 0.1419 | 0.1419 | 0.1419 | 72 B | NA |
+| `UniFFISharp (BoltFFI): BytesReturn (4KB to byte[])` | 241.134 ns | 4.8466 ns | 13.0202 ns | 3.00 | 0.17 | 0.2460 | - | - | 4120 B | NA |
+| `Diplomat: BytesReturn (4KB to byte[])` | 241.140 ns | 4.8431 ns | 9.7834 ns | 3.00 | 0.14 | 0.4334 | 0.2513 | 0.2432 | 4192 B | NA |
+| `Diplomat: BytesPass (4KB)` | 387.839 ns | 4.8392 ns | 4.2898 ns | 4.83 | 0.12 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI): BytesPass (4KB)` | 454.145 ns | 4.2957 ns | 3.5871 ns | 5.66 | 0.13 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI): BytesPass (4KB)` | 1,668.429 ns | 25.6657 ns | 21.4320 ns | 20.78 | 0.52 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI): BytesReturn (4KB to byte[])` | 1,692.989 ns | 33.5946 ns | 41.2572 ns | 21.09 | 0.68 | 0.2460 | - | - | 4120 B | NA |
+| `Diplomat: BytesPass (64KB)` | 6,033.231 ns | 71.2702 ns | 63.1792 ns | 75.14 | 1.79 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI): BytesPass (64KB)` | 7,159.256 ns | 111.0362 ns | 98.4307 ns | 89.16 | 2.26 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI): BytesPass (64KB)` | 26,291.202 ns | 207.1346 ns | 172.9668 ns | 327.44 | 7.37 | - | - | - | - | NA |
+
+</details>
+
+<details>
+<summary>StringBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Gen0 | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (BoltFFI): StringPass (16B ASCII)` | 5.891 ns | 0.0699 ns | 0.0546 ns | 0.20 | 0.00 | - | - | NA |
+| `Diplomat: StringPass (16B ASCII)` | 8.787 ns | 0.1476 ns | 0.1309 ns | 0.31 | 0.01 | 0.0024 | 40 B | NA |
+| `UniFFISharp (BoltFFI): StringPass (1KB ASCII)` | 18.644 ns | 0.3508 ns | 0.2929 ns | 0.65 | 0.01 | - | - | NA |
+| `UniFFISharp (BoltFFI): StringPass (Unicode/Emoji)` | 24.565 ns | 0.5053 ns | 1.0435 ns | 0.85 | 0.04 | - | - | NA |
+| `Diplomat: StringPass (Unicode/Emoji)` | 27.787 ns | 0.5583 ns | 0.5483 ns | 0.97 | 0.02 | 0.0057 | 96 B | NA |
+| `UniFFISharp (UniFFI): StringPass (16B ASCII)` | 28.784 ns | 0.3490 ns | 0.2725 ns | 1.00 | 0.01 | - | - | NA |
+| `Diplomat: StringPass (1KB ASCII)` | 40.320 ns | 0.8256 ns | 1.7594 ns | 1.40 | 0.06 | 0.0626 | 1048 B | NA |
+| `UniFFISharp (UniFFI): StringPass (Unicode/Emoji)` | 49.917 ns | 0.5035 ns | 0.3931 ns | 1.73 | 0.02 | - | - | NA |
+| `UniFFISharp (UniFFI): StringPass (1KB ASCII)` | 53.149 ns | 0.6744 ns | 0.5632 ns | 1.85 | 0.03 | - | - | NA |
+| `UniFFISharp (UniFFI): StringRoundtrip` | 60.722 ns | 1.1119 ns | 0.9285 ns | 2.11 | 0.04 | 0.0043 | 72 B | NA |
+| `UniFFISharp (UniFFI): StringReturn` | 68.975 ns | 0.8784 ns | 0.7787 ns | 2.40 | 0.03 | 0.0029 | 48 B | NA |
+| `Diplomat: StringReturn` | 82.058 ns | 1.1961 ns | 0.9988 ns | 2.85 | 0.04 | 0.0067 | 112 B | NA |
+| `UniFFISharp (BoltFFI): StringRoundtrip` | 82.930 ns | 0.7905 ns | 0.6601 ns | 2.88 | 0.03 | 0.0043 | 72 B | NA |
+| `Diplomat: StringRoundtrip` | 83.079 ns | 1.0277 ns | 0.8582 ns | 2.89 | 0.04 | 0.0086 | 144 B | NA |
+| `UniFFISharp (BoltFFI): StringReturn` | 91.196 ns | 1.8356 ns | 2.4505 ns | 3.17 | 0.09 | 0.0029 | 48 B | NA |
+| `UniFFISharp (BoltFFI): StringPass (32KB ASCII)` | 423.530 ns | 3.2471 ns | 2.5352 ns | 14.72 | 0.16 | - | - | NA |
+| `UniFFISharp (UniFFI): StringPass (32KB ASCII)` | 867.488 ns | 11.9465 ns | 9.9759 ns | 30.14 | 0.43 | - | - | NA |
+| `Diplomat: StringPass (32KB ASCII)` | 1,038.641 ns | 20.6822 ns | 36.7626 ns | 36.09 | 1.30 | 1.9531 | 32792 B | NA |
+
+</details>
+
+<details>
+<summary>StructBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (BoltFFI): Roundtrip Point3D` | 0.9600 ns | 0.0270 ns | 0.0266 ns | 0.02 | 0.00 | - | NA |
+| `Diplomat: Pass UserInfo` | 3.0894 ns | 0.0802 ns | 0.0788 ns | 0.08 | 0.00 | - | NA |
+| `UniFFISharp (BoltFFI): Pass Point3D` | 4.1398 ns | 0.0292 ns | 0.0244 ns | 0.10 | 0.00 | - | NA |
+| `Diplomat: Pass Point3D` | 5.7153 ns | 0.0444 ns | 0.0371 ns | 0.14 | 0.00 | - | NA |
+| `UniFFISharp (BoltFFI): Pass UserInfo` | 5.7492 ns | 0.1260 ns | 0.1400 ns | 0.14 | 0.00 | - | NA |
+| `Diplomat: Roundtrip Point3D` | 7.8321 ns | 0.0850 ns | 0.0664 ns | 0.19 | 0.00 | - | NA |
+| `UniFFISharp (UniFFI): Pass UserInfo` | 32.6794 ns | 0.6416 ns | 0.5009 ns | 0.80 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): Pass Point3D` | 40.7581 ns | 0.5952 ns | 0.4970 ns | 1.00 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): Roundtrip Point3D` | 123.0942 ns | 1.9843 ns | 1.9488 ns | 3.02 | 0.06 | - | NA |
+
+</details>
+
+<details>
+<summary>TaggedUnionAstBenchmarks</summary>
+
+| Method | Mean | Error | StdDev | Ratio | RatioSD | Allocated | Alloc Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Pure C# Managed Evaluation` | 12.66 ns | 0.215 ns | 0.179 ns | 0.04 | 0.00 | - | NA |
+| `UniFFISharp (BoltFFI): Direct Wire` | 221.36 ns | 2.149 ns | 1.795 ns | 0.76 | 0.02 | - | NA |
+| `UniFFISharp (UniFFI): RustBuffer Wire` | 289.92 ns | 5.693 ns | 9.354 ns | 1.00 | 0.04 | - | NA |
+
+</details>
+
+<details>
+<summary>UnifiedInteropBenchmarks</summary>
+
+| Method | Categories | Mean | Error | StdDev | Median | Ratio | RatioSD | Gen0 | Gen1 | Gen2 | Allocated | Alloc Ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `UniFFISharp (BoltFFI)` | 01_NoOp | 0.7454 ns | 0.0163 ns | 0.0128 ns | 0.7380 ns | 0.28 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 01_NoOp | 1.9838 ns | 0.0381 ns | 0.0318 ns | 1.9752 ns | 0.74 | 0.04 | - | - | - | - | NA |
+| `CsBindgen` | 01_NoOp | 2.0124 ns | 0.0186 ns | 0.0156 ns | 2.0104 ns | 0.75 | 0.04 | - | - | - | - | NA |
+| `Diplomat` | 01_NoOp | 2.0241 ns | 0.0228 ns | 0.0191 ns | 2.0192 ns | 0.75 | 0.04 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 01_NoOp | 2.7011 ns | 0.0722 ns | 0.1459 ns | 2.6339 ns | 1.00 | 0.07 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 02_AddInt64 | 0.7381 ns | 0.0110 ns | 0.0086 ns | 0.7357 ns | 0.28 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 02_AddInt64 | 2.0057 ns | 0.0194 ns | 0.0151 ns | 2.0048 ns | 0.76 | 0.01 | - | - | - | - | NA |
+| `CsBindgen` | 02_AddInt64 | 2.0112 ns | 0.0243 ns | 0.0203 ns | 2.0081 ns | 0.76 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 02_AddInt64 | 2.0700 ns | 0.0436 ns | 0.0364 ns | 2.0597 ns | 0.78 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 02_AddInt64 | 2.6424 ns | 0.0301 ns | 0.0235 ns | 2.6355 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 03_ScalarMath | 1.6768 ns | 0.0360 ns | 0.0281 ns | 1.6689 ns | 0.43 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 03_ScalarMath | 2.2423 ns | 0.0372 ns | 0.0290 ns | 2.2284 ns | 0.57 | 0.01 | - | - | - | - | NA |
+| `CsBindgen` | 03_ScalarMath | 2.9746 ns | 0.0531 ns | 0.0443 ns | 2.9602 ns | 0.76 | 0.01 | - | - | - | - | NA |
+| `Diplomat` | 03_ScalarMath | 3.0391 ns | 0.0227 ns | 0.0189 ns | 3.0360 ns | 0.77 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 03_ScalarMath | 3.9257 ns | 0.0605 ns | 0.0473 ns | 3.9105 ns | 1.00 | 0.02 | - | - | - | - | NA |
+| `CsBindgen` | 04_Loop1000Add | 952.9313 ns | 17.9485 ns | 16.7890 ns | 951.2344 ns | 0.30 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 04_Loop1000Add | 956.9029 ns | 18.8963 ns | 34.5530 ns | 937.7159 ns | 0.30 | 0.01 | - | - | - | - | NA |
+| `Diplomat` | 04_Loop1000Add | 975.4679 ns | 19.3160 ns | 22.9944 ns | 974.3103 ns | 0.31 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 04_Loop1000Add | 1,104.9773 ns | 22.0620 ns | 53.2822 ns | 1,099.9310 ns | 0.35 | 0.02 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 04_Loop1000Add | 3,158.6830 ns | 20.1687 ns | 15.7464 ns | 3,157.9664 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 05_PassPoint3D | 4.1162 ns | 0.0174 ns | 0.0136 ns | 4.1145 ns | 0.10 | 0.00 | - | - | - | - | NA |
+| `CsBindgen` | 05_PassPoint3D | 5.6543 ns | 0.0422 ns | 0.0352 ns | 5.6459 ns | 0.14 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 05_PassPoint3D | 5.6810 ns | 0.0271 ns | 0.0226 ns | 5.6813 ns | 0.14 | 0.00 | - | - | - | - | NA |
+| `Interoptopus` | 05_PassPoint3D | 5.7066 ns | 0.0554 ns | 0.0462 ns | 5.6960 ns | 0.14 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 05_PassPoint3D | 40.3331 ns | 0.4923 ns | 0.4111 ns | 40.1504 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 06_RoundtripPoint3D | 0.7988 ns | 0.0321 ns | 0.0284 ns | 0.7853 ns | 0.006 | 0.00 | - | - | - | - | NA |
+| `CsBindgen` | 06_RoundtripPoint3D | 3.3241 ns | 0.0485 ns | 0.0430 ns | 3.3022 ns | 0.027 | 0.00 | - | - | - | - | NA |
+| `Interoptopus` | 06_RoundtripPoint3D | 7.7700 ns | 0.0532 ns | 0.0416 ns | 7.7579 ns | 0.063 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 06_RoundtripPoint3D | 7.7774 ns | 0.0337 ns | 0.0263 ns | 7.7741 ns | 0.063 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 06_RoundtripPoint3D | 123.5225 ns | 2.4759 ns | 2.8512 ns | 122.3424 ns | 1.000 | 0.03 | - | - | - | - | NA |
+| `Interoptopus` | 07_PassUserInfo | 2.9375 ns | 0.0192 ns | 0.0161 ns | 2.9358 ns | 0.09 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 07_PassUserInfo | 2.9996 ns | 0.0693 ns | 0.0712 ns | 2.9723 ns | 0.10 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 07_PassUserInfo | 5.7384 ns | 0.0830 ns | 0.0648 ns | 5.7170 ns | 0.18 | 0.00 | - | - | - | - | NA |
+| `CsBindgen` | 07_PassUserInfo | 11.5765 ns | 0.1021 ns | 0.0797 ns | 11.5615 ns | 0.37 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 07_PassUserInfo | 31.3692 ns | 0.4043 ns | 0.3376 ns | 31.2117 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 08_StringPass16B | 5.9638 ns | 0.0913 ns | 0.0712 ns | 5.9519 ns | 0.21 | 0.00 | - | - | - | - | NA |
+| `CsBindgen` | 08_StringPass16B | 8.5680 ns | 0.1082 ns | 0.0845 ns | 8.5630 ns | 0.30 | 0.01 | 0.0024 | - | - | 40 B | NA |
+| `Diplomat` | 08_StringPass16B | 8.8835 ns | 0.1712 ns | 0.1429 ns | 8.8440 ns | 0.32 | 0.01 | 0.0024 | - | - | 40 B | NA |
+| `UniFFISharp (UniFFI)` | 08_StringPass16B | 28.1768 ns | 0.3859 ns | 0.5776 ns | 28.0895 ns | 1.00 | 0.03 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 09_StringPass1KB | 16.5676 ns | 0.2965 ns | 0.2476 ns | 16.4659 ns | 0.32 | 0.01 | - | - | - | - | NA |
+| `CsBindgen` | 09_StringPass1KB | 41.6976 ns | 1.1005 ns | 3.1928 ns | 40.4378 ns | 0.80 | 0.06 | 0.0626 | - | - | 1048 B | NA |
+| `Diplomat` | 09_StringPass1KB | 41.8314 ns | 1.1425 ns | 3.2965 ns | 40.8671 ns | 0.81 | 0.06 | 0.0626 | - | - | 1048 B | NA |
+| `UniFFISharp (UniFFI)` | 09_StringPass1KB | 51.8767 ns | 0.7125 ns | 0.5563 ns | 51.5965 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 10_StringPass32KB | 423.9728 ns | 8.0956 ns | 7.1765 ns | 422.1918 ns | 0.49 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 10_StringPass32KB | 861.3414 ns | 10.5552 ns | 8.8140 ns | 857.7665 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `CsBindgen` | 10_StringPass32KB | 1,065.7921 ns | 21.3403 ns | 51.5392 ns | 1,040.6481 ns | 1.24 | 0.06 | 1.9531 | - | - | 32792 B | NA |
+| `Diplomat` | 10_StringPass32KB | 1,068.9389 ns | 21.0675 ns | 42.5574 ns | 1,065.5111 ns | 1.24 | 0.05 | 1.9531 | - | - | 32792 B | NA |
+| `UniFFISharp (BoltFFI)` | 11_StringPassUnicode | 23.2869 ns | 0.3864 ns | 0.3226 ns | 23.1185 ns | 0.47 | 0.01 | - | - | - | - | NA |
+| `CsBindgen` | 11_StringPassUnicode | 27.1200 ns | 0.4377 ns | 0.3418 ns | 27.0585 ns | 0.55 | 0.01 | 0.0057 | - | - | 96 B | NA |
+| `Diplomat` | 11_StringPassUnicode | 27.4764 ns | 0.5216 ns | 0.7480 ns | 27.3770 ns | 0.56 | 0.02 | 0.0057 | - | - | 96 B | NA |
+| `UniFFISharp (UniFFI)` | 11_StringPassUnicode | 49.5199 ns | 1.0100 ns | 0.8953 ns | 49.1544 ns | 1.00 | 0.02 | - | - | - | - | NA |
+| `CsBindgen` | 12_StringReturn | 41.3650 ns | 0.6228 ns | 0.5201 ns | 41.1903 ns | 0.62 | 0.01 | 0.0029 | - | - | 48 B | 1.00 |
+| `UniFFISharp (UniFFI)` | 12_StringReturn | 66.6989 ns | 1.0451 ns | 1.1616 ns | 66.4516 ns | 1.00 | 0.02 | 0.0029 | - | - | 48 B | 1.00 |
+| `Diplomat` | 12_StringReturn | 85.1589 ns | 1.7024 ns | 1.7482 ns | 84.7080 ns | 1.28 | 0.03 | 0.0067 | - | - | 112 B | 2.33 |
+| `UniFFISharp (BoltFFI)` | 12_StringReturn | 92.1172 ns | 1.4005 ns | 1.1695 ns | 91.4059 ns | 1.38 | 0.03 | 0.0029 | - | - | 48 B | 1.00 |
+| `UniFFISharp (UniFFI)` | 13_StringRoundtrip | 66.9002 ns | 0.9204 ns | 0.7686 ns | 66.7818 ns | 1.00 | 0.02 | 0.0043 | - | - | 72 B | 1.00 |
+| `CsBindgen` | 13_StringRoundtrip | 72.5763 ns | 1.3786 ns | 1.1512 ns | 72.1770 ns | 1.08 | 0.02 | 0.0043 | - | - | 72 B | 1.00 |
+| `UniFFISharp (BoltFFI)` | 13_StringRoundtrip | 83.9279 ns | 1.6616 ns | 1.3875 ns | 83.5581 ns | 1.25 | 0.02 | 0.0043 | - | - | 72 B | 1.00 |
+| `Diplomat` | 13_StringRoundtrip | 84.9303 ns | 1.6374 ns | 1.3673 ns | 84.3987 ns | 1.27 | 0.02 | 0.0086 | - | - | 144 B | 2.00 |
+| `CsBindgen` | 14_SlicePass64B | 6.3446 ns | 0.1177 ns | 0.1043 ns | 6.3263 ns | 0.08 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 14_SlicePass64B | 6.5015 ns | 0.0918 ns | 0.0717 ns | 6.4705 ns | 0.08 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 14_SlicePass64B | 34.1037 ns | 0.4399 ns | 0.3674 ns | 34.0086 ns | 0.44 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 14_SlicePass64B | 53.5318 ns | 0.9478 ns | 0.8402 ns | 53.6997 ns | 0.69 | 0.01 | 0.0081 | - | - | 136 B | NA |
+| `UniFFISharp (UniFFI)` | 14_SlicePass64B | 77.6631 ns | 1.0925 ns | 0.9123 ns | 77.5448 ns | 1.00 | 0.02 | - | - | - | - | NA |
+| `CsBindgen` | 15_SlicePass4KB | 384.7052 ns | 7.6348 ns | 7.4984 ns | 382.4215 ns | 0.23 | 0.01 | - | - | - | - | NA |
+| `Diplomat` | 15_SlicePass4KB | 388.3759 ns | 6.8895 ns | 6.4445 ns | 385.7981 ns | 0.23 | 0.01 | - | - | - | - | NA |
+| `Interoptopus` | 15_SlicePass4KB | 424.5637 ns | 6.2847 ns | 5.5712 ns | 422.7657 ns | 0.25 | 0.00 | 0.0081 | - | - | 136 B | NA |
+| `UniFFISharp (BoltFFI)` | 15_SlicePass4KB | 456.5196 ns | 4.0647 ns | 3.1734 ns | 455.3857 ns | 0.27 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 15_SlicePass4KB | 1,679.8871 ns | 29.7318 ns | 26.3565 ns | 1,668.8463 ns | 1.00 | 0.02 | - | - | - | - | NA |
+| `CsBindgen` | 16_SlicePass64KB | 6,009.8203 ns | 48.7681 ns | 38.0749 ns | 5,998.1125 ns | 0.23 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 16_SlicePass64KB | 6,023.4950 ns | 68.5623 ns | 57.2526 ns | 5,992.9405 ns | 0.23 | 0.00 | - | - | - | - | NA |
+| `Interoptopus` | 16_SlicePass64KB | 6,090.4922 ns | 61.4657 ns | 51.3267 ns | 6,085.4706 ns | 0.23 | 0.00 | 0.0076 | - | - | 136 B | NA |
+| `UniFFISharp (BoltFFI)` | 16_SlicePass64KB | 7,107.4670 ns | 32.9134 ns | 25.6966 ns | 7,105.8868 ns | 0.27 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 16_SlicePass64KB | 26,278.5904 ns | 333.9402 ns | 260.7186 ns | 26,275.7202 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `CsBindgen (ZeroCopy ByteBuffer)` | 17_SliceReturn4KB | 36.0668 ns | 0.5136 ns | 0.4289 ns | 35.9039 ns | 0.02 | 0.00 | - | - | - | - | 0.000 |
+| `Interoptopus (ZeroCopy VecByte)` | 17_SliceReturn4KB | 44.9099 ns | 0.9168 ns | 0.8576 ns | 44.6252 ns | 0.03 | 0.00 | 0.0024 | - | - | 40 B | 0.010 |
+| `CsBindgen (To managed byte[])` | 17_SliceReturn4KB | 117.0808 ns | 2.3729 ns | 5.7761 ns | 114.9759 ns | 0.07 | 0.00 | 0.2460 | - | - | 4120 B | 1.000 |
+| `Diplomat (ZeroCopy RustVec)` | 17_SliceReturn4KB | 136.3913 ns | 2.2318 ns | 2.5701 ns | 135.2827 ns | 0.08 | 0.00 | 0.1423 | 0.1423 | 0.1423 | 72 B | 0.017 |
+| `UniFFISharp (BoltFFI)` | 17_SliceReturn4KB | 234.0280 ns | 4.7108 ns | 12.3273 ns | 230.0766 ns | 0.14 | 0.01 | 0.2460 | - | - | 4120 B | 1.000 |
+| `Diplomat (To managed byte[])` | 17_SliceReturn4KB | 248.5060 ns | 4.9994 ns | 11.1819 ns | 248.8885 ns | 0.14 | 0.01 | 0.3982 | 0.3223 | 0.3195 | 4192 B | 1.017 |
+| `UniFFISharp (UniFFI): To managed byte[]` | 17_SliceReturn4KB | 1,724.8328 ns | 34.4161 ns | 83.1189 ns | 1,692.4267 ns | 1.00 | 0.07 | 0.2460 | - | - | 4120 B | 1.000 |
+| `Interoptopus (To managed byte[])` | 17_SliceReturn4KB | 34,250.8334 ns | 616.1635 ns | 1,111.0700 ns | 33,951.7761 ns | 19.90 | 1.12 | 6.1035 | 0.0610 | - | 102465 B | 24.870 |
+| `CsBindgen` | 18_ObjectLifecycle | 18.6953 ns | 0.3883 ns | 0.4472 ns | 18.4465 ns | 0.23 | 0.01 | - | - | - | - | 0.00 |
+| `Interoptopus` | 18_ObjectLifecycle | 33.8542 ns | 0.4972 ns | 0.3882 ns | 33.8035 ns | 0.41 | 0.01 | 0.0019 | - | - | 32 B | 0.80 |
+| `Diplomat` | 18_ObjectLifecycle | 48.0153 ns | 0.9357 ns | 1.8688 ns | 47.4384 ns | 0.59 | 0.02 | 0.0043 | - | - | 72 B | 1.80 |
+| `UniFFISharp (BoltFFI)` | 18_ObjectLifecycle | 50.2095 ns | 1.0168 ns | 1.3221 ns | 49.6899 ns | 0.61 | 0.02 | 0.0014 | - | - | 24 B | 0.60 |
+| `UniFFISharp (UniFFI)` | 18_ObjectLifecycle | 81.7968 ns | 1.2806 ns | 1.0694 ns | 81.4380 ns | 1.00 | 0.02 | 0.0024 | - | - | 40 B | 1.00 |
+| `CsBindgen` | 19_ObjectMethodCalls | 3.1311 ns | 0.0692 ns | 0.0578 ns | 3.1087 ns | 0.06 | 0.00 | - | - | - | - | NA |
+| `Diplomat` | 19_ObjectMethodCalls | 3.9792 ns | 0.0687 ns | 0.0574 ns | 3.9522 ns | 0.08 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 19_ObjectMethodCalls | 4.2796 ns | 0.0908 ns | 0.0805 ns | 4.2443 ns | 0.09 | 0.00 | - | - | - | - | NA |
+| `Interoptopus` | 19_ObjectMethodCalls | 5.4703 ns | 0.1279 ns | 0.1256 ns | 5.4290 ns | 0.11 | 0.00 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 19_ObjectMethodCalls | 48.8231 ns | 0.3253 ns | 0.2539 ns | 48.6634 ns | 1.00 | 0.01 | - | - | - | - | NA |
+| `UniFFISharp (UniFFI)` | 20_ResultSuccess | 2.7338 ns | 0.0623 ns | 0.0486 ns | 2.7427 ns | 1.00 | 0.02 | - | - | - | - | NA |
+| `Interoptopus` | 20_ResultSuccess | 2.8360 ns | 0.0745 ns | 0.1635 ns | 2.7658 ns | 1.04 | 0.06 | - | - | - | - | NA |
+| `UniFFISharp (BoltFFI)` | 20_ResultSuccess | 5.2894 ns | 0.0546 ns | 0.0426 ns | 5.2766 ns | 1.94 | 0.04 | - | - | - | - | NA |
+| `Diplomat` | 20_ResultSuccess | 6.1816 ns | 0.1397 ns | 0.1663 ns | 6.0887 ns | 2.26 | 0.07 | - | - | - | - | NA |
+| `CsBindgen` | 20_ResultSuccess | 9.9842 ns | 0.2127 ns | 0.2690 ns | 9.9275 ns | 3.65 | 0.11 | - | - | - | - | NA |
+| `Diplomat` | 21_ResultFailure | 825.5359 ns | 16.4743 ns | 35.1080 ns | 804.0089 ns | 0.74 | 0.03 | 0.0172 | - | - | 296 B | 0.93 |
+| `CsBindgen` | 21_ResultFailure | 827.7852 ns | 13.5237 ns | 10.5584 ns | 824.9174 ns | 0.74 | 0.01 | 0.0162 | - | - | 272 B | 0.85 |
+| `Interoptopus` | 21_ResultFailure | 853.0613 ns | 16.8769 ns | 36.3294 ns | 839.2697 ns | 0.77 | 0.03 | 0.0181 | - | - | 304 B | 0.95 |
+| `UniFFISharp (BoltFFI)` | 21_ResultFailure | 942.8427 ns | 18.7384 ns | 35.6517 ns | 926.4020 ns | 0.85 | 0.03 | 0.0153 | - | - | 264 B | 0.82 |
+| `UniFFISharp (UniFFI)` | 21_ResultFailure | 1,114.7426 ns | 21.5492 ns | 19.1028 ns | 1,107.1647 ns | 1.00 | 0.02 | 0.0191 | - | - | 320 B | 1.00 |
+
+</details>

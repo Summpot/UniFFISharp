@@ -13,7 +13,7 @@ public class PrimitiveBenchmarks
 {
     private const int LoopCount = 1000;
 
-    [Benchmark(Baseline = true, Description = "UniFFI: NoOp")]
+    [Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): NoOp")]
     public void NoOp_UniFFI()
     {
         UniffiBenchMethods.BenchNoop();
@@ -31,7 +31,7 @@ public class PrimitiveBenchmarks
         UniffiBench.Bolt.UniffiBenchMethods.BenchNoop();
     }
 
-    [Benchmark(Description = "UniFFI: AddInt64")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): AddInt64")]
     public long AddInt64_UniFFI()
     {
         return UniffiBenchMethods.BenchAddI64(123456789, 987654321);
@@ -49,7 +49,7 @@ public class PrimitiveBenchmarks
         return UniffiBench.Bolt.UniffiBenchMethods.BenchAddI64(123456789, 987654321);
     }
 
-    [Benchmark(Description = "UniFFI: ScalarMath (5 args)")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): ScalarMath (5 args)")]
     public double ScalarMath_UniFFI()
     {
         return UniffiBenchMethods.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
@@ -67,7 +67,7 @@ public class PrimitiveBenchmarks
         return UniffiBench.Bolt.UniffiBenchMethods.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
     }
 
-    [Benchmark(Description = "UniFFI: Loop 1000 AddInt64")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): Loop 1000 AddInt64")]
     public long Loop1000_Add_UniFFI()
     {
         long sum = 0;

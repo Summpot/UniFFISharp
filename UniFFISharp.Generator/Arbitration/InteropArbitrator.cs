@@ -6,8 +6,8 @@ using UniFFISharp.Generator.Metadata.BoltFfi;
 namespace UniFFISharp.Generator.Arbitration;
 
 /// <summary>
-/// Selects the optimal interop engine (UniFFI vs BoltFFI) based on empirical performance
-/// cost models calibrated through rigorous benchmarks, with support for user overrides.
+/// Selects UniFFI or BoltFFI using signature heuristics,
+/// with support for user overrides.
 /// </summary>
 public static class InteropArbitrator
 {
@@ -33,12 +33,11 @@ public static class InteropArbitrator
             return overrideEngine;
         }
 
-        // --- Signature Cost Model ---
-
         // 1. Fallible pure scalar operations (Result<Scalar, Error>):
         // UniFFI returns the scalar directly in the CPU register (RAX/XMM0) and passes 'ref UniffiRustCallStatus'
         // for error signaling. BoltFFI error ABI returns a 16-byte FfiBuf and passes 'out' pointers,
-        // which introduces stack frame spilling and memory write overhead (UniFFI 3.81 ns vs BoltFFI 6.53 ns, 72% faster).
+        // which adds overhead on the success path (UniFFI 2.801 ns vs BoltFFI 5.350 ns).
+        // Failure is cheaper with BoltFFI (922.154 ns vs 1122.956 ns), but signatures do not reveal failure rates.
         // This also applies to C-style enums which are returned as register integers.
         bool isFallible = (uniffiFn!.Throws != null) || boltFn!.HasError;
         if (isFallible)
@@ -53,9 +52,9 @@ public static class InteropArbitrator
 
         // 2. String echo / single string return (StringReturn, StringRoundtrip, Option<String>):
         // UniFFI RustBuffer lift uses direct pointer read and fast free without wire envelope overhead
-        // (StringReturn: UniFFI 115.88 ns vs BoltFFI 158.26 ns, 37% faster; StringRoundtrip: UniFFI 83.28 ns vs BoltFFI 101.41 ns, 22% faster).
+        // (StringReturn: UniFFI 68.975 ns vs BoltFFI 91.196 ns; StringRoundtrip: 60.722 ns vs 82.930 ns).
         // However, if there are multiple string inputs (like concat) or string queries, BoltFFI's
-        // zero-allocation stackalloc wire encoder is 2x to 5x faster (6.27 ns vs 32.58 ns, 0B alloc vs RustBuffer).
+        // stackalloc wire encoder favors BoltFFI (StringPass16B: 5.891 ns vs 28.784 ns, both 0B allocated).
         bool returnsStringOrOptionalString =
             (uniffiFn.ReturnType != null && (uniffiFn.ReturnType.Kind == TypeKind.String ||
                 (uniffiFn.ReturnType.Kind == TypeKind.Option && uniffiFn.ReturnType.InnerType?.Kind == TypeKind.String))) ||
@@ -75,9 +74,18 @@ public static class InteropArbitrator
             }
         }
 
-        // 3. Structs & Records (Direct Blittable 144x faster, Complex Wire 1.07x faster):
-        // BoltFFI passes blittable structs directly across C-ABI with [SuppressGCTransition] (2.33 ns vs 336.32 ns, 144x faster, 0B alloc).
-        // For complex nested records, BoltFFI's WireWriter/WireReader is also leaner than UniFFI RustBuffer (40.5 us vs 43.27 us).
+        // Complex record returns favor UniFFI's decoder: QueryComplexEntities50 takes
+        // 18.17 us vs BoltFFI's 19.15 us, with the same 25,656B allocation.
+        // Apply this decoding heuristic through optional/collection wrappers, but keep direct records on BoltFFI.
+        if (ContainsEncodedRecord(boltFn!.ReturnType))
+        {
+            return InteropEngine.UniFFI;
+        }
+
+        // 3. Structs & Records:
+        // BoltFFI direct Point3D roundtrip: 0.960 ns vs UniFFI 123.094 ns, both 0B allocated.
+        // Complex record inputs are effectively tied (PassComplexEntities50: 16.48 us vs 16.46 us);
+        // retain BoltFFI for encoding rather than extending the return-decoding heuristic to inputs.
         bool hasRecord = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.Record) ||
                          (uniffiFn.ReturnType != null && uniffiFn.ReturnType.Kind == TypeKind.Record) ||
                          boltFn!.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Record) ||
@@ -88,7 +96,7 @@ public static class InteropArbitrator
         }
 
         // 4. Objects / Classes (Native Handle Table vs Arc Pointer):
-        // BoltFFI handle table calls with [SuppressGCTransition] are 8.6x to 12x faster (11.08 ns vs 94.98 ns),
+        // BoltFFI handle table calls with [SuppressGCTransition] take 4.239 ns vs UniFFI 48.882 ns,
         // and allocate less memory on lifecycle creation (24 B vs 40 B).
         bool hasClass = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.Interface) ||
                         (uniffiFn.ReturnType != null && uniffiFn.ReturnType.Kind == TypeKind.Interface) ||
@@ -100,8 +108,8 @@ public static class InteropArbitrator
         }
 
         // 5. Byte arrays / Slices / Large Buffers (Vec<u8>, byte[]):
-        // BoltFFI stackalloc / ArrayPool pointer passing is 2.5x to 7x faster (SlicePass64B: 75.71 ns vs 192.71 ns;
-        // LargeBuffer 1MB: 566 us vs 3114 us, 5.5x faster).
+        // BoltFFI wins for inputs and managed byte[] returns (BytesPass64B: 30.413 ns vs 80.331 ns;
+        // BytesReturn4KB: 241.134 ns vs 1692.989 ns; LargeBuffer1MB: 270.856 us vs 1568.729 us).
         bool hasBytes = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.Bytes) ||
                         (uniffiFn.ReturnType != null && uniffiFn.ReturnType.Kind == TypeKind.Bytes) ||
                         boltFn!.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Bytes) ||
@@ -112,8 +120,8 @@ public static class InteropArbitrator
         }
 
         // 6. Collections & Tagged Unions (Vec<T>, List<T>, Map, Set, ADT Enums):
-        // BoltFFI WireWriter/WireReader with BinaryPrimitives is faster and leaner than UniFFI RustBuffer
-        // (ComplexEntity pass: 40.50 us vs 43.27 us; TaggedUnion AST: 483.57 ns vs 508.04 ns).
+        // BoltFFI wins for tagged-union input (AST evaluation: 221.36 ns vs 289.92 ns).
+        // Other collection shapes retain BoltFFI unless the complex-record return rule above applies.
         bool hasCollectionOrDataEnum =
             uniffiFn.Inputs.Any(p => p.Type.Kind is TypeKind.Sequence or TypeKind.Map or TypeKind.Set ||
                                      (p.Type.Kind == TypeKind.Enum && !IsScalarType(p.Type, GetBoltParamType(boltFn, p.Name)))) ||
@@ -130,7 +138,7 @@ public static class InteropArbitrator
 
         // 7. String inputs (infallible or multi-string):
         // BoltFFI single-pass stackalloc UTF-8 encoding is 2x to 5x faster with 0B allocations
-        // (StringPass16B: 6.27 ns vs 32.58 ns; StringPass1KB: 16.83 ns vs 57.18 ns).
+        // (StringPass16B: 5.891 ns vs 28.784 ns; StringPass1KB: 18.644 ns vs 53.149 ns).
         bool hasStringInput = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.String) ||
                               boltFn!.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.String);
         if (hasStringInput)
@@ -139,7 +147,7 @@ public static class InteropArbitrator
         }
 
         // 8. Infallible pure scalars:
-        // Direct C-ABI call with [SuppressGCTransition] without status check overhead (1.53 ns vs 3.83 ns, 2.5x faster).
+        // Direct C-ABI call with [SuppressGCTransition] (AddInt64: 0.743 ns vs UniFFI 2.756 ns).
         bool allInputsScalarOrVoid = uniffiFn.Inputs.All(p => IsScalarType(p.Type, GetBoltParamType(boltFn, p.Name)));
         bool returnScalarOrVoid = uniffiFn.ReturnType == null || IsScalarType(uniffiFn.ReturnType, boltFn!.ReturnType);
         if (allInputsScalarOrVoid && returnScalarOrVoid)
@@ -147,8 +155,22 @@ public static class InteropArbitrator
             return InteropEngine.BoltFFI;
         }
 
-        // 9. Default fallback: BoltFFI (ExactSpelling + SuppressGCTransition)
+        // 9. Other signature shapes use BoltFFI.
         return InteropEngine.BoltFFI;
+    }
+
+    private static bool ContainsEncodedRecord(BoltFfiType type)
+    {
+        return type.Kind switch
+        {
+            BoltFfiTypeKind.Record => !type.IsDirectRecord,
+            BoltFfiTypeKind.Option or BoltFfiTypeKind.Sequence or BoltFfiTypeKind.Set =>
+                type.InnerType != null && ContainsEncodedRecord(type.InnerType),
+            BoltFfiTypeKind.Map =>
+                (type.KeyType != null && ContainsEncodedRecord(type.KeyType)) ||
+                (type.ValueType != null && ContainsEncodedRecord(type.ValueType)),
+            _ => false
+        };
     }
 
     private static bool IsScalarType(UniFFIType uniffiType, BoltFfiType? boltType = null)

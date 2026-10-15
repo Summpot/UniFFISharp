@@ -10,7 +10,7 @@ using CsBindgenBench;
 using InteroptopusBench;
 using UniffiBench;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
 
@@ -58,10 +58,10 @@ public class AsyncMethodBenchmarks
     // 1. Single Async Invocation (Zero Delay / Immediate Yield)
     // =========================================================================
 
-    [BenchmarkCategory("01_SingleAsyncImmediate"), Benchmark(Baseline = true, Description = "UniFFI (Classic Rust Task Poll)")]
+    [BenchmarkCategory("01_SingleAsyncImmediate"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Rust Task Poll")]
     public async Task<ulong> SingleAsyncImmediate_UniFFI()
     {
-        return await ClassicBench.BenchAsyncComputeAsync(42, 0);
+        return await UniFfiBench.BenchAsyncComputeAsync(42, 0);
     }
 
     [BenchmarkCategory("01_SingleAsyncImmediate"), Benchmark(Description = "Interoptopus (Tokio Native Task)")]
@@ -80,13 +80,13 @@ public class AsyncMethodBenchmarks
     // 2. Concurrent Async Fanout (20 Tasks in Parallel via Task.WhenAll)
     // =========================================================================
 
-    [BenchmarkCategory("02_ConcurrentFanout20"), Benchmark(Baseline = true, Description = "UniFFI (Classic Rust Task Poll)")]
+    [BenchmarkCategory("02_ConcurrentFanout20"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Rust Task Poll")]
     public async Task<ulong> ConcurrentFanout20_UniFFI()
     {
         var tasks = new Task<ulong>[20];
         for (ulong i = 0; i < 20; i++)
         {
-            tasks[i] = ClassicBench.BenchAsyncComputeAsync(i, 0);
+            tasks[i] = UniFfiBench.BenchAsyncComputeAsync(i, 0);
         }
         var results = await Task.WhenAll(tasks);
         ulong sum = 0;

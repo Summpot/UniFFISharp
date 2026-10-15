@@ -12,7 +12,7 @@ namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
 public class ErrorBenchmarks
 {
     // --- Result Success Path ---
-    [Benchmark(Baseline = true, Description = "UniFFI: Result Success")]
+    [Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Result Success")]
     public long Result_Success_UniFFI()
     {
         return UniffiBenchMethods.BenchParsePositive(42);
@@ -31,7 +31,7 @@ public class ErrorBenchmarks
     }
 
     // --- Result Failure Path (Throws Exception) ---
-    [Benchmark(Description = "UniFFI: Result Failure (Catch)")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): Result Failure (Catch)")]
     public bool Result_Failure_UniFFI()
     {
         try

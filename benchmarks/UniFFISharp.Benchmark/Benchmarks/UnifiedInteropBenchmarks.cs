@@ -9,7 +9,7 @@ using InteroptopusBench;
 using UniffiBench;
 using UniffiBench.Bolt;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 using BoltBench = UniffiBench.Bolt.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
@@ -132,8 +132,8 @@ public unsafe class UnifiedInteropBenchmarks
     // 1. PRIMITIVES
     // =========================================================================
 
-    [BenchmarkCategory("01_NoOp"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public void NoOp_UniFFI() => ClassicBench.BenchNoop();
+    [BenchmarkCategory("01_NoOp"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public void NoOp_UniFFI() => UniFfiBench.BenchNoop();
 
     [BenchmarkCategory("01_NoOp"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public void NoOp_BoltFFI() => BoltBench.BenchNoop();
@@ -147,8 +147,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("01_NoOp"), Benchmark(Description = "Interoptopus")]
     public void NoOp_Interoptopus() => InteroptopusBench.Interop.interop_bench_noop();
 
-    [BenchmarkCategory("02_AddInt64"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public long AddInt64_UniFFI() => ClassicBench.BenchAddI64(123456789, 987654321);
+    [BenchmarkCategory("02_AddInt64"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public long AddInt64_UniFFI() => UniFfiBench.BenchAddI64(123456789, 987654321);
 
     [BenchmarkCategory("02_AddInt64"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public long AddInt64_BoltFFI() => BoltBench.BenchAddI64(123456789, 987654321);
@@ -162,8 +162,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("02_AddInt64"), Benchmark(Description = "Interoptopus")]
     public long AddInt64_Interoptopus() => InteroptopusBench.Interop.interop_bench_add_i64(123456789, 987654321);
 
-    [BenchmarkCategory("03_ScalarMath"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public double ScalarMath_UniFFI() => ClassicBench.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
+    [BenchmarkCategory("03_ScalarMath"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public double ScalarMath_UniFFI() => UniFfiBench.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
 
     [BenchmarkCategory("03_ScalarMath"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public double ScalarMath_BoltFFI() => BoltBench.BenchScalarMath(123, 456789, 12.5f, 98.75, true);
@@ -177,11 +177,11 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("03_ScalarMath"), Benchmark(Description = "Interoptopus")]
     public double ScalarMath_Interoptopus() => InteroptopusBench.Interop.interop_bench_scalar_math(123, 456789, 12.5f, 98.75, true);
 
-    [BenchmarkCategory("04_Loop1000Add"), Benchmark(Baseline = true, Description = "UniFFI")]
+    [BenchmarkCategory("04_Loop1000Add"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public long Loop1000_UniFFI()
     {
         long sum = 0;
-        for (int i = 0; i < LoopCount; i++) sum += ClassicBench.BenchAddI64(sum, i);
+        for (int i = 0; i < LoopCount; i++) sum += UniFfiBench.BenchAddI64(sum, i);
         return sum;
     }
 
@@ -221,8 +221,8 @@ public unsafe class UnifiedInteropBenchmarks
     // 2. STRUCTS & RECORDS
     // =========================================================================
 
-    [BenchmarkCategory("05_PassPoint3D"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public double PassPoint3D_UniFFI() => ClassicBench.BenchPassPoint(_uPoint);
+    [BenchmarkCategory("05_PassPoint3D"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public double PassPoint3D_UniFFI() => UniFfiBench.BenchPassPoint(_uPoint);
 
     [BenchmarkCategory("05_PassPoint3D"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public double PassPoint3D_BoltFFI() => BoltBench.BenchPassPoint(_bPoint);
@@ -236,8 +236,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("05_PassPoint3D"), Benchmark(Description = "Interoptopus")]
     public double PassPoint3D_Interoptopus() => InteroptopusBench.Interop.interop_bench_pass_point(_iPoint);
 
-    [BenchmarkCategory("06_RoundtripPoint3D"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public UniffiBench.Point3D RoundtripPoint3D_UniFFI() => ClassicBench.BenchRoundtripPoint(_uPoint, 1.0, 2.0, 3.0);
+    [BenchmarkCategory("06_RoundtripPoint3D"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public UniffiBench.Point3D RoundtripPoint3D_UniFFI() => UniFfiBench.BenchRoundtripPoint(_uPoint, 1.0, 2.0, 3.0);
 
     [BenchmarkCategory("06_RoundtripPoint3D"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public UniffiBench.Bolt.Point3D RoundtripPoint3D_BoltFFI() => BoltBench.BenchRoundtripPoint(_bPoint, 1.0, 2.0, 3.0);
@@ -251,8 +251,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("06_RoundtripPoint3D"), Benchmark(Description = "Interoptopus")]
     public InteroptopusBench.Point3D RoundtripPoint3D_Interoptopus() => InteroptopusBench.Interop.interop_bench_roundtrip_point(_iPoint, 1.0, 2.0, 3.0);
 
-    [BenchmarkCategory("07_PassUserInfo"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong PassUserInfo_UniFFI() => ClassicBench.BenchPassUserInfo(_uUser);
+    [BenchmarkCategory("07_PassUserInfo"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong PassUserInfo_UniFFI() => UniFfiBench.BenchPassUserInfo(_uUser);
 
     [BenchmarkCategory("07_PassUserInfo"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong PassUserInfo_BoltFFI() => BoltBench.BenchPassUserInfo(_bUser);
@@ -270,8 +270,8 @@ public unsafe class UnifiedInteropBenchmarks
     // 3. STRINGS
     // =========================================================================
 
-    [BenchmarkCategory("08_StringPass16B"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong StringPass_16B_UniFFI() => ClassicBench.BenchStringLength(_smallAscii);
+    [BenchmarkCategory("08_StringPass16B"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong StringPass_16B_UniFFI() => UniFfiBench.BenchStringLength(_smallAscii);
 
     [BenchmarkCategory("08_StringPass16B"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong StringPass_16B_BoltFFI() => BoltBench.BenchStringLength(_smallAscii);
@@ -289,8 +289,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("08_StringPass16B"), Benchmark(Description = "Interoptopus")]
     public ulong StringPass_16B_Interoptopus() => InteroptopusBench.Interop.interop_bench_string_length(_iSmallAscii);
 
-    [BenchmarkCategory("09_StringPass1KB"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong StringPass_1KB_UniFFI() => ClassicBench.BenchStringLength(_mediumAscii);
+    [BenchmarkCategory("09_StringPass1KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong StringPass_1KB_UniFFI() => UniFfiBench.BenchStringLength(_mediumAscii);
 
     [BenchmarkCategory("09_StringPass1KB"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong StringPass_1KB_BoltFFI() => BoltBench.BenchStringLength(_mediumAscii);
@@ -308,8 +308,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("09_StringPass1KB"), Benchmark(Description = "Interoptopus")]
     public ulong StringPass_1KB_Interoptopus() => InteroptopusBench.Interop.interop_bench_string_length(_iMediumAscii);
 
-    [BenchmarkCategory("10_StringPass32KB"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong StringPass_32KB_UniFFI() => ClassicBench.BenchStringLength(_largeAscii);
+    [BenchmarkCategory("10_StringPass32KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong StringPass_32KB_UniFFI() => UniFfiBench.BenchStringLength(_largeAscii);
 
     [BenchmarkCategory("10_StringPass32KB"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong StringPass_32KB_BoltFFI() => BoltBench.BenchStringLength(_largeAscii);
@@ -327,8 +327,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("10_StringPass32KB"), Benchmark(Description = "Interoptopus")]
     public ulong StringPass_32KB_Interoptopus() => InteroptopusBench.Interop.interop_bench_string_length(_iLargeAscii);
 
-    [BenchmarkCategory("11_StringPassUnicode"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong StringPass_Unicode_UniFFI() => ClassicBench.BenchStringLength(_unicodeStr);
+    [BenchmarkCategory("11_StringPassUnicode"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong StringPass_Unicode_UniFFI() => UniFfiBench.BenchStringLength(_unicodeStr);
 
     [BenchmarkCategory("11_StringPassUnicode"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong StringPass_Unicode_BoltFFI() => BoltBench.BenchStringLength(_unicodeStr);
@@ -346,8 +346,8 @@ public unsafe class UnifiedInteropBenchmarks
     [BenchmarkCategory("11_StringPassUnicode"), Benchmark(Description = "Interoptopus")]
     public ulong StringPass_Unicode_Interoptopus() => InteroptopusBench.Interop.interop_bench_string_length(_iUnicodeStr);
 
-    [BenchmarkCategory("12_StringReturn"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public string StringReturn_UniFFI() => ClassicBench.BenchStringGreeting("World");
+    [BenchmarkCategory("12_StringReturn"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public string StringReturn_UniFFI() => UniFfiBench.BenchStringGreeting("World");
 
     [BenchmarkCategory("12_StringReturn"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public string StringReturn_BoltFFI() => BoltBench.BenchStringGreeting("World");
@@ -374,8 +374,8 @@ public unsafe class UnifiedInteropBenchmarks
         return res.String;
     }
 
-    [BenchmarkCategory("13_StringRoundtrip"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public string StringRoundtrip_UniFFI() => ClassicBench.BenchStringRoundtrip("BenchmarkPayload");
+    [BenchmarkCategory("13_StringRoundtrip"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public string StringRoundtrip_UniFFI() => UniFfiBench.BenchStringRoundtrip("BenchmarkPayload");
 
     [BenchmarkCategory("13_StringRoundtrip"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public string StringRoundtrip_BoltFFI() => BoltBench.BenchStringRoundtrip("BenchmarkPayload");
@@ -406,8 +406,8 @@ public unsafe class UnifiedInteropBenchmarks
     // 4. BYTE SLICES & BUFFERS
     // =========================================================================
 
-    [BenchmarkCategory("14_SlicePass64B"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong SlicePass_64B_UniFFI() => ClassicBench.BenchSumBytes(_smallBytes);
+    [BenchmarkCategory("14_SlicePass64B"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong SlicePass_64B_UniFFI() => UniFfiBench.BenchSumBytes(_smallBytes);
 
     [BenchmarkCategory("14_SlicePass64B"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong SlicePass_64B_BoltFFI() => BoltBench.BenchSumBytes(_smallBytes);
@@ -428,8 +428,8 @@ public unsafe class UnifiedInteropBenchmarks
         return InteroptopusBench.Interop.interop_bench_sum_bytes(s);
     }
 
-    [BenchmarkCategory("15_SlicePass4KB"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong SlicePass_4KB_UniFFI() => ClassicBench.BenchSumBytes(_mediumBytes);
+    [BenchmarkCategory("15_SlicePass4KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong SlicePass_4KB_UniFFI() => UniFfiBench.BenchSumBytes(_mediumBytes);
 
     [BenchmarkCategory("15_SlicePass4KB"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong SlicePass_4KB_BoltFFI() => BoltBench.BenchSumBytes(_mediumBytes);
@@ -450,8 +450,8 @@ public unsafe class UnifiedInteropBenchmarks
         return InteroptopusBench.Interop.interop_bench_sum_bytes(s);
     }
 
-    [BenchmarkCategory("16_SlicePass64KB"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public ulong SlicePass_64KB_UniFFI() => ClassicBench.BenchSumBytes(_largeBytes);
+    [BenchmarkCategory("16_SlicePass64KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public ulong SlicePass_64KB_UniFFI() => UniFfiBench.BenchSumBytes(_largeBytes);
 
     [BenchmarkCategory("16_SlicePass64KB"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public ulong SlicePass_64KB_BoltFFI() => BoltBench.BenchSumBytes(_largeBytes);
@@ -472,8 +472,8 @@ public unsafe class UnifiedInteropBenchmarks
         return InteroptopusBench.Interop.interop_bench_sum_bytes(s);
     }
 
-    [BenchmarkCategory("17_SliceReturn4KB"), Benchmark(Baseline = true, Description = "UniFFI (To managed byte[])")]
-    public byte[] SliceReturn_4KB_UniFFI() => ClassicBench.BenchGenerateBytes(4096);
+    [BenchmarkCategory("17_SliceReturn4KB"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): To managed byte[]")]
+    public byte[] SliceReturn_4KB_UniFFI() => UniFfiBench.BenchGenerateBytes(4096);
 
     [BenchmarkCategory("17_SliceReturn4KB"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public byte[] SliceReturn_4KB_BoltFFI() => BoltBench.BenchGenerateBytes(4096);
@@ -530,7 +530,7 @@ public unsafe class UnifiedInteropBenchmarks
     // 5. OBJECTS & LIFECYCLES
     // =========================================================================
 
-    [BenchmarkCategory("18_ObjectLifecycle"), Benchmark(Baseline = true, Description = "UniFFI")]
+    [BenchmarkCategory("18_ObjectLifecycle"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public void Object_CreateDestroy_UniFFI()
     {
         using var counter = new UniffiBench.BenchCounter(42);
@@ -566,7 +566,7 @@ public unsafe class UnifiedInteropBenchmarks
         counter.Increment(1);
     }
 
-    [BenchmarkCategory("19_ObjectMethodCalls"), Benchmark(Baseline = true, Description = "UniFFI")]
+    [BenchmarkCategory("19_ObjectMethodCalls"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public ulong Object_MethodCalls_UniFFI()
     {
         _uCounter.Increment(5);
@@ -605,8 +605,8 @@ public unsafe class UnifiedInteropBenchmarks
     // 6. ERRORS & RESULTS
     // =========================================================================
 
-    [BenchmarkCategory("20_ResultSuccess"), Benchmark(Baseline = true, Description = "UniFFI")]
-    public long Result_Success_UniFFI() => ClassicBench.BenchParsePositive(42);
+    [BenchmarkCategory("20_ResultSuccess"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
+    public long Result_Success_UniFFI() => UniFfiBench.BenchParsePositive(42);
 
     [BenchmarkCategory("20_ResultSuccess"), Benchmark(Description = "UniFFISharp (BoltFFI)")]
     public long Result_Success_BoltFFI() => BoltBench.BoltBenchParsePositive(42);
@@ -628,10 +628,10 @@ public unsafe class UnifiedInteropBenchmarks
         return res.AsOk();
     }
 
-    [BenchmarkCategory("21_ResultFailure"), Benchmark(Baseline = true, Description = "UniFFI")]
+    [BenchmarkCategory("21_ResultFailure"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI)")]
     public bool Result_Failure_UniFFI()
     {
-        try { ClassicBench.BenchParsePositive(-1); return false; }
+        try { UniFfiBench.BenchParsePositive(-1); return false; }
         catch (UniffiBench.BenchError.InvalidValue) { return true; }
     }
 

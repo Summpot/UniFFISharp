@@ -8,7 +8,7 @@ using CsBindgenBench;
 using UniffiBench;
 using UniffiBench.Bolt;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 using BoltBench = UniffiBench.Bolt.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
@@ -98,13 +98,13 @@ public unsafe class ComplexEntityBenchmarks
     // 1. Pass 50 Complex Nested Entities (Host -> Rust)
     // =========================================================================
 
-    [BenchmarkCategory("01_PassComplexEntities50"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer)")]
+    [BenchmarkCategory("01_PassComplexEntities50"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer")]
     public ulong PassComplexEntities_UniFFI()
     {
-        return ClassicBench.BenchPassComplexEntities(_uList);
+        return UniFfiBench.BenchPassComplexEntities(_uList);
     }
 
-    [BenchmarkCategory("01_PassComplexEntities50"), Benchmark(Description = "UniFFISharp (BoltFFI Direct Wire)")]
+    [BenchmarkCategory("01_PassComplexEntities50"), Benchmark(Description = "UniFFISharp (BoltFFI): Direct Wire")]
     public ulong PassComplexEntities_BoltFFI()
     {
         return BoltBench.BenchPassComplexEntities(_bList);
@@ -124,14 +124,14 @@ public unsafe class ComplexEntityBenchmarks
     // 2. Query 50 Complex Nested Entities (Rust -> Host)
     // =========================================================================
 
-    [BenchmarkCategory("02_QueryComplexEntities50"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer)")]
+    [BenchmarkCategory("02_QueryComplexEntities50"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer")]
     public int QueryComplexEntities_UniFFI()
     {
-        var list = ClassicBench.BenchQueryComplexEntities(50);
+        var list = UniFfiBench.BenchQueryComplexEntities(50);
         return list.Count;
     }
 
-    [BenchmarkCategory("02_QueryComplexEntities50"), Benchmark(Description = "UniFFISharp (BoltFFI Direct Wire)")]
+    [BenchmarkCategory("02_QueryComplexEntities50"), Benchmark(Description = "UniFFISharp (BoltFFI): Direct Wire")]
     public int QueryComplexEntities_BoltFFI()
     {
         var list = BoltBench.BenchQueryComplexEntities(50);

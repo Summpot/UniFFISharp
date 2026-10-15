@@ -32,7 +32,7 @@ public class StructBenchmarks
     }
 
     // --- Pass Point3D (Value Struct) ---
-    [Benchmark(Baseline = true, Description = "UniFFI: Pass Point3D")]
+    [Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): Pass Point3D")]
     public double PassPoint3D_UniFFI()
     {
         return UniffiBenchMethods.BenchPassPoint(_uPoint);
@@ -51,7 +51,7 @@ public class StructBenchmarks
     }
 
     // --- Roundtrip Point3D ---
-    [Benchmark(Description = "UniFFI: Roundtrip Point3D")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): Roundtrip Point3D")]
     public UniffiBench.Point3D RoundtripPoint3D_UniFFI()
     {
         return UniffiBenchMethods.BenchRoundtripPoint(_uPoint, 1.0, 2.0, 3.0);
@@ -70,7 +70,7 @@ public class StructBenchmarks
     }
 
     // --- Pass UserInfo (Heterogeneous Struct) ---
-    [Benchmark(Description = "UniFFI: Pass UserInfo")]
+    [Benchmark(Description = "UniFFISharp (UniFFI): Pass UserInfo")]
     public ulong PassUserInfo_UniFFI()
     {
         return UniffiBenchMethods.BenchPassUserInfo(_uUser);

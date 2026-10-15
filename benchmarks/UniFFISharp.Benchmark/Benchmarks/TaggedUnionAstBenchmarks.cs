@@ -7,7 +7,7 @@ using BenchmarkDotNet.Order;
 using UniffiBench;
 using UniffiBench.Bolt;
 
-using ClassicBench = UniffiBench.UniffiBenchMethods;
+using UniFfiBench = UniffiBench.UniffiBenchMethods;
 using BoltBench = UniffiBench.Bolt.UniffiBenchMethods;
 
 namespace UniFFISharp.Diplomat.Benchmark.Benchmarks;
@@ -88,13 +88,13 @@ public class TaggedUnionAstBenchmarks
         _ => 0
     };
 
-    [BenchmarkCategory("01_EvalTaggedUnionAst"), Benchmark(Baseline = true, Description = "UniFFI (Classic RustBuffer Wire)")]
+    [BenchmarkCategory("01_EvalTaggedUnionAst"), Benchmark(Baseline = true, Description = "UniFFISharp (UniFFI): RustBuffer Wire")]
     public ulong EvalAst_UniFFI()
     {
-        return ClassicBench.BenchEvalTaggedUnion(_uAst);
+        return UniFfiBench.BenchEvalTaggedUnion(_uAst);
     }
 
-    [BenchmarkCategory("01_EvalTaggedUnionAst"), Benchmark(Description = "UniFFISharp (BoltFFI Direct Wire)")]
+    [BenchmarkCategory("01_EvalTaggedUnionAst"), Benchmark(Description = "UniFFISharp (BoltFFI): Direct Wire")]
     public ulong EvalAst_BoltFFI()
     {
         return BoltBench.BenchEvalTaggedUnion(_bAst);
