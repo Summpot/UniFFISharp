@@ -19,6 +19,7 @@ public static class BoltFfiCodeGenerator
     [ThreadStatic] private static IReadOnlyDictionary<string, string>? s_currentTypeToNamespace;
     [ThreadStatic] private static CodeGeneratorOptions? s_currentOptions;
     [ThreadStatic] private static IReadOnlyList<Arbitration.CallbackImplementationInfo>? s_currentCallbackImplementations;
+    [ThreadStatic] private static HashSet<string>? s_currentErrorTypes;
 
     public static string Generate(
         BoltFfiMetadataEnvelope envelope,
@@ -48,6 +49,7 @@ public static class BoltFfiCodeGenerator
             s_currentTypeToNamespace = null;
             s_currentOptions = null;
             s_currentCallbackImplementations = null;
+            s_currentErrorTypes = null;
         }
     }
 
@@ -123,6 +125,29 @@ public static class BoltFfiCodeGenerator
             return 5;
         }
 
+        var errorTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var decl in native.Decls)
+        {
+            if (decl.Kind == BoltFfiDeclKind.Function && decl.Function?.HasError == true && !string.IsNullOrEmpty(decl.Function.ErrorType?.CustomTypeName))
+            {
+                errorTypeNames.Add(ToPascal(decl.Function.ErrorType!.CustomTypeName!));
+            }
+            else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
+            {
+                foreach (var m in decl.Class.Methods)
+                {
+                    if (m.HasError && !string.IsNullOrEmpty(m.ErrorType?.CustomTypeName))
+                        errorTypeNames.Add(ToPascal(m.ErrorType!.CustomTypeName!));
+                }
+                foreach (var init in decl.Class.Initializers)
+                {
+                    if (init.HasError && !string.IsNullOrEmpty(init.ErrorType?.CustomTypeName))
+                        errorTypeNames.Add(ToPascal(init.ErrorType!.CustomTypeName!));
+                }
+            }
+        }
+        s_currentErrorTypes = errorTypeNames;
+
         foreach (var decl in native.Decls.OrderBy(GetDeclPriority))
         {
             if (suppressTypeDefinitions != null && !string.IsNullOrEmpty(decl.DeclName) &&
@@ -137,7 +162,16 @@ public static class BoltFfiCodeGenerator
             }
             else if (decl.Kind == BoltFfiDeclKind.Enum && decl.Enum != null)
             {
-                EmitEnum(sb, decl.Enum);
+                string enmPascal = decl.Enum.Name.ToPascalCase();
+                bool isError = decl.Enum.IsError || errorTypeNames.Contains(enmPascal);
+                if (isError)
+                {
+                    EmitErrorEnum(sb, decl.Enum);
+                }
+                else
+                {
+                    EmitEnum(sb, decl.Enum);
+                }
             }
             else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
             {
@@ -165,7 +199,21 @@ public static class BoltFfiCodeGenerator
         string recordName = record.Name.ToPascalCase();
         if (string.IsNullOrEmpty(recordName)) return;
 
-        var paramList = record.Fields.Select(f => $"{MapType(f.Type)} {ToPascal(f.Name)}");
+        var orderedFields = record.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+
+        AppendDocComment(sb, record.DocComment, "    ");
+        foreach (var f in orderedFields)
+        {
+            AppendParamComment(sb, ToPascal(f.Name), f.DocComment, "    ");
+        }
+
+        var paramList = orderedFields.Select(f =>
+        {
+            string def = "";
+            string? formattedDef = FormatDefaultValue(f.DefaultValue, f.Type);
+            if (formattedDef != null) def = $" = {formattedDef}";
+            return $"{MapType(f.Type)} {ToPascal(f.Name)}{def}";
+        });
 
         sb.AppendLine("    [StructLayout(LayoutKind.Sequential)]");
         sb.AppendLine($"    public partial record struct {recordName}({string.Join(", ", paramList)})");
@@ -178,7 +226,7 @@ public static class BoltFfiCodeGenerator
         {
             sb.AppendLine($"            var {ToCamel(f.Name)} = {WireReadExpr(f.Type)};");
         }
-        var consArgs = record.Fields.Select(f => ToCamel(f.Name));
+        var consArgs = orderedFields.Select(f => $"{ToPascal(f.Name)}: {ToCamel(f.Name)}");
         sb.AppendLine($"            return new {recordName}({string.Join(", ", consArgs)});");
         sb.AppendLine("        }");
 
@@ -204,13 +252,15 @@ public static class BoltFfiCodeGenerator
 
         if (enumDecl.IsCStyle)
         {
+            AppendDocComment(sb, enumDecl.DocComment, "    ");
             sb.AppendLine($"    public enum {enumName}");
             sb.AppendLine("    {");
             long currentDisc = 0;
             foreach (var v in enumDecl.Variants)
             {
                 long disc = v.Discriminant ?? currentDisc;
-                sb.AppendLine($"        {v.Name} = {disc},");
+                AppendDocComment(sb, v.DocComment, "        ");
+                sb.AppendLine($"        {ToPascal(v.Name)} = {disc},");
                 currentDisc = disc + 1;
             }
             sb.AppendLine("    }");
@@ -222,7 +272,8 @@ public static class BoltFfiCodeGenerator
         long tagIndex = 0;
         if (s_currentOptions?.EffectiveUseNativeUnions == true)
         {
-            string caseTypes = string.Join(", ", enumDecl.Variants.Select(v => $"{enumName}.{v.Name}"));
+            string caseTypes = string.Join(", ", enumDecl.Variants.Select(v => $"{enumName}.{ToPascal(v.Name)}"));
+            AppendDocComment(sb, enumDecl.DocComment, "    ");
             sb.AppendLine($"    public partial union {enumName}({caseTypes})");
             sb.AppendLine("    {");
 
@@ -235,9 +286,10 @@ public static class BoltFfiCodeGenerator
             {
                 long tag = v.Discriminant ?? tagIndex;
                 tagIndex = tag + 1;
+                string vName = ToPascal(v.Name);
                 if (v.PayloadFields.Count == 0)
                 {
-                    sb.AppendLine($"                {tag} => new {enumName}(new {v.Name}()),");
+                    sb.AppendLine($"                {tag} => new {enumName}(new {vName}()),");
                 }
                 else
                 {
@@ -246,7 +298,7 @@ public static class BoltFfiCodeGenerator
                     {
                         readArgs.Add(WireReadExpr(f.Type));
                     }
-                    sb.AppendLine($"                {tag} => new {enumName}(new {v.Name}({string.Join(", ", readArgs)})),");
+                    sb.AppendLine($"                {tag} => new {enumName}(new {vName}({string.Join(", ", readArgs)})),");
                 }
             }
             sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
@@ -263,15 +315,16 @@ public static class BoltFfiCodeGenerator
             {
                 long tag = v.Discriminant ?? tagIndex;
                 tagIndex = tag + 1;
+                string vName = ToPascal(v.Name);
                 if (v.PayloadFields.Count == 0)
                 {
-                    sb.AppendLine($"                case {v.Name}:");
+                    sb.AppendLine($"                case {vName}:");
                     sb.AppendLine($"                    writer.WriteU32({tag});");
                     sb.AppendLine("                    break;");
                 }
                 else
                 {
-                    sb.AppendLine($"                case {v.Name} v:");
+                    sb.AppendLine($"                case {vName} v:");
                     sb.AppendLine($"                    writer.WriteU32({tag});");
                     foreach (var f in v.PayloadFields)
                     {
@@ -289,18 +342,25 @@ public static class BoltFfiCodeGenerator
             // Variant child records
             foreach (var v in enumDecl.Variants)
             {
+                string vName = ToPascal(v.Name);
+                AppendDocComment(sb, v.DocComment, "        ");
                 if (v.PayloadFields.Count == 0)
                 {
-                    sb.AppendLine($"        public sealed partial record {v.Name}();");
+                    sb.AppendLine($"        public sealed partial record {vName}();");
                 }
                 else
                 {
+                    var orderedFields = v.PayloadFields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
                     var paramList = new List<string>();
-                    foreach (var f in v.PayloadFields)
+                    foreach (var f in orderedFields)
                     {
-                        paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}");
+                        string def = "";
+                        string? formattedDef = FormatDefaultValue(f.DefaultValue, f.Type);
+                        if (formattedDef != null) def = $" = {formattedDef}";
+                        paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}{def}");
+                        AppendParamComment(sb, ToPascal(f.Name), f.DocComment, "        ");
                     }
-                    sb.AppendLine($"        public sealed partial record {v.Name}({string.Join(", ", paramList)});");
+                    sb.AppendLine($"        public sealed partial record {vName}({string.Join(", ", paramList)});");
                 }
             }
 
@@ -309,6 +369,7 @@ public static class BoltFfiCodeGenerator
             return;
         }
 
+        AppendDocComment(sb, enumDecl.DocComment, "    ");
         sb.AppendLine($"    public abstract partial record {enumName}");
         sb.AppendLine("    {");
 
@@ -321,9 +382,10 @@ public static class BoltFfiCodeGenerator
         {
             long tag = v.Discriminant ?? tagIndex;
             tagIndex = tag + 1;
+            string vName = ToPascal(v.Name);
             if (v.PayloadFields.Count == 0)
             {
-                sb.AppendLine($"                {tag} => new {v.Name}(),");
+                sb.AppendLine($"                {tag} => new {vName}(),");
             }
             else
             {
@@ -332,7 +394,7 @@ public static class BoltFfiCodeGenerator
                 {
                     readArgs.Add(WireReadExpr(f.Type));
                 }
-                sb.AppendLine($"                {tag} => new {v.Name}({string.Join(", ", readArgs)}),");
+                sb.AppendLine($"                {tag} => new {vName}({string.Join(", ", readArgs)}),");
             }
         }
         sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
@@ -349,23 +411,137 @@ public static class BoltFfiCodeGenerator
         {
             long tag = v.Discriminant ?? tagIndex;
             tagIndex = tag + 1;
+            string vName = ToPascal(v.Name);
 
+            AppendDocComment(sb, v.DocComment, "        ");
             if (v.PayloadFields.Count == 0)
             {
-                sb.AppendLine($"        public sealed partial record {v.Name}() : {enumName}");
+                sb.AppendLine($"        public sealed partial record {vName}() : {enumName}");
                 sb.AppendLine("        {");
                 sb.AppendLine($"            internal override void Encode(WireWriter writer) => writer.WriteU32({tag});");
                 sb.AppendLine("        }");
             }
             else
             {
+                var orderedFields = v.PayloadFields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
                 var paramList = new List<string>();
+                foreach (var f in orderedFields)
+                {
+                    string def = "";
+                    string? formattedDef = FormatDefaultValue(f.DefaultValue, f.Type);
+                    if (formattedDef != null) def = $" = {formattedDef}";
+                    paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}{def}");
+                    AppendParamComment(sb, ToPascal(f.Name), f.DocComment, "        ");
+                }
+                sb.AppendLine($"        public sealed partial record {vName}({string.Join(", ", paramList)}) : {enumName}");
+                sb.AppendLine("        {");
+                sb.AppendLine("            internal override void Encode(WireWriter writer)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                writer.WriteU32({tag});");
                 foreach (var f in v.PayloadFields)
                 {
-                    paramList.Add($"{MapType(f.Type)} {ToPascal(f.Name)}");
+                    sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name))};");
                 }
-                sb.AppendLine($"        public sealed partial record {v.Name}({string.Join(", ", paramList)}) : {enumName}");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void EmitErrorEnum(StringBuilder sb, BoltFfiEnumDecl enumDecl)
+    {
+        string enumName = enumDecl.Name.ToPascalCase();
+        if (string.IsNullOrEmpty(enumName)) return;
+
+        AppendDocComment(sb, enumDecl.DocComment, "    ");
+        sb.AppendLine($"    public abstract partial class {enumName} : UniffiException");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        protected {enumName}(string message = \"\") : base(message) {{ }}");
+        sb.AppendLine();
+
+        // Decode
+        sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
+        sb.AppendLine("            reader.ReadU32() switch");
+        sb.AppendLine("            {");
+        long tagIndex = 0;
+        foreach (var v in enumDecl.Variants)
+        {
+            long tag = v.Discriminant ?? tagIndex;
+            tagIndex = tag + 1;
+            string vName = ToPascal(v.Name);
+
+            if (v.PayloadFields.Count == 0)
+            {
+                sb.AppendLine($"                {tag} => new {enumName}.{vName}(),");
+            }
+            else
+            {
+                var readArgs = new List<string>();
+                foreach (var f in v.PayloadFields)
+                {
+                    readArgs.Add(WireReadExpr(f.Type));
+                }
+                sb.AppendLine($"                {tag} => new {enumName}.{vName}({string.Join(", ", readArgs)}),");
+            }
+        }
+        sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
+        sb.AppendLine("            };");
+        sb.AppendLine();
+
+        // Encode abstract method
+        sb.AppendLine("        internal abstract void Encode(WireWriter writer);");
+        sb.AppendLine();
+
+        // Variant child classes
+        tagIndex = 0;
+        foreach (var v in enumDecl.Variants)
+        {
+            long tag = v.Discriminant ?? tagIndex;
+            tagIndex = tag + 1;
+            string vName = ToPascal(v.Name);
+
+            AppendDocComment(sb, v.DocComment, "        ");
+            if (v.PayloadFields.Count == 0)
+            {
+                sb.AppendLine($"        public sealed partial class {vName} : {enumName}");
                 sb.AppendLine("        {");
+                sb.AppendLine($"            public {vName}() : base(\"{vName}\") {{ }}");
+                sb.AppendLine($"            public {vName}(string message) : base(message) {{ }}");
+                sb.AppendLine($"            internal override void Encode(WireWriter writer) => writer.WriteU32({tag});");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                var orderedFields = v.PayloadFields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+                var paramDecls = new List<string>();
+                foreach (var f in orderedFields)
+                {
+                    string def = "";
+                    string? formattedDef = FormatDefaultValue(f.DefaultValue, f.Type);
+                    if (formattedDef != null) def = $" = {formattedDef}";
+                    paramDecls.Add($"{MapType(f.Type)} {ToCamel(f.Name)}{def}");
+                    AppendParamComment(sb, ToCamel(f.Name), f.DocComment, "        ");
+                }
+                sb.AppendLine($"        public sealed partial class {vName} : {enumName}");
+                sb.AppendLine("        {");
+                foreach (var f in v.PayloadFields)
+                {
+                    AppendDocComment(sb, f.DocComment, "            ");
+                    sb.AppendLine($"            public {MapType(f.Type)} {ToPascal(f.Name)} {{ get; }}");
+                }
+                sb.AppendLine();
+                sb.AppendLine($"            public {vName}({string.Join(", ", paramDecls)}) : base(\"{vName}\")");
+                sb.AppendLine("            {");
+                foreach (var f in v.PayloadFields)
+                {
+                    sb.AppendLine($"                this.{ToPascal(f.Name)} = {ToCamel(f.Name)};");
+                }
+                sb.AppendLine("            }");
+                sb.AppendLine();
                 sb.AppendLine("            internal override void Encode(WireWriter writer)");
                 sb.AppendLine("            {");
                 sb.AppendLine($"                writer.WriteU32({tag});");
@@ -388,12 +564,31 @@ public static class BoltFfiCodeGenerator
         string className = classDecl.Name.ToPascalCase();
         if (string.IsNullOrEmpty(className)) return;
 
-        string ifaceName = "I" + className;
-        sb.AppendLine($"    public partial interface {ifaceName} : IDisposable");
+        // Check AsyncStreamHeuristic
+        var nextMethod = classDecl.Methods.FirstOrDefault(m =>
+            (string.Equals(m.Name.ToString(), "next", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(m.Name.ToString(), "next_async", StringComparison.OrdinalIgnoreCase)) &&
+            m.Parameters.Count == 0 &&
+            m.IsAsync &&
+            m.ReturnType != null &&
+            m.ReturnType.Kind == BoltFfiTypeKind.Option &&
+            m.ReturnType.InnerType != null);
+
+        BoltFfiType? streamItemType = nextMethod?.ReturnType?.InnerType;
+        string? streamItemCSharpType = streamItemType != null ? MapType(streamItemType) : null;
+        bool isStreamValueType = streamItemType != null && IsValueType(streamItemType);
+
+        string ifaceName = "I" + className.TrimStart('@');
+        string ifaceInheritance = streamItemCSharpType != null
+            ? $": IDisposable, IAsyncEnumerable<{streamItemCSharpType}>"
+            : ": IDisposable";
+
+        AppendDocComment(sb, classDecl.DocComment, "    ");
+        sb.AppendLine($"    public partial interface {ifaceName} {ifaceInheritance}");
         sb.AppendLine("    {");
         foreach (var m in classDecl.Methods)
         {
-            string methodName = m.Name.ToPascalCase();
+            string methodName = ToPascal(m.Name);
             if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
             string retType = MapType(m.ReturnType);
             if (m.IsAsync)
@@ -403,18 +598,35 @@ public static class BoltFfiCodeGenerator
             var ifaceParams = new List<string>();
             foreach (var p in m.Parameters)
             {
-                ifaceParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                string def = "";
+                string? formattedDef = FormatDefaultValue(p.DefaultValue, p.Type);
+                if (formattedDef != null) def = $" = {formattedDef}";
+                ifaceParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}{def}");
             }
             if (m.IsAsync)
             {
                 ifaceParams.Add("CancellationToken cancellationToken = default");
+            }
+            AppendDocComment(sb, m.DocComment, "        ");
+            foreach (var p in m.Parameters)
+            {
+                AppendParamComment(sb, ToCamel(p.Name), p.DocComment, "        ");
+            }
+            if (m.IsAsync)
+            {
+                AppendParamComment(sb, "cancellationToken", "A token to monitor for cancellation requests.", "        ");
             }
             sb.AppendLine($"        {retType} {methodName}({string.Join(", ", ifaceParams)});");
         }
         sb.AppendLine("    }");
         sb.AppendLine();
 
-        sb.AppendLine($"    public partial class {className} : {ifaceName}, IDisposable");
+        string classInheritance = streamItemCSharpType != null
+            ? $": {ifaceName}, IDisposable, IAsyncEnumerable<{streamItemCSharpType}>"
+            : $": {ifaceName}, IDisposable";
+
+        AppendDocComment(sb, classDecl.DocComment, "    ");
+        sb.AppendLine($"    public partial class {className} {classInheritance}");
         sb.AppendLine("    {");
         sb.AppendLine("        private nint handle;");
         sb.AppendLine();
@@ -436,7 +648,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("        }");
         sb.AppendLine();
 
-        // 1. Initializers (Constructors)
+        // 1. Initializers (Constructors & Static Factories)
         foreach (var init in classDecl.Initializers)
         {
             var initParams = new List<string>();
@@ -445,7 +657,10 @@ public static class BoltFfiCodeGenerator
             foreach (var p in init.Parameters)
             {
                 string pName = ToCamel(p.Name);
-                initParams.Add($"{MapType(p.Type)} {pName}");
+                string def = "";
+                string? formattedDef = FormatDefaultValue(p.DefaultValue, p.Type);
+                if (formattedDef != null) def = $" = {formattedDef}";
+                initParams.Add($"{MapType(p.Type)} {pName}{def}");
                 if (NeedsWireBuffer(p.Type))
                 {
                     hasComplexParam = true;
@@ -460,43 +675,76 @@ public static class BoltFfiCodeGenerator
                 }
             }
 
-            if (!hasComplexParam)
+            string ctorName = ToPascal(init.Name);
+            bool isNew = string.Equals(init.Name.ToString(), "new", StringComparison.OrdinalIgnoreCase);
+
+            if (init.IsAsync)
             {
-                sb.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
-                sb.AppendLine($"            : this(NativeMethods.{init.Symbol}({string.Join(", ", callArgs)}), true)");
-                sb.AppendLine("        {");
-                sb.AppendLine("        }");
-                sb.AppendLine();
+                string asyncCtorName = isNew ? $"{className}Async" : (ctorName.EndsWith("Async") ? ctorName : $"{ctorName}Async");
+                init.ReturnType = BoltFfiType.Class(classDecl.Name.ToString());
+                init.AsyncPollSymbol ??= $"{init.Symbol}_poll";
+                init.AsyncCompleteSymbol ??= $"{init.Symbol}_complete";
+                init.AsyncCancelSymbol ??= $"{init.Symbol}_cancel";
+                init.AsyncFreeSymbol ??= $"{init.Symbol}_free";
+
+                EmitMethod(sb, "        ", init, initParams, new List<string>(), asyncCtorName, className, isStatic: true, isAsync: true);
+            }
+            else if (!isNew)
+            {
+                init.ReturnType = BoltFfiType.Class(classDecl.Name.ToString());
+                EmitMethod(sb, "        ", init, initParams, new List<string>(), ctorName, className, isStatic: true, isAsync: false);
             }
             else
             {
-                string helperName = $"__Create_{init.Symbol}";
-                var helperArgs = new List<string>();
+                AppendDocComment(sb, init.DocComment, "        ");
                 foreach (var p in init.Parameters)
                 {
-                    helperArgs.Add(ToCamel(p.Name));
+                    AppendParamComment(sb, ToCamel(p.Name), p.DocComment, "        ");
                 }
-                EmitMethod(sb, "        ", init, initParams, new List<string>(), helperName, "nint", isStatic: true, isAsync: false);
-                sb.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
-                sb.AppendLine($"            : this({helperName}({string.Join(", ", helperArgs)}), true)");
-                sb.AppendLine("        {");
-                sb.AppendLine("        }");
-                sb.AppendLine();
+
+                if (!hasComplexParam)
+                {
+                    sb.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
+                    sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
+                    sb.AppendLine($"            : this(NativeMethods.{init.Symbol}({string.Join(", ", callArgs)}), true)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
+                else
+                {
+                    string helperName = $"__Create_{init.Symbol}";
+                    var helperArgs = new List<string>();
+                    var helperParamDecls = new List<string>();
+                    foreach (var p in init.Parameters)
+                    {
+                        helperArgs.Add(ToCamel(p.Name));
+                        helperParamDecls.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                    }
+                    EmitMethod(sb, "        ", init, helperParamDecls, new List<string>(), helperName, "nint", isStatic: true, isAsync: false, accessibility: "private");
+                    sb.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
+                    sb.AppendLine($"        public {className}({string.Join(", ", initParams)})");
+                    sb.AppendLine($"            : this({helperName}({string.Join(", ", helperArgs)}), true)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
             }
         }
 
         // 2. Instance Methods
         foreach (var m in classDecl.Methods)
         {
-            string methodName = m.Name.ToPascalCase();
+            string methodName = ToPascal(m.Name);
             if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
             string retType = MapType(m.ReturnType);
             var publicParams = new List<string>();
             foreach (var p in m.Parameters)
             {
-                publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                string def = "";
+                string? formattedDef = FormatDefaultValue(p.DefaultValue, p.Type);
+                if (formattedDef != null) def = $" = {formattedDef}";
+                publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}{def}");
             }
 
             bool isPartial = false;
@@ -504,9 +752,9 @@ public static class BoltFfiCodeGenerator
             {
                 string qualifiedName = $"{className}.{methodName}";
                 if (methodConfigs.TryGetValue(qualifiedName, out var cfg) ||
-                    methodConfigs.TryGetValue($"{className}.{m.Name.ToPascalCase()}", out cfg) ||
+                    methodConfigs.TryGetValue($"{className}.{ToPascal(m.Name)}", out cfg) ||
                     methodConfigs.TryGetValue(methodName, out cfg) ||
-                    methodConfigs.TryGetValue(m.Name.ToPascalCase(), out cfg) ||
+                    methodConfigs.TryGetValue(ToPascal(m.Name), out cfg) ||
                     methodConfigs.TryGetValue(m.Name.ToSnakeCase(), out cfg))
                 {
                     isPartial = cfg.IsPartial;
@@ -516,7 +764,45 @@ public static class BoltFfiCodeGenerator
             EmitMethod(sb, "        ", m, publicParams, new List<string> { "GetHandle()" }, methodName, retType, isStatic: false, isAsync: m.IsAsync, isPartial: isPartial);
         }
 
-        // 3. Dispose and Finalizer
+        // 3. Class Async Stream Enumerator
+        if (streamItemCSharpType != null)
+        {
+            string nextMethodName = ToPascal(nextMethod!.Name);
+            if (nextMethod.IsAsync && !nextMethodName.EndsWith("Async")) nextMethodName += "Async";
+
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine($"        /// Returns an async enumerator that iterates through the {streamItemCSharpType} stream.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        /// <param name=\"cancellationToken\">A token that may be used to cancel the read operation.</param>");
+            sb.AppendLine($"        public async IAsyncEnumerator<{streamItemCSharpType}> GetAsyncEnumerator(CancellationToken cancellationToken = default)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            while (!cancellationToken.IsCancellationRequested)");
+            sb.AppendLine("            {");
+            sb.AppendLine($"                var item = await {nextMethodName}(cancellationToken).ConfigureAwait(false);");
+            if (isStreamValueType)
+            {
+                sb.AppendLine("                if (!item.HasValue)");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    yield break;");
+                sb.AppendLine("                }");
+                sb.AppendLine("                yield return item.Value;");
+            }
+            else
+            {
+                sb.AppendLine("                if (item is null)");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    yield break;");
+                sb.AppendLine("                }");
+                sb.AppendLine("                yield return item;");
+            }
+            sb.AppendLine("            }");
+            sb.AppendLine();
+            sb.AppendLine("            cancellationToken.ThrowIfCancellationRequested();");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+
+        // 4. Dispose and Finalizer
         sb.AppendLine("        public void Dispose()");
         sb.AppendLine("        {");
         sb.AppendLine("            nint old = handle;");
@@ -539,21 +825,31 @@ public static class BoltFfiCodeGenerator
     {
         string cbName = callback.Name.ToPascalCase();
         if (string.IsNullOrEmpty(cbName)) return;
-        string ifaceName = $"I{cbName}";
-        string proxyName = $"{cbName}Proxy";
-        string bridgeName = $"{cbName}Bridge";
+        string cleanCb = cbName.TrimStart('@');
+        string ifaceName = $"I{cleanCb}";
+        string proxyName = $"{cleanCb}Proxy";
+        string bridgeName = $"{cleanCb}Bridge";
 
         // Interface definition
+        AppendDocComment(sb, callback.DocComment, "    ");
         sb.AppendLine($"    public partial interface {ifaceName}");
         sb.AppendLine("    {");
         foreach (var m in callback.Methods)
         {
-            string mName = m.Name.ToPascalCase();
+            string mName = ToPascal(m.Name);
             string retType = MapType(m.ReturnType);
             var mParams = new List<string>();
             foreach (var p in m.Parameters)
             {
-                mParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                string def = "";
+                string? formattedDef = FormatDefaultValue(p.DefaultValue, p.Type);
+                if (formattedDef != null) def = $" = {formattedDef}";
+                mParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}{def}");
+            }
+            AppendDocComment(sb, m.DocComment, "        ");
+            foreach (var p in m.Parameters)
+            {
+                AppendParamComment(sb, ToCamel(p.Name), p.DocComment, "        ");
             }
             sb.AppendLine($"        {retType} {mName}({string.Join(", ", mParams)});");
         }
@@ -588,7 +884,7 @@ public static class BoltFfiCodeGenerator
 
         foreach (var m in callback.Methods)
         {
-            string mName = m.Name.ToPascalCase();
+            string mName = ToPascal(m.Name);
             string retType = MapType(m.ReturnType);
             var mParams = new List<string>();
             var mArgs = new List<string> { "handle.handle" };
@@ -597,16 +893,17 @@ public static class BoltFfiCodeGenerator
                 mParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
                 mArgs.Add(ToCamel(p.Name));
             }
+            string vtableMethod = ToCamel(m.Name.ToPascalCase()).TrimStart('@');
             sb.AppendLine($"        public {retType} {mName}({string.Join(", ", mParams)})");
             sb.AppendLine("        {");
             sb.AppendLine($"            if (handle.IsNull) throw new global::System.ObjectDisposedException(nameof({proxyName}));");
             if (retType == "void")
             {
-                sb.AppendLine($"            vtable.{ToCamel(mName)}({string.Join(", ", mArgs)});");
+                sb.AppendLine($"            vtable.{vtableMethod}({string.Join(", ", mArgs)});");
             }
             else
             {
-                sb.AppendLine($"            return vtable.{ToCamel(mName)}({string.Join(", ", mArgs)});");
+                sb.AppendLine($"            return vtable.{vtableMethod}({string.Join(", ", mArgs)});");
             }
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -636,7 +933,7 @@ public static class BoltFfiCodeGenerator
             }
             fnTypes.Add(m.ReturnType.Kind == BoltFfiTypeKind.Void ? "void" : MapNativeType(m.ReturnType));
             string fnPtrType = $"delegate* unmanaged[Cdecl]<{string.Join(", ", fnTypes)}>";
-            sb.AppendLine($"            internal {fnPtrType} {ToCamel(m.Name.ToPascalCase())};");
+            sb.AppendLine($"            internal {fnPtrType} {ToCamel(m.Name.ToPascalCase()).TrimStart('@')};");
         }
         sb.AppendLine("        }");
         sb.AppendLine();
@@ -650,7 +947,8 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("                clone = &Clone,");
         foreach (var m in callback.Methods)
         {
-            sb.AppendLine($"                {ToCamel(m.Name.ToPascalCase())} = &{m.Name.ToPascalCase()}Impl,");
+            string cleanMName = m.Name.ToPascalCase().TrimStart('@');
+            sb.AppendLine($"                {ToCamel(m.Name.ToPascalCase()).TrimStart('@')} = &{cleanMName}Impl,");
         }
         sb.AppendLine("            };");
         sb.AppendLine("            VTablePointer = Marshal.AllocHGlobal(sizeof(VTable));");
@@ -695,7 +993,8 @@ public static class BoltFfiCodeGenerator
 
         foreach (var m in callback.Methods)
         {
-            string mName = m.Name.ToPascalCase();
+            string mName = ToPascal(m.Name);
+            string cleanMName = m.Name.ToPascalCase().TrimStart('@');
             string retType = MapNativeType(m.ReturnType);
             var fnParams = new List<string> { "ulong handle" };
             var callArgs = new List<string>();
@@ -709,17 +1008,17 @@ public static class BoltFfiCodeGenerator
             if (m.ReturnType.Kind == BoltFfiTypeKind.Void)
             {
                 devirtParams.Add("ref bool handled");
-                sb.AppendLine($"        static partial void TryDevirtualize{mName}({string.Join(", ", devirtParams)});");
+                sb.AppendLine($"        static partial void TryDevirtualize{cleanMName}({string.Join(", ", devirtParams)});");
             }
             else
             {
                 devirtParams.Add($"ref {retType} result");
                 devirtParams.Add("ref bool handled");
-                sb.AppendLine($"        static partial void TryDevirtualize{mName}({string.Join(", ", devirtParams)});");
+                sb.AppendLine($"        static partial void TryDevirtualize{cleanMName}({string.Join(", ", devirtParams)});");
             }
             sb.AppendLine();
             sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
-            sb.AppendLine($"        private static {retType} {mName}Impl({string.Join(", ", fnParams)})");
+            sb.AppendLine($"        private static {retType} {cleanMName}Impl({string.Join(", ", fnParams)})");
             sb.AppendLine("        {");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
@@ -731,7 +1030,7 @@ public static class BoltFfiCodeGenerator
                 devirtCallArgs.AddRange(callArgs);
                 devirtCallArgs.Add("ref handled");
                 sb.AppendLine("                    bool handled = false;");
-                sb.AppendLine($"                    TryDevirtualize{mName}({string.Join(", ", devirtCallArgs)});");
+                sb.AppendLine($"                    TryDevirtualize{cleanMName}({string.Join(", ", devirtCallArgs)});");
                 sb.AppendLine("                    if (handled) return;");
                 if (matchedImplementations != null && matchedImplementations.Count > 0)
                 {
@@ -761,7 +1060,7 @@ public static class BoltFfiCodeGenerator
                 devirtCallArgs.Add("ref handled");
                 sb.AppendLine("                    bool handled = false;");
                 sb.AppendLine($"                    {retType} result = default!;");
-                sb.AppendLine($"                    TryDevirtualize{mName}({string.Join(", ", devirtCallArgs)});");
+                sb.AppendLine($"                    TryDevirtualize{cleanMName}({string.Join(", ", devirtCallArgs)});");
                 sb.AppendLine("                    if (handled) return result;");
                 if (matchedImplementations != null && matchedImplementations.Count > 0)
                 {
@@ -919,9 +1218,10 @@ public static class BoltFfiCodeGenerator
             var nativeParams = new List<string>();
             foreach (var p in func.Parameters)
             {
+                string clean = ToCamel(p.Name).TrimStart('@');
                 if (NeedsWireBuffer(p.Type))
                 {
-                    nativeParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+                    nativeParams.Add($"nint {clean}_ptr, nuint {clean}_len");
                 }
                 else
                 {
@@ -976,9 +1276,10 @@ public static class BoltFfiCodeGenerator
         var syncParams = new List<string>();
         foreach (var p in func.Parameters)
         {
+            string clean = ToCamel(p.Name).TrimStart('@');
             if (NeedsWireBuffer(p.Type))
             {
-                syncParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+                syncParams.Add($"nint {clean}_ptr, nuint {clean}_len");
             }
             else
             {
@@ -1017,12 +1318,68 @@ public static class BoltFfiCodeGenerator
             return;
         }
 
+        if (func.IsAsync)
+        {
+            var asyncParams = new List<string>();
+            foreach (var p in func.Parameters)
+            {
+                string clean = ToCamel(p.Name).TrimStart('@');
+                if (NeedsWireBuffer(p.Type))
+                {
+                    asyncParams.Add($"nint {clean}_ptr, nuint {clean}_len");
+                }
+                else
+                {
+                    string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
+                    asyncParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                }
+            }
+
+            sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+            sb.AppendLine($"        internal static extern nint {func.Symbol}({string.Join(", ", asyncParams)});");
+            sb.AppendLine();
+
+            var pollSymbol = func.AsyncPollSymbol ?? $"{func.Symbol}_poll";
+            if (emittedSymbols.Add(pollSymbol))
+            {
+                sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{pollSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+                sb.AppendLine($"        internal static extern void {pollSymbol}(nint future, ulong callbackData, nint callback);");
+                sb.AppendLine();
+            }
+
+            var completeSymbol = func.AsyncCompleteSymbol ?? $"{func.Symbol}_complete";
+            if (emittedSymbols.Add(completeSymbol))
+            {
+                sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{completeSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+                sb.AppendLine($"        internal static extern nint {completeSymbol}(nint future, out FfiStatus status);");
+                sb.AppendLine();
+            }
+
+            var cancelSymbol = func.AsyncCancelSymbol ?? $"{func.Symbol}_cancel";
+            if (emittedSymbols.Add(cancelSymbol))
+            {
+                sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{cancelSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+                sb.AppendLine($"        internal static extern void {cancelSymbol}(nint future);");
+                sb.AppendLine();
+            }
+
+            var freeSymbol = func.AsyncFreeSymbol ?? $"{func.Symbol}_free";
+            if (emittedSymbols.Add(freeSymbol))
+            {
+                sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{freeSymbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+                sb.AppendLine($"        internal static extern void {freeSymbol}(nint future);");
+                sb.AppendLine();
+            }
+            return;
+        }
+
         var nativeParams = new List<string>();
         foreach (var p in func.Parameters)
         {
+            string clean = ToCamel(p.Name).TrimStart('@');
             if (NeedsWireBuffer(p.Type))
             {
-                nativeParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+                nativeParams.Add($"nint {clean}_ptr, nuint {clean}_len");
             }
             else
             {
@@ -1051,9 +1408,10 @@ public static class BoltFfiCodeGenerator
             var asyncParams = new List<string> { "nint handle" };
             foreach (var p in func.Parameters)
             {
+                string clean = ToCamel(p.Name).TrimStart('@');
                 if (NeedsWireBuffer(p.Type))
                 {
-                    asyncParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+                    asyncParams.Add($"nint {clean}_ptr, nuint {clean}_len");
                 }
                 else
                 {
@@ -1107,9 +1465,10 @@ public static class BoltFfiCodeGenerator
         var nativeParams = new List<string> { "nint handle" };
         foreach (var p in func.Parameters)
         {
+            string clean = ToCamel(p.Name).TrimStart('@');
             if (NeedsWireBuffer(p.Type))
             {
-                nativeParams.Add($"nint {ToCamel(p.Name)}_ptr, nuint {ToCamel(p.Name)}_len");
+                nativeParams.Add($"nint {clean}_ptr, nuint {clean}_len");
             }
             else
             {
@@ -1145,7 +1504,8 @@ public static class BoltFfiCodeGenerator
         string retType,
         bool isStatic,
         bool isAsync,
-        bool isPartial = false)
+        bool isPartial = false,
+        string accessibility = "public")
     {
         var preStmts = new List<string>();
         var postStmts = new List<string>();
@@ -1155,65 +1515,66 @@ public static class BoltFfiCodeGenerator
         foreach (var p in func.Parameters)
         {
             string pName = ToCamel(p.Name);
+            string cleanParam = pName.TrimStart('@');
             if (p.Type.Kind == BoltFfiTypeKind.String)
             {
                 if (isAsync)
                 {
-                    preStmts.Add($"int {pName}_utf8Len = global::System.Text.Encoding.UTF8.GetByteCount({pName} ?? string.Empty);");
-                    preStmts.Add($"byte[] {pName}_wire = new byte[4 + {pName}_utf8Len];");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({pName}_wire, (uint){pName}_utf8Len);");
-                    preStmts.Add($"global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty, 0, ({pName} ?? string.Empty).Length, {pName}_wire, 4);");
-                    fixedVars.Add(($"{pName}_ptr", $"{pName}_wire"));
-                    callArgs.Add($"(nint){pName}_ptr");
-                    callArgs.Add($"(nuint)(4 + {pName}_utf8Len)");
+                    preStmts.Add($"int {cleanParam}_utf8Len = global::System.Text.Encoding.UTF8.GetByteCount({pName} ?? string.Empty);");
+                    preStmts.Add($"byte[] {cleanParam}_wire = new byte[4 + {cleanParam}_utf8Len];");
+                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_wire, (uint){cleanParam}_utf8Len);");
+                    preStmts.Add($"global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty, 0, ({pName} ?? string.Empty).Length, {cleanParam}_wire, 4);");
+                    fixedVars.Add(($"{cleanParam}_ptr", $"{cleanParam}_wire"));
+                    callArgs.Add($"(nint){cleanParam}_ptr");
+                    callArgs.Add($"(nuint)(4 + {cleanParam}_utf8Len)");
                 }
                 else
                 {
-                    preStmts.Add($"int {pName}_len = {pName}?.Length ?? 0;");
-                    preStmts.Add($"int {pName}_maxBytes = {pName}_len <= 680 ? 4 + {pName}_len * 3 : 0;");
-                    preStmts.Add($"byte[]? {pName}_rented = null;");
-                    preStmts.Add($"Span<byte> {pName}_span = {pName}_maxBytes > 0 ? stackalloc byte[{pName}_maxBytes] : ({pName}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(checked(4 + {pName}_len * 3))).AsSpan(0, checked(4 + {pName}_len * 3));");
-                    preStmts.Add($"int {pName}_utf8Len = {pName}_len == 0 ? 0 : global::System.Text.Encoding.UTF8.GetBytes({pName}.AsSpan(), {pName}_span.Slice(4));");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({pName}_span, (uint){pName}_utf8Len);");
-                    postStmts.Add($"if ({pName}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({pName}_rented);");
-                    fixedVars.Add(($"{pName}_ptr", $"{pName}_span"));
-                    callArgs.Add($"(nint){pName}_ptr");
-                    callArgs.Add($"(nuint)(4 + {pName}_utf8Len)");
+                    preStmts.Add($"int {cleanParam}_len = {pName}?.Length ?? 0;");
+                    preStmts.Add($"int {cleanParam}_maxBytes = {cleanParam}_len <= 680 ? 4 + {cleanParam}_len * 3 : 0;");
+                    preStmts.Add($"byte[]? {cleanParam}_rented = null;");
+                    preStmts.Add($"Span<byte> {cleanParam}_span = {cleanParam}_maxBytes > 0 ? stackalloc byte[{cleanParam}_maxBytes] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(checked(4 + {cleanParam}_len * 3))).AsSpan(0, checked(4 + {cleanParam}_len * 3));");
+                    preStmts.Add($"int {cleanParam}_utf8Len = {cleanParam}_len == 0 ? 0 : global::System.Text.Encoding.UTF8.GetBytes({pName}.AsSpan(), {cleanParam}_span.Slice(4));");
+                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_span, (uint){cleanParam}_utf8Len);");
+                    postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
+                    fixedVars.Add(($"{cleanParam}_ptr", $"{cleanParam}_span"));
+                    callArgs.Add($"(nint){cleanParam}_ptr");
+                    callArgs.Add($"(nuint)(4 + {cleanParam}_utf8Len)");
                 }
             }
             else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
             {
                 if (isAsync)
                 {
-                    preStmts.Add($"int {pName}_len = {pName} != null ? {pName}.Length : 0;");
-                    preStmts.Add($"byte[] {pName}_wire = new byte[4 + {pName}_len];");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({pName}_wire, (uint){pName}_len);");
-                    preStmts.Add($"if ({pName} != null && {pName}_len > 0) global::System.Array.Copy({pName}, 0, {pName}_wire, 4, {pName}_len);");
-                    fixedVars.Add(($"{pName}_ptr", $"{pName}_wire"));
-                    callArgs.Add($"(nint){pName}_ptr");
-                    callArgs.Add($"(nuint)(4 + {pName}_len)");
+                    preStmts.Add($"int {cleanParam}_len = {pName} != null ? {pName}.Length : 0;");
+                    preStmts.Add($"byte[] {cleanParam}_wire = new byte[4 + {cleanParam}_len];");
+                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_wire, (uint){cleanParam}_len);");
+                    preStmts.Add($"if ({pName} != null && {cleanParam}_len > 0) global::System.Array.Copy({pName}, 0, {cleanParam}_wire, 4, {cleanParam}_len);");
+                    fixedVars.Add(($"{cleanParam}_ptr", $"{cleanParam}_wire"));
+                    callArgs.Add($"(nint){cleanParam}_ptr");
+                    callArgs.Add($"(nuint)(4 + {cleanParam}_len)");
                 }
                 else
                 {
-                    preStmts.Add($"int {pName}_len = {pName} != null ? {pName}.Length : 0;");
-                    preStmts.Add($"byte[]? {pName}_rented = null;");
-                    preStmts.Add($"Span<byte> {pName}_span = {pName}_len <= 2044 ? stackalloc byte[4 + {pName}_len] : ({pName}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(4 + {pName}_len)).AsSpan(0, 4 + {pName}_len);");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({pName}_span, (uint){pName}_len);");
-                    preStmts.Add($"if ({pName} != null && {pName}_len > 0) {pName}.AsSpan().CopyTo({pName}_span.Slice(4));");
-                    postStmts.Add($"if ({pName}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({pName}_rented);");
-                    fixedVars.Add(($"{pName}_ptr", $"{pName}_span"));
-                    callArgs.Add($"(nint){pName}_ptr");
-                    callArgs.Add($"(nuint)(4 + {pName}_len)");
+                    preStmts.Add($"int {cleanParam}_len = {pName} != null ? {pName}.Length : 0;");
+                    preStmts.Add($"byte[]? {cleanParam}_rented = null;");
+                    preStmts.Add($"Span<byte> {cleanParam}_span = {cleanParam}_len <= 2044 ? stackalloc byte[4 + {cleanParam}_len] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(4 + {cleanParam}_len)).AsSpan(0, 4 + {cleanParam}_len);");
+                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_span, (uint){cleanParam}_len);");
+                    preStmts.Add($"if ({pName} != null && {cleanParam}_len > 0) {pName}.AsSpan().CopyTo({cleanParam}_span.Slice(4));");
+                    postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
+                    fixedVars.Add(($"{cleanParam}_ptr", $"{cleanParam}_span"));
+                    callArgs.Add($"(nint){cleanParam}_ptr");
+                    callArgs.Add($"(nuint)(4 + {cleanParam}_len)");
                 }
             }
             else if (NeedsWireBuffer(p.Type))
             {
-                preStmts.Add($"var {pName}_writer = WireWriter.Rent();");
-                preStmts.Add($"{WireWriteStatement(p.Type, pName, $"{pName}_writer")};");
-                postStmts.Add($"WireWriter.Return({pName}_writer);");
-                fixedVars.Add(($"{pName}_ptr", $"{pName}_writer.Buffer"));
-                callArgs.Add($"(nint){pName}_ptr");
-                callArgs.Add($"(nuint){pName}_writer.Length");
+                preStmts.Add($"var {cleanParam}_writer = WireWriter.Rent();");
+                preStmts.Add($"{WireWriteStatement(p.Type, pName, $"{cleanParam}_writer")};");
+                postStmts.Add($"WireWriter.Return({cleanParam}_writer);");
+                fixedVars.Add(($"{cleanParam}_ptr", $"{cleanParam}_writer.Buffer"));
+                callArgs.Add($"(nint){cleanParam}_ptr");
+                callArgs.Add($"(nuint){cleanParam}_writer.Length");
             }
             else if (p.Type.Kind == BoltFfiTypeKind.Class)
             {
@@ -1234,8 +1595,20 @@ public static class BoltFfiCodeGenerator
             callArgs.Add($"out {retType} outVal");
         }
 
+        if (accessibility == "public")
+        {
+            AppendDocComment(sb, func.DocComment, indent);
+            foreach (var p in func.Parameters)
+            {
+                AppendParamComment(sb, ToCamel(p.Name), p.DocComment, indent);
+            }
+            if (isAsync)
+            {
+                AppendParamComment(sb, "cancellationToken", "A token to monitor for cancellation requests.", indent);
+            }
+        }
+
         string staticMod = isStatic ? "static " : "";
-        string unsafeMod = fixedVars.Count > 0 ? "unsafe " : "";
         string partialMod = isPartial ? "partial " : "";
         string curIndent = indent;
 
@@ -1243,12 +1616,12 @@ public static class BoltFfiCodeGenerator
         {
             var asyncParams = new List<string>(publicParams) { "CancellationToken cancellationToken = default" };
             string taskRet = (retType == "void") ? "Task" : $"Task<{retType}>";
-            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}{partialMod}{taskRet} {methodName}({string.Join(", ", asyncParams)})");
+            sb.AppendLine($"{curIndent}{accessibility} {staticMod}{partialMod}{taskRet} {methodName}({string.Join(", ", asyncParams)})");
         }
         else
         {
             sb.AppendLine($"{curIndent}[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-            sb.AppendLine($"{curIndent}public {staticMod}{unsafeMod}{partialMod}{retType} {methodName}({string.Join(", ", publicParams)})");
+            sb.AppendLine($"{curIndent}{accessibility} {staticMod}{partialMod}{retType} {methodName}({string.Join(", ", publicParams)})");
         }
         sb.AppendLine($"{curIndent}{{");
         curIndent += "    ";
@@ -1268,6 +1641,13 @@ public static class BoltFfiCodeGenerator
 
         // Fixed statements nesting
         int fixedCount = fixedVars.Count;
+        if (fixedCount > 0)
+        {
+            sb.AppendLine($"{curIndent}unsafe");
+            sb.AppendLine($"{curIndent}{{");
+            curIndent += "    ";
+        }
+
         for (int i = 0; i < fixedCount; i++)
         {
             var (ptrName, targetExpr) = fixedVars[i];
@@ -1308,6 +1688,11 @@ public static class BoltFfiCodeGenerator
                 {
                     sb.AppendLine($"{curIndent}        try {{ return retVal.ToArray(); }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
                 }
+                else if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
+                {
+                    string targetCls = !string.IsNullOrEmpty(func.ReturnType.CustomTypeName) ? ToPascal(func.ReturnType.CustomTypeName) : retType;
+                    sb.AppendLine($"{curIndent}        return new {targetCls}(retVal, true);");
+                }
                 else if (NeedsWireBuffer(func.ReturnType))
                 {
                     sb.AppendLine($"{curIndent}        try {{ var reader = new WireReader(retVal); return {WireReadExpr(func.ReturnType)}; }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
@@ -1329,10 +1714,10 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}{{");
             sb.AppendLine($"{curIndent}    try");
             sb.AppendLine($"{curIndent}    {{");
-            if (func.ErrorType != null && func.ErrorType.Kind != BoltFfiTypeKind.Void)
+            if (func.ErrorType != null && (func.ErrorType.Kind == BoltFfiTypeKind.Enum || func.ErrorType.Kind == BoltFfiTypeKind.Record || !string.IsNullOrEmpty(func.ErrorType.CustomTypeName)))
             {
                 sb.AppendLine($"{curIndent}        var errReader = new WireReader(errBuf);");
-                sb.AppendLine($"{curIndent}        var errObj = {WireReadExpr(func.ErrorType, "errReader")};");
+                sb.AppendLine($"{curIndent}        var errObj = {QualifyType(func.ErrorType)}.Decode(ref errReader);");
                 sb.AppendLine($"{curIndent}        if (errObj is global::System.Exception ex) throw ex;");
                 sb.AppendLine($"{curIndent}        throw new UniFFISharp.Exceptions.UniffiException(errObj?.ToString() ?? \"BoltFFI Error\");");
             }
@@ -1413,6 +1798,12 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}}}");
         }
 
+        if (fixedCount > 0)
+        {
+            curIndent = curIndent.Substring(0, curIndent.Length - 4);
+            sb.AppendLine($"{curIndent}}}");
+        }
+
         // Close try/finally
         if (hasFinally)
         {
@@ -1486,6 +1877,7 @@ public static class BoltFfiCodeGenerator
         {
             string cName = constant.Name.ToPascalCase();
             string cType = MapType(constant.Type);
+            AppendDocComment(sb, constant.DocComment, "        ");
             sb.AppendLine($"        public const {cType} {cName} = {constant.ValueLiteral};");
             sb.AppendLine();
         }
@@ -1499,7 +1891,10 @@ public static class BoltFfiCodeGenerator
             var publicParams = new List<string>();
             foreach (var p in func.Parameters)
             {
-                publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}");
+                string def = "";
+                string? formattedDef = FormatDefaultValue(p.DefaultValue, p.Type);
+                if (formattedDef != null) def = $" = {formattedDef}";
+                publicParams.Add($"{MapType(p.Type)} {ToCamel(p.Name)}{def}");
             }
 
             EmitMethod(sb, "        ", func, publicParams, new List<string>(), methodName, retType, isStatic: true, isAsync: func.IsAsync, isPartial: isPartial);
@@ -1510,6 +1905,8 @@ public static class BoltFfiCodeGenerator
         {
             string mName = stream.Name.ToPascalCase();
             string itemType = MapType(stream.ItemType);
+            AppendDocComment(sb, stream.DocComment, "        ");
+            AppendParamComment(sb, "cancellationToken", "A token to monitor for cancellation requests.", "        ");
             sb.AppendLine($"        public static IAsyncEnumerable<{itemType}> {mName}(CancellationToken cancellationToken = default)");
             sb.AppendLine("        {");
             sb.AppendLine("            return BoltFfiStreamHelper.ReadAll(");
@@ -1582,7 +1979,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Guid => $"{readerVar}.ReadGuid()",
             BoltFfiTypeKind.Uri => $"{readerVar}.ReadUri()",
             BoltFfiTypeKind.Record => $"{QualifyType(ty)}.Decode(ref {readerVar})",
-            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode(ref {readerVar})",
+            BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode(ref {readerVar})",
             BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
             BoltFfiTypeKind.Map => $"{readerVar}.ReadMap((ref WireReader {keyVar}) => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), keyVar)}, (ref WireReader {valVar}) => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, valVar)})",
             BoltFfiTypeKind.Set => $"{readerVar}.ReadSet((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
@@ -1605,7 +2002,7 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.DateTime => $"{readerVar}.ReadOptionDateTime()",
                 BoltFfiTypeKind.Guid => $"{readerVar}.ReadOptionGuid()",
                 BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
-                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType, elemVar)})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && ((ty.InnerType.IsCStyleEnum && !IsErrorType(ty.InnerType)) || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType, elemVar)})",
                 _ => $"{readerVar}.ReadOption((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})"
             },
             _ => $"{readerVar}.ReadI32()"
@@ -1634,7 +2031,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Guid => $"{writerVar}.WriteGuid({expr})",
             BoltFfiTypeKind.Uri => $"{writerVar}.WriteUri({expr})",
             BoltFfiTypeKind.Record => $"({expr}).Encode({writerVar})",
-            BoltFfiTypeKind.Enum => ty.IsCStyleEnum ? $"{writerVar}.WriteI32((int)({expr}))" : $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"{writerVar}.WriteI32((int)({expr}))" : $"({expr}).Encode({writerVar})",
             BoltFfiTypeKind.Sequence => $"{writerVar}.WriteList({expr}, (w, item) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "item", "w")})",
             BoltFfiTypeKind.Map => $"{writerVar}.WriteMap({expr}, (w, k) => {WireWriteStatement(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "k", "w")}, (w, v) => {WireWriteStatement(ty.ValueType ?? BoltFfiType.Void, "v", "w")})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
@@ -1688,7 +2085,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Record => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
             BoltFfiTypeKind.Enum => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "int",
             BoltFfiTypeKind.Class => !string.IsNullOrEmpty(ty.CustomTypeName) ? ToPascal(ty.CustomTypeName) : "object",
-            BoltFfiTypeKind.Callback => !string.IsNullOrEmpty(ty.CustomTypeName) ? $"I{ToPascal(ty.CustomTypeName)}" : "object",
+            BoltFfiTypeKind.Callback => !string.IsNullOrEmpty(ty.CustomTypeName) ? $"I{ToPascal(ty.CustomTypeName).TrimStart('@')}" : "object",
             BoltFfiTypeKind.Option => $"{MapType(ty.InnerType ?? BoltFfiType.Void)}?",
             BoltFfiTypeKind.Sequence => $"global::System.Collections.Generic.List<{MapType(ty.InnerType ?? BoltFfiType.Void)}>",
             BoltFfiTypeKind.Map => $"global::System.Collections.Generic.Dictionary<{MapType(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String))}, {MapType(ty.ValueType ?? BoltFfiType.Void)}>",
@@ -1709,23 +2106,112 @@ public static class BoltFfiCodeGenerator
         };
     }
 
-    private static string ToPascal(string name)
+    private static string ToPascal(string name) => TypeHelper.ToPascalCase(name);
+    private static string ToPascal(BoltFfiCanonicalName name) => name.ToPascalCase();
+
+    private static string ToCamel(string name) => TypeHelper.ToCamelCase(name);
+    private static string ToCamel(BoltFfiCanonicalName name) => name.ToCamelCase();
+
+    private static void AppendDocComment(StringBuilder sb, string? docComment, string indent)
     {
-        if (string.IsNullOrEmpty(name)) return string.Empty;
-        var parts = name.Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries);
-        var sb = new StringBuilder();
-        foreach (var p in parts)
+        if (string.IsNullOrWhiteSpace(docComment)) return;
+        sb.AppendLine($"{indent}/// <summary>");
+        var lines = docComment!.Trim().Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        foreach (var line in lines)
         {
-            sb.Append(char.ToUpperInvariant(p[0]));
-            if (p.Length > 1) sb.Append(p.Substring(1));
+            sb.AppendLine($"{indent}/// {line.TrimEnd()}");
         }
-        return sb.ToString();
+        sb.AppendLine($"{indent}/// </summary>");
     }
 
-    private static string ToCamel(string name)
+    private static void AppendParamComment(StringBuilder sb, string paramName, string? docComment, string indent)
     {
-        string pascal = ToPascal(name);
-        return char.ToLowerInvariant(pascal[0]) + (pascal.Length > 1 ? pascal.Substring(1) : string.Empty);
+        if (string.IsNullOrWhiteSpace(docComment)) return;
+        var lines = docComment!.Trim().Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        sb.AppendLine($"{indent}/// <param name=\"{paramName.TrimStart('@')}\">");
+        foreach (var line in lines)
+        {
+            sb.AppendLine($"{indent}/// {line.TrimEnd()}");
+        }
+        sb.AppendLine($"{indent}/// </param>");
+    }
+
+    private static string? FormatDefaultValue(string? rawDefault, BoltFfiType type)
+    {
+        if (rawDefault == null) return null;
+        rawDefault = rawDefault.Trim();
+        if (string.IsNullOrEmpty(rawDefault)) return null;
+
+        if (type.Kind == BoltFfiTypeKind.Option)
+        {
+            if (rawDefault.Equals("None", StringComparison.OrdinalIgnoreCase) || rawDefault.Equals("null", StringComparison.OrdinalIgnoreCase))
+                return "null";
+            if (type.InnerType != null)
+                return FormatDefaultValue(rawDefault, type.InnerType);
+            return rawDefault;
+        }
+
+        if (type.Kind == BoltFfiTypeKind.String)
+        {
+            if (rawDefault.StartsWith("\"") && rawDefault.EndsWith("\""))
+                return rawDefault;
+            return $"\"{TypeHelper.EscapeStringLiteral(rawDefault)}\"";
+        }
+
+        if (type.Kind == BoltFfiTypeKind.Bool)
+        {
+            return rawDefault.Equals("true", StringComparison.OrdinalIgnoreCase) ? "true" : "false";
+        }
+
+        if (type.Kind == BoltFfiTypeKind.Float32)
+        {
+            if (!rawDefault.EndsWith("f", StringComparison.OrdinalIgnoreCase))
+                return rawDefault + "f";
+            return rawDefault;
+        }
+
+        if (type.Kind == BoltFfiTypeKind.Int64)
+        {
+            if (!rawDefault.EndsWith("L", StringComparison.OrdinalIgnoreCase))
+                return rawDefault + "L";
+            return rawDefault;
+        }
+
+        if (type.Kind == BoltFfiTypeKind.UInt64)
+        {
+            if (!rawDefault.EndsWith("UL", StringComparison.OrdinalIgnoreCase))
+                return rawDefault + "UL";
+            return rawDefault;
+        }
+
+        if (type.Kind == BoltFfiTypeKind.UInt32)
+        {
+            if (!rawDefault.EndsWith("U", StringComparison.OrdinalIgnoreCase))
+                return rawDefault + "U";
+            return rawDefault;
+        }
+
+        return rawDefault;
+    }
+
+    private static bool IsErrorType(BoltFfiType ty)
+    {
+        return !string.IsNullOrEmpty(ty.CustomTypeName) && s_currentErrorTypes?.Contains(ToPascal(ty.CustomTypeName)) == true;
+    }
+
+    private static bool IsValueType(BoltFfiType ty)
+    {
+        return ty.Kind switch
+        {
+            BoltFfiTypeKind.Bool or BoltFfiTypeKind.Int8 or BoltFfiTypeKind.UInt8 or
+            BoltFfiTypeKind.Int16 or BoltFfiTypeKind.UInt16 or BoltFfiTypeKind.Int32 or
+            BoltFfiTypeKind.UInt32 or BoltFfiTypeKind.Int64 or BoltFfiTypeKind.UInt64 or
+            BoltFfiTypeKind.Float32 or BoltFfiTypeKind.Float64 or
+            BoltFfiTypeKind.Duration or BoltFfiTypeKind.DateTime or BoltFfiTypeKind.Guid or
+            BoltFfiTypeKind.Record => true,
+            BoltFfiTypeKind.Enum => ty.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true && !IsErrorType(ty)),
+            _ => false
+        };
     }
 
     private static string QualifyType(BoltFfiType ty)

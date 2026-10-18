@@ -423,6 +423,7 @@ public sealed class BoltFfiRecordDecl
         if (node == null) return record;
 
         JsonNode target = node;
+        record.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         if (node["Direct"] != null)
         {
             record.IsDirect = true;
@@ -432,6 +433,10 @@ public sealed class BoltFfiRecordDecl
         {
             record.IsDirect = false;
             target = node["Encoded"]!;
+        }
+        if (string.IsNullOrEmpty(record.DocComment))
+        {
+            record.DocComment = target["doc"]?.AsString() ?? target["docstring"]?.AsString() ?? target["comment"]?.AsString();
         }
 
         record.Name = BoltFfiCanonicalName.FromJson(target["name"]);
@@ -443,7 +448,9 @@ public sealed class BoltFfiRecordDecl
                 var field = new BoltFfiFieldDecl
                 {
                     Name = ParseFieldKey(f["key"]),
-                    Type = BoltFfiType.FromJson(f["ty"])
+                    Type = BoltFfiType.FromJson(f["ty"]),
+                    DefaultValue = f["default"]?.AsString() ?? f["default_value"]?.AsString(),
+                    DocComment = f["doc"]?.AsString() ?? f["docstring"]?.AsString() ?? f["comment"]?.AsString()
                 };
                 record.Fields.Add(field);
             }
@@ -476,12 +483,14 @@ public sealed class BoltFfiFieldDecl
 {
     public string Name { get; set; } = string.Empty;
     public BoltFfiType Type { get; set; } = new();
+    public string? DefaultValue { get; set; }
     public string? DocComment { get; set; }
 }
 
 public sealed class BoltFfiEnumDecl
 {
     public bool IsCStyle { get; set; }
+    public bool IsError { get; set; }
     public BoltFfiCanonicalName Name { get; set; } = new();
     public List<BoltFfiEnumVariant> Variants { get; set; } = new();
     public string? DocComment { get; set; }
@@ -492,6 +501,8 @@ public sealed class BoltFfiEnumDecl
         if (node == null) return enumDecl;
 
         JsonNode target = node;
+        enumDecl.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
+        enumDecl.IsError = node["is_error"]?.AsBool() ?? false;
         if (node["CStyle"] != null)
         {
             enumDecl.IsCStyle = true;
@@ -506,6 +517,14 @@ public sealed class BoltFfiEnumDecl
         {
             enumDecl.IsCStyle = true;
         }
+        if (target["is_error"]?.AsBool() == true)
+        {
+            enumDecl.IsError = true;
+        }
+        if (string.IsNullOrEmpty(enumDecl.DocComment))
+        {
+            enumDecl.DocComment = target["doc"]?.AsString() ?? target["docstring"]?.AsString() ?? target["comment"]?.AsString();
+        }
 
         enumDecl.Name = BoltFfiCanonicalName.FromJson(target["name"]);
 
@@ -516,7 +535,8 @@ public sealed class BoltFfiEnumDecl
                 var variant = new BoltFfiEnumVariant
                 {
                     Name = BoltFfiCanonicalName.FromJson(v["name"]).ToPascalCase(),
-                    Discriminant = v["discriminant"]?.AsInt64() ?? v["tag"]?.AsInt64()
+                    Discriminant = v["discriminant"]?.AsInt64() ?? v["tag"]?.AsInt64(),
+                    DocComment = v["doc"]?.AsString() ?? v["docstring"]?.AsString() ?? v["comment"]?.AsString()
                 };
 
                 var payloadNode = v["payload"];
@@ -531,7 +551,9 @@ public sealed class BoltFfiEnumDecl
                             var field = new BoltFfiFieldDecl
                             {
                                 Name = BoltFfiRecordDecl.ParseFieldKey(f["key"]),
-                                Type = BoltFfiType.FromJson(f["ty"])
+                                Type = BoltFfiType.FromJson(f["ty"]),
+                                DefaultValue = f["default"]?.AsString() ?? f["default_value"]?.AsString(),
+                                DocComment = f["doc"]?.AsString() ?? f["docstring"]?.AsString() ?? f["comment"]?.AsString()
                             };
                             variant.PayloadFields.Add(field);
                         }
@@ -544,7 +566,9 @@ public sealed class BoltFfiEnumDecl
                         var field = new BoltFfiFieldDecl
                         {
                             Name = BoltFfiRecordDecl.ParseFieldKey(f["key"]),
-                            Type = BoltFfiType.FromJson(f["ty"])
+                            Type = BoltFfiType.FromJson(f["ty"]),
+                            DefaultValue = f["default"]?.AsString() ?? f["default_value"]?.AsString(),
+                            DocComment = f["doc"]?.AsString() ?? f["docstring"]?.AsString() ?? f["comment"]?.AsString()
                         };
                         variant.PayloadFields.Add(field);
                     }
@@ -587,6 +611,7 @@ public sealed class BoltFfiFunctionDecl
         var func = new BoltFfiFunctionDecl { RawNode = node };
         if (node == null) return func;
 
+        func.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         func.Name = BoltFfiCanonicalName.FromJson(node["name"]);
 
         var symNode = node["symbol"] ?? node["target"];
@@ -686,7 +711,9 @@ public sealed class BoltFfiFunctionDecl
                     var param = new BoltFfiParamDecl
                     {
                         Name = BoltFfiCanonicalName.FromJson(p["name"]).ToCamelCase(),
-                        Type = BoltFfiType.FromParamPayload(p["payload"] ?? p["plan"] ?? p["ty"])
+                        Type = BoltFfiType.FromParamPayload(p["payload"] ?? p["plan"] ?? p["ty"]),
+                        DefaultValue = p["default"]?.AsString() ?? p["default_value"]?.AsString(),
+                        DocComment = p["doc"]?.AsString() ?? p["docstring"]?.AsString() ?? p["comment"]?.AsString()
                     };
                     func.Parameters.Add(param);
                 }
@@ -702,6 +729,7 @@ public sealed class BoltFfiParamDecl
     public string Name { get; set; } = string.Empty;
     public BoltFfiType Type { get; set; } = new();
     public string? DefaultValue { get; set; }
+    public string? DocComment { get; set; }
 }
 
 public sealed class BoltFfiClassDecl
@@ -717,6 +745,7 @@ public sealed class BoltFfiClassDecl
         var cls = new BoltFfiClassDecl();
         if (node == null) return cls;
 
+        cls.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         cls.Name = BoltFfiCanonicalName.FromJson(node["name"]);
         cls.ReleaseSymbol = node["release_symbol"]?.AsString()
             ?? node["release_entry"]?.AsString()
@@ -753,11 +782,13 @@ public sealed class BoltFfiCallbackDecl
     public string RegisterSymbol { get; set; } = string.Empty;
     public string CreateHandleSymbol { get; set; } = string.Empty;
     public List<BoltFfiFunctionDecl> Methods { get; set; } = new();
+    public string? DocComment { get; set; }
 
     public static BoltFfiCallbackDecl FromJson(JsonNode? node)
     {
         var cb = new BoltFfiCallbackDecl();
         if (node == null) return cb;
+        cb.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         cb.Name = BoltFfiCanonicalName.FromJson(node["name"]);
 
         var proto = node["protocol"];
@@ -799,6 +830,7 @@ public sealed class BoltFfiStreamDecl
     {
         var s = new BoltFfiStreamDecl();
         if (node == null) return s;
+        s.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         s.Name = BoltFfiCanonicalName.FromJson(node["name"]);
         s.ItemType = BoltFfiType.FromJson(node["item"]?["ty"] ?? node["item"]);
         var proto = node["protocol"];
@@ -833,6 +865,7 @@ public sealed class BoltFfiConstantDecl
     {
         var c = new BoltFfiConstantDecl();
         if (node == null) return c;
+        c.DocComment = node["doc"]?.AsString() ?? node["docstring"]?.AsString() ?? node["comment"]?.AsString();
         c.Name = BoltFfiCanonicalName.FromJson(node["name"]);
         c.Type = BoltFfiType.FromJson(node["ty"] ?? node["type"]);
         c.ValueLiteral = node["value"]?.ToString() ?? node["literal"]?.ToString() ?? string.Empty;
@@ -883,6 +916,7 @@ public sealed class BoltFfiType
 
     public static BoltFfiType Void => new() { Kind = BoltFfiTypeKind.Void };
     public static BoltFfiType Primitive(BoltFfiTypeKind kind) => new() { Kind = kind };
+    public static BoltFfiType Class(string className) => new() { Kind = BoltFfiTypeKind.Class, CustomTypeName = className };
 
     public static BoltFfiType FromJson(JsonNode? node)
     {

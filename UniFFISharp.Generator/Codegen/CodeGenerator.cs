@@ -1860,7 +1860,7 @@ public static class CodeGenerator
                 cb.AppendLine("IncrementCallCounter();");
                 using (cb.Block("try"))
                 {
-                    cb.AppendLine("action(_pointer);");
+                    cb.AppendLine("action(CloneRustArcPtr());");
                 }
                 using (cb.Block("finally"))
                 {
@@ -1874,7 +1874,7 @@ public static class CodeGenerator
                 cb.AppendLine("IncrementCallCounter();");
                 using (cb.Block("try"))
                 {
-                    cb.AppendLine("return func(_pointer);");
+                    cb.AppendLine("return func(CloneRustArcPtr());");
                 }
                 using (cb.Block("finally"))
                 {
@@ -2066,12 +2066,12 @@ public static class CodeGenerator
                             cb.AppendLine("var status = new UniffiRustCallStatus();");
                             if (m.ReturnType == null)
                             {
-                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(_pointer{argsPrefix}, ref status);");
+                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                             }
                             else
                             {
-                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(_pointer{argsPrefix}, ref status);");
+                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                                 if (TypeHelper.IsFfiPrimitive(m.ReturnType))
                                 {

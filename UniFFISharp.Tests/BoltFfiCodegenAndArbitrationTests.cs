@@ -164,7 +164,7 @@ public class BoltFfiCodegenAndArbitrationTests
         // 7. Public Friendly Methods
         Assert.Contains("public static partial class GeometryCoreMethods", source);
         Assert.Contains("public static Point CreatePoint(double x, double y)", source);
-        Assert.Contains("public static unsafe Task<string> RenderAsync(CanvasRenderer renderer, string title, CancellationToken cancellationToken = default)", source);
+        Assert.Contains("public static Task<string> RenderAsync(CanvasRenderer renderer, string title, CancellationToken cancellationToken = default)", source);
         Assert.Contains("renderer.GetHandle()", source);
         Assert.Contains("title_wire", source);
         Assert.Contains(".ReadString()", source);
@@ -635,9 +635,9 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains("public partial class DatabaseSession : IDatabaseSession, IDisposable", source);
         Assert.Contains("public DatabaseSession(string connStr)", source);
         Assert.Contains(": this(__Create_boltffi_database_session_new(connStr), true)", source);
-        Assert.Contains("public unsafe string Query(string sql)", source);
+        Assert.Contains("public string Query(string sql)", source);
         Assert.Contains("NativeMethods.boltffi_database_session_query(GetHandle(),", source);
-        Assert.Contains("public unsafe Task<int> ExecuteAsync(string sql, CancellationToken cancellationToken = default)", source);
+        Assert.Contains("public Task<int> ExecuteAsync(string sql, CancellationToken cancellationToken = default)", source);
         Assert.Contains("public void Close()", source);
         Assert.Contains("NativeMethods.boltffi_database_session_close(GetHandle());", source);
         Assert.Contains("NativeMethods.boltffi_release_database_session(", source);
@@ -1032,6 +1032,525 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Contains("internal struct VTable", source);
         Assert.Contains("internal static BoltFFICallbackHandle Create(IEventListener? callback)", source);
         Assert.Contains("EventListenerProxy : IEventListener", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_Parity_DocCommentsAndDefaultValues()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""docs""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""docs""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Constant"": {
+                                ""name"": { ""parts"": [""default"", ""port""] },
+                                ""ty"": { ""Primitive"": ""I32"" },
+                                ""value"": ""5432"",
+                                ""doc"": ""Default database port.""
+                            }
+                        },
+                        {
+                            ""Record"": {
+                                ""Encoded"": {
+                                    ""name"": { ""parts"": [""db"", ""config""] },
+                                    ""doc"": ""Database configuration parameters."",
+                                    ""fields"": [
+                                        {
+                                            ""key"": { ""Name"": ""timeout"" },
+                                            ""ty"": { ""Primitive"": ""I32"" },
+                                            ""doc"": ""Timeout in seconds."",
+                                            ""default"": ""30""
+                                        },
+                                        {
+                                            ""key"": { ""Name"": ""host"" },
+                                            ""ty"": { ""Primitive"": ""String"" },
+                                            ""doc"": ""Host address.""
+                                        },
+                                        {
+                                            ""key"": { ""Name"": ""retries"" },
+                                            ""ty"": { ""Primitive"": ""I32"" },
+                                            ""doc"": ""Retry count."",
+                                            ""default"": ""3""
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        {
+                            ""Stream"": {
+                                ""name"": { ""parts"": [""metric"", ""events""] },
+                                ""doc"": ""Stream of real-time metrics."",
+                                ""item"": { ""ty"": { ""Primitive"": ""I64"" } }
+                            }
+                        },
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""connect""] },
+                                ""symbol"": ""boltffi_parity_connect"",
+                                ""doc"": ""Connects to the database server."",
+                                ""callable"": {
+                                    ""execution"": ""Sync"",
+                                    ""returns"": { ""Void"": {} },
+                                    ""params"": [
+                                        {
+                                            ""name"": { ""parts"": [""host""] },
+                                            ""doc"": ""Host address."",
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                        },
+                                        {
+                                            ""name"": { ""parts"": [""port""] },
+                                            ""doc"": ""Port number."",
+                                            ""default"": ""5432"",
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""I32"" } }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "parity_docs.dll", "Parity.Docs");
+
+        // 1. Constant doc comments
+        Assert.Contains("/// <summary>", source);
+        Assert.Contains("/// Default database port.", source);
+        Assert.Contains("public const int DefaultPort = 5432;", source);
+
+        // 2. Record doc comments and field ordering (required 'host' first, optional 'timeout' and 'retries' after)
+        Assert.Contains("/// Database configuration parameters.", source);
+        Assert.Contains("/// <param name=\"Host\">", source);
+        Assert.Contains("/// Host address.", source);
+        Assert.Contains("/// <param name=\"Timeout\">", source);
+        Assert.Contains("/// Timeout in seconds.", source);
+        Assert.Contains("public partial record struct DbConfig(string Host, int Timeout = 30, int Retries = 3)", source);
+        Assert.Contains("return new DbConfig(Host: host, Timeout: timeout, Retries: retries);", source);
+
+        // 3. Stream doc comments
+        Assert.Contains("/// Stream of real-time metrics.", source);
+        Assert.Contains("public static IAsyncEnumerable<long> MetricEvents(CancellationToken cancellationToken = default)", source);
+
+        // 4. Function doc comments and default value
+        Assert.Contains("/// Connects to the database server.", source);
+        Assert.Contains("/// <param name=\"port\">", source);
+        Assert.Contains("/// Port number.", source);
+        Assert.Contains("public static void Connect(string host, int port = 5432)", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_Parity_ReservedKeywordsEscaping()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""keywords""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""keywords""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Callback"": {
+                                ""name"": { ""parts"": [""event""] },
+                                ""doc"": ""Event handler callback."",
+                                ""methods"": [
+                                    {
+                                        ""name"": { ""parts"": [""on"", ""event""] },
+                                        ""symbol"": ""cb_on_event"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {},
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""string""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""dispatch""] },
+                                ""symbol"": ""boltffi_parity_dispatch"",
+                                ""callable"": {
+                                    ""execution"": ""Sync"",
+                                    ""returns"": { ""Void"": {} },
+                                    ""params"": [
+                                        {
+                                            ""name"": { ""parts"": [""event""] },
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                        },
+                                        {
+                                            ""name"": { ""parts"": [""params""] },
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""Bytes"" } }
+                                        },
+                                        {
+                                            ""name"": { ""parts"": [""class""] },
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""I32"" } }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "parity_keywords.dll", "Parity.Keywords");
+
+        // 1. Callback interface name stripped of '@' (IEvent, not I@Event)
+        Assert.Contains("public partial interface IEvent", source);
+        Assert.Contains("void OnEvent(string @string);", source);
+        Assert.Contains("public sealed unsafe class EventProxy : IEvent", source);
+
+        // 2. Dispatch function parameters escaped with '@'
+        Assert.Contains("public static void Dispatch(string @event, byte[] @params, int @class)", source);
+
+        // 3. Local variables do not contain '@'
+        Assert.Contains("event_span", source);
+        Assert.Contains("params_span", source);
+        Assert.DoesNotContain("@event_span", source);
+        Assert.DoesNotContain("@params_span", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_Parity_ClassAsyncStreamHeuristic()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""streams""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""streams""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Class"": {
+                                ""name"": { ""parts"": [""log"", ""stream""] },
+                                ""methods"": [
+                                    {
+                                        ""name"": { ""parts"": [""next""] },
+                                        ""symbol"": ""boltffi_log_stream_next"",
+                                        ""callable"": {
+                                            ""execution"": ""Async"",
+                                            ""returns"": {
+                                                ""ty"": {
+                                                    ""Option"": { ""Primitive"": ""String"" }
+                                                }
+                                            },
+                                            ""params"": []
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "parity_streams.dll", "Parity.Streams");
+
+        // 1. Interface implements IAsyncEnumerable<string>
+        Assert.Contains("public partial interface ILogStream : IDisposable, IAsyncEnumerable<string>", source);
+
+        // 2. Class implements IAsyncEnumerable<string>
+        Assert.Contains("public partial class LogStream : ILogStream, IDisposable, IAsyncEnumerable<string>", source);
+
+        // 3. GetAsyncEnumerator method
+        Assert.Contains("public async IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken cancellationToken = default)", source);
+        Assert.Contains("var item = await NextAsync(cancellationToken).ConfigureAwait(false);", source);
+        Assert.Contains("if (item is null)", source);
+        Assert.Contains("yield break;", source);
+        Assert.Contains("yield return item;", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_Parity_InitializersAndCleanSignatures()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""classes""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""classes""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Class"": {
+                                ""name"": { ""parts"": [""connection"", ""pool""] },
+                                ""release_symbol"": ""boltffi_release_connection_pool"",
+                                ""initializers"": [
+                                    {
+                                        ""name"": { ""parts"": [""new""] },
+                                        ""symbol"": ""boltffi_connection_pool_new"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {},
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""conn_str""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": { ""parts"": [""from"", ""config""] },
+                                        ""symbol"": ""boltffi_connection_pool_from_config"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {},
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""path""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": { ""parts"": [""connect"", ""async""] },
+                                        ""symbol"": ""boltffi_connection_pool_connect_async"",
+                                        ""callable"": {
+                                            ""execution"": ""Async"",
+                                            ""returns"": {},
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""uri""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ],
+                                ""methods"": [
+                                    {
+                                        ""name"": { ""parts"": [""execute""] },
+                                        ""symbol"": ""boltffi_connection_pool_execute"",
+                                        ""callable"": {
+                                            ""execution"": ""Sync"",
+                                            ""returns"": {
+                                                ""ty"": { ""Primitive"": ""I32"" }
+                                            },
+                                            ""params"": [
+                                                {
+                                                    ""name"": { ""parts"": [""query""] },
+                                                    ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "parity_classes.dll", "Parity.Classes");
+
+        // 1. Initializer 'new' emits constructor with private helper
+        Assert.Contains("public ConnectionPool(string connStr)", source);
+        Assert.Contains(": this(__Create_boltffi_connection_pool_new(connStr), true)", source);
+        Assert.Contains("private static nint __Create_boltffi_connection_pool_new(string connStr)", source);
+
+        // 2. Named sync initializer emits static factory
+        Assert.Contains("public static ConnectionPool FromConfig(string path)", source);
+
+        // 3. Named async initializer emits async static factory
+        Assert.Contains("public static Task<ConnectionPool> ConnectAsync(string uri, CancellationToken cancellationToken = default)", source);
+
+        // 4. Instance method has clean safe public signature (no unsafe keyword)
+        Assert.Contains("public int Execute(string query)", source);
+        Assert.DoesNotContain("public unsafe int Execute", source);
+
+        // 5. Internal pointer pinning is enclosed in unsafe { fixed(...) }
+        Assert.Contains("unsafe", source);
+        Assert.Contains("fixed (byte* query_ptr = query_span)", source);
+
+        // Verify syntax validity
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfiCodeGenerator_Parity_ErrorEnum_UniffiExceptionParity()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""errors""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""errors""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Enum"": {
+                                ""name"": { ""parts"": [""storage"", ""error""] },
+                                ""doc"": ""Errors occurred during storage operations."",
+                                ""variants"": [
+                                    {
+                                        ""name"": ""NotFound"",
+                                        ""discriminant"": 0,
+                                        ""doc"": ""Item was not found."",
+                                        ""payload"": {
+                                            ""Struct"": [
+                                                {
+                                                    ""key"": { ""Name"": ""key"" },
+                                                    ""ty"": { ""Primitive"": ""String"" },
+                                                    ""doc"": ""Missing key.""
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": ""PermissionDenied"",
+                                        ""discriminant"": 1,
+                                        ""doc"": ""Access is denied."",
+                                        ""payload"": {
+                                            ""Struct"": [
+                                                {
+                                                    ""key"": { ""Name"": ""reason"" },
+                                                    ""ty"": { ""Primitive"": ""String"" }
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        ""name"": ""Internal"",
+                                        ""discriminant"": 2
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""get"", ""item""] },
+                                ""symbol"": ""boltffi_parity_get_item"",
+                                ""callable"": {
+                                    ""execution"": ""Sync"",
+                                    ""returns"": {
+                                        ""ty"": { ""Primitive"": ""Bytes"" }
+                                    },
+                                    ""error"": {
+                                        ""Enum"": ""StorageError""
+                                    },
+                                    ""params"": [
+                                        {
+                                            ""name"": { ""parts"": [""key""] },
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "parity_errors.dll", "Parity.Errors");
+
+        // 1. Error enum inherits from UniffiException
+        Assert.Contains("public abstract partial class StorageError : UniffiException", source);
+        Assert.Contains("public sealed partial class NotFound : StorageError", source);
+        Assert.Contains("public sealed partial class PermissionDenied : StorageError", source);
+        Assert.Contains("public sealed partial class Internal : StorageError", source);
+
+        // 2. Decode method
+        Assert.Contains("internal static StorageError Decode(ref WireReader reader)", source);
+
+        // 3. Method throws decoded concrete exception
+        Assert.Contains("var errReader = new WireReader(errBuf);", source);
+        Assert.Contains("var errObj = global::Parity.Errors.StorageError.Decode(ref errReader);", source);
+        Assert.Contains("if (errObj is global::System.Exception ex) throw ex;", source);
 
         // Verify syntax validity
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
