@@ -1836,14 +1836,13 @@ public static class CodeGenerator
 
             using (cb.Block("private void IncrementCallCounter()"))
             {
-                cb.AppendLine("long count;");
-                using (cb.Block("do"))
+                cb.AppendLine($"if (Volatile.Read(ref _wasDestroyed) != 0) throw new ObjectDisposedException(nameof({objName}));");
+                cb.AppendLine("Interlocked.Increment(ref _callCounter);");
+                using (cb.Block($"if (Volatile.Read(ref _wasDestroyed) != 0)"))
                 {
-                    cb.AppendLine("count = Interlocked.Read(ref _callCounter);");
-                    cb.AppendLine($"if (count == 0L) throw new ObjectDisposedException(nameof({objName}));");
-                    cb.AppendLine($"if (count == long.MaxValue) throw new OverflowException(nameof({objName}));");
+                    cb.AppendLine("DecrementCallCounter();");
+                    cb.AppendLine($"throw new ObjectDisposedException(nameof({objName}));");
                 }
-                cb.AppendLine("while (Interlocked.CompareExchange(ref _callCounter, count + 1, count) != count);");
             }
             cb.AppendLine();
 
@@ -1861,7 +1860,7 @@ public static class CodeGenerator
                 cb.AppendLine("IncrementCallCounter();");
                 using (cb.Block("try"))
                 {
-                    cb.AppendLine("action(CloneRustArcPtr());");
+                    cb.AppendLine("action(_pointer);");
                 }
                 using (cb.Block("finally"))
                 {
@@ -1875,7 +1874,7 @@ public static class CodeGenerator
                 cb.AppendLine("IncrementCallCounter();");
                 using (cb.Block("try"))
                 {
-                    cb.AppendLine("return func(CloneRustArcPtr());");
+                    cb.AppendLine("return func(_pointer);");
                 }
                 using (cb.Block("finally"))
                 {
@@ -1952,6 +1951,7 @@ public static class CodeGenerator
                 else if (ctor.Name == "new")
                 {
                     callArgs.Add("ref status");
+                    cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
                     using (cb.Block($"public {objName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -1962,6 +1962,7 @@ public static class CodeGenerator
                 else
                 {
                     callArgs.Add("ref status");
+                    cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
                     using (cb.Block($"public static {objName} {ctorName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -2056,6 +2057,7 @@ public static class CodeGenerator
                 }
                 else
                 {
+                    cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
                     using (cb.Block($"public {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("IncrementCallCounter();");
@@ -2064,12 +2066,12 @@ public static class CodeGenerator
                             cb.AppendLine("var status = new UniffiRustCallStatus();");
                             if (m.ReturnType == null)
                             {
-                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(_pointer{argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                             }
                             else
                             {
-                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(_pointer{argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                                 if (TypeHelper.IsFfiPrimitive(m.ReturnType))
                                 {
@@ -2250,6 +2252,7 @@ public static class CodeGenerator
                 else
                 {
                     callArgs.Add("ref status");
+                    cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
                     using (cb.Block($"public static {partialMod}{retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");

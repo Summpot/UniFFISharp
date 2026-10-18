@@ -9,32 +9,61 @@ namespace UniFFISharp.BoltFfi;
 public sealed class WireWriter
 {
     private const int MaxCachedBufferCapacity = 64 * 1024;
+    private const int PoolCapacity = 4;
 
     [ThreadStatic]
-    private static WireWriter? t_cached;
+    private static WireWriter?[]? t_pool;
+    [ThreadStatic]
+    private static int t_poolCount;
 
     private byte[] buffer;
     private int position;
 
-    public static WireWriter GetOrCreate()
+    /// <summary>
+    /// Rents a reusable WireWriter instance from the thread-local pool.
+    /// Caller MUST return the writer using <see cref="Return"/> (e.g. via finally block).
+    /// </summary>
+    public static WireWriter Rent()
     {
-        var w = t_cached;
-        if (w == null)
+        var pool = t_pool;
+        if (pool != null && t_poolCount > 0)
         {
-            w = new WireWriter(128);
-            t_cached = w;
-        }
-        else if (w.buffer.Length > MaxCachedBufferCapacity)
-        {
-            w.buffer = new byte[128];
+            t_poolCount--;
+            var w = pool[t_poolCount]!;
+            pool[t_poolCount] = null;
             w.position = 0;
+            return w;
         }
-        else
-        {
-            w.position = 0;
-        }
-        return w;
+        return new WireWriter(128);
     }
+
+    /// <summary>
+    /// Returns a rented WireWriter back to the thread-local pool.
+    /// </summary>
+    public static void Return(WireWriter? writer)
+    {
+        if (writer == null) return;
+        if (writer.buffer.Length > MaxCachedBufferCapacity) return;
+
+        var pool = t_pool;
+        if (pool == null)
+        {
+            pool = new WireWriter?[PoolCapacity];
+            t_pool = pool;
+            t_poolCount = 0;
+        }
+
+        if (t_poolCount < PoolCapacity)
+        {
+            writer.position = 0;
+            pool[t_poolCount++] = writer;
+        }
+    }
+
+    /// <summary>
+    /// Backwards compatibility method. Delegates to Rent().
+    /// </summary>
+    public static WireWriter GetOrCreate() => Rent();
 
     public WireWriter(int initialCapacity = 64)
     {

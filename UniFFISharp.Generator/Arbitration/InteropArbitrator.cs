@@ -96,8 +96,9 @@ public static class InteropArbitrator
         }
 
         // 4. Objects / Classes (Native Handle Table vs Arc Pointer):
-        // BoltFFI handle table calls with [SuppressGCTransition] take 4.239 ns vs UniFFI 48.882 ns,
-        // and allocate less memory on lifecycle creation (24 B vs 40 B).
+        // BoltFFI direct handle table calls with [SuppressGCTransition] achieve ~4.2 ns vs optimized UniFFI ~18 ns
+        // (optimized from unoptimized ~48.88 ns by eliminating redundant CloneRustArcPtr P/Invoke & CAS spin).
+        // BoltFFI also allocates less memory on lifecycle creation (24 B vs 40 B).
         bool hasClass = uniffiFn.Inputs.Any(p => p.Type.Kind == TypeKind.Interface) ||
                         (uniffiFn.ReturnType != null && uniffiFn.ReturnType.Kind == TypeKind.Interface) ||
                         boltFn!.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Class) ||

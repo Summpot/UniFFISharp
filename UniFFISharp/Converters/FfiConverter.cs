@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using UniFFISharp.Exceptions;
 using UniFFISharp.Streams;
 using UniFFISharp.Types;
@@ -19,6 +20,7 @@ public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, Ru
     public abstract RustBuffer Alloc(int size);
     public abstract void Free(RustBuffer buffer);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override RustBuffer Lower(TCsType value)
     {
         var rbuf = Alloc(AllocationSize(value));
@@ -36,6 +38,7 @@ public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, Ru
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override TCsType Lift(RustBuffer rbuf)
     {
         var stream = rbuf.AsStream();
