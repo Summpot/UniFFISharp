@@ -597,6 +597,410 @@ public class SignatureArbitrationAndPartialMethodTests
         }
     }
 
+    [Fact]
+    public void Arbitrate_InfallibleScalar_MissingBoltFfi_ReportsSuboptimal()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "add",
+            ReturnType = UniFFIType.Primitive(TypeKind.Int64),
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "a", Type = UniFFIType.Primitive(TypeKind.Int64) },
+                new() { Name = "b", Type = UniFFIType.Primitive(TypeKind.Int64) }
+            },
+            Throws = null
+        };
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null);
+        Assert.Equal(GeneratorEngine.UniFFI, decision.SelectedEngine);
+        Assert.Equal(GeneratorEngine.BoltFFI, decision.OptimalEngine);
+        Assert.True(decision.IsSuboptimalMissingExport);
+        Assert.Equal("boltffi", decision.MissingMacro);
+        Assert.Contains("status channel", decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void Arbitrate_DirectRecord_MissingBoltFfi_ReportsSuboptimal()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "point_roundtrip",
+            ReturnType = UniFFIType.Primitive(TypeKind.Record),
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "p", Type = UniFFIType.Primitive(TypeKind.Record) }
+            }
+        };
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null);
+        Assert.Equal(GeneratorEngine.UniFFI, decision.SelectedEngine);
+        Assert.Equal(GeneratorEngine.BoltFFI, decision.OptimalEngine);
+        Assert.True(decision.IsSuboptimalMissingExport);
+        Assert.Equal("boltffi", decision.MissingMacro);
+        Assert.Contains("zero-copy C-ABI", decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void Arbitrate_FallibleScalar_MissingUniFfi_ReportsSuboptimal()
+    {
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "divide" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Int64 },
+            Parameters = new List<BoltFfiParamDecl>
+            {
+                new() { Name = "a", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Int64 } },
+                new() { Name = "b", Type = new BoltFfiType { Kind = BoltFfiTypeKind.Int64 } }
+            },
+            HasError = true
+        };
+
+        var decision = InteropArbitrator.Arbitrate(null, boltFn);
+        Assert.Equal(GeneratorEngine.BoltFFI, decision.SelectedEngine);
+        Assert.Equal(GeneratorEngine.UniFFI, decision.OptimalEngine);
+        Assert.True(decision.IsSuboptimalMissingExport);
+        Assert.Equal("uniffi", decision.MissingMacro);
+        Assert.Contains("RAX", decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void Arbitrate_SingleStringReturn_MissingUniFfi_ReportsSuboptimal()
+    {
+        var boltFn = new BoltFfiFunctionDecl
+        {
+            Name = new BoltFfiCanonicalName { Parts = new List<string> { "get_name" } },
+            ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.String },
+            Parameters = new List<BoltFfiParamDecl>(),
+            HasError = false
+        };
+
+        var decision = InteropArbitrator.Arbitrate(null, boltFn);
+        Assert.Equal(GeneratorEngine.BoltFFI, decision.SelectedEngine);
+        Assert.Equal(GeneratorEngine.UniFFI, decision.OptimalEngine);
+        Assert.True(decision.IsSuboptimalMissingExport);
+        Assert.Equal("uniffi", decision.MissingMacro);
+        Assert.Contains("RustBuffer lift", decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void Arbitrate_ExplicitOverride_SuppressesSuboptimal()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "add",
+            ReturnType = UniFFIType.Primitive(TypeKind.Int64),
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "a", Type = UniFFIType.Primitive(TypeKind.Int64) }
+            }
+        };
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null, GeneratorEngine.UniFFI);
+        Assert.Equal(GeneratorEngine.UniFFI, decision.SelectedEngine);
+        Assert.Equal(GeneratorEngine.BoltFFI, decision.OptimalEngine);
+        Assert.False(decision.IsSuboptimalMissingExport);
+    }
+
+    [Fact]
+    public void Arbitrate_UnsupportedBoltFfiSignature_SuppressesSuboptimal()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "custom_op",
+            ReturnType = UniFFIType.Primitive(TypeKind.Custom),
+            Inputs = new List<FnParamMetadata>()
+        };
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null);
+        Assert.False(decision.IsSuboptimalMissingExport);
+    }
+
+    [Fact]
+    public void IncrementalGenerator_SuboptimalMissingExport_EmitsUFFI0021Warning()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "uniffisharp_suboptimal_warn_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string mockLibPath = Path.Combine(tempDir, "mock_native.dll");
+
+        try
+        {
+            // Crate with a fallible scalar only in BoltFFI (parse_positive)
+            string boltJson = @"
+            {
+                ""magic"": ""boltffi.bindings"",
+                ""format"": { ""major"": 0, ""minor"": 1 },
+                ""surface"": ""Native"",
+                ""package"": {
+                    ""name"": { ""parts"": [""sample"", ""warn""] }
+                },
+                ""bindings"": {
+                    ""Native"": {
+                        ""package"": {
+                            ""name"": { ""parts"": [""sample"", ""warn""] }
+                        },
+                        ""decls"": [
+                            {
+                                ""Function"": {
+                                    ""name"": { ""parts"": [""parse"", ""positive""] },
+                                    ""symbol"": ""boltffi_sample_warn_parse_positive"",
+                                    ""callable"": {
+                                        ""execution"": ""Sync"",
+                                        ""returns"": { ""plan"": { ""DirectViaReturnSlot"": { ""Primitive"": ""I64"" } } },
+                                        ""params"": [
+                                            { ""name"": { ""parts"": [""val""] }, ""plan"": { ""Direct"": { ""Primitive"": ""I64"" } } }
+                                        ],
+                                        ""error"": { ""kind"": ""BoltError"" }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }";
+
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(boltJson);
+            byte[] framed = new byte[8 + 8 + jsonBytes.Length];
+            Encoding.ASCII.GetBytes("BFFIMD01").CopyTo(framed, 0);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(framed.AsSpan(8, 8), (ulong)jsonBytes.Length);
+            jsonBytes.CopyTo(framed, 16);
+            File.WriteAllBytes(mockLibPath, framed);
+
+            var compilation = CSharpCompilation.Create("TestAssembly",
+                references: new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                    MetadataReference.CreateFromFile(typeof(PreferBoltFFIAttribute).Assembly.Location)
+                });
+
+            var generator = new UniFFIGenerator();
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+
+            string stampPath = Path.Combine(tempDir, "target.uniffi.stamp");
+            var additionalText = new TestAdditionalText(stampPath, mockLibPath);
+
+            var options = new Dictionary<string, string>
+            {
+                ["build_metadata.AdditionalFiles.UniFFI"] = "true",
+                ["build_property.UniFFIEngine"] = "Dual",
+                ["build_property.UniFFIEnginePrefer"] = "Auto",
+                ["build_property.UniFFIWarnSuboptimalEngine"] = "true"
+            };
+            var optionsProvider = new TestAnalyzerConfigOptionsProvider(options);
+
+            driver = driver.AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(additionalText));
+            driver = driver.WithUpdatedAnalyzerConfigOptions(optionsProvider);
+
+            driver = driver.RunGenerators(compilation);
+            var runResult = driver.GetRunResult();
+
+            var diag = Assert.Single(runResult.Diagnostics, d => d.Id == "UFFI0021");
+            Assert.Equal(DiagnosticSeverity.Warning, diag.Severity);
+            string message = diag.GetMessage();
+            Assert.Contains("ParsePositive", message);
+            Assert.Contains("UniFFI", message);
+            Assert.Contains("uniffi", message);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+    }
+
+    [Fact]
+    public void IncrementalGenerator_SuboptimalWarningDisabled_DoesNotEmitUFFI0021()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "uniffisharp_suboptimal_disabled_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string mockLibPath = Path.Combine(tempDir, "mock_native.dll");
+
+        try
+        {
+            string boltJson = @"
+            {
+                ""magic"": ""boltffi.bindings"",
+                ""format"": { ""major"": 0, ""minor"": 1 },
+                ""surface"": ""Native"",
+                ""package"": {
+                    ""name"": { ""parts"": [""sample"", ""warn""] }
+                },
+                ""bindings"": {
+                    ""Native"": {
+                        ""package"": {
+                            ""name"": { ""parts"": [""sample"", ""warn""] }
+                        },
+                        ""decls"": [
+                            {
+                                ""Function"": {
+                                    ""name"": { ""parts"": [""parse"", ""positive""] },
+                                    ""symbol"": ""boltffi_sample_warn_parse_positive"",
+                                    ""callable"": {
+                                        ""execution"": ""Sync"",
+                                        ""returns"": { ""plan"": { ""DirectViaReturnSlot"": { ""Primitive"": ""I64"" } } },
+                                        ""params"": [
+                                            { ""name"": { ""parts"": [""val""] }, ""plan"": { ""Direct"": { ""Primitive"": ""I64"" } } }
+                                        ],
+                                        ""error"": { ""kind"": ""BoltError"" }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }";
+
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(boltJson);
+            byte[] framed = new byte[8 + 8 + jsonBytes.Length];
+            Encoding.ASCII.GetBytes("BFFIMD01").CopyTo(framed, 0);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(framed.AsSpan(8, 8), (ulong)jsonBytes.Length);
+            jsonBytes.CopyTo(framed, 16);
+            File.WriteAllBytes(mockLibPath, framed);
+
+            var compilation = CSharpCompilation.Create("TestAssembly",
+                references: new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                    MetadataReference.CreateFromFile(typeof(PreferBoltFFIAttribute).Assembly.Location)
+                });
+
+            var generator = new UniFFIGenerator();
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+
+            string stampPath = Path.Combine(tempDir, "target.uniffi.stamp");
+            var additionalText = new TestAdditionalText(stampPath, mockLibPath);
+
+            var options = new Dictionary<string, string>
+            {
+                ["build_metadata.AdditionalFiles.UniFFI"] = "true",
+                ["build_property.UniFFIEngine"] = "Dual",
+                ["build_property.UniFFIEnginePrefer"] = "Auto",
+                ["build_property.UniFFIWarnSuboptimalEngine"] = "false"
+            };
+            var optionsProvider = new TestAnalyzerConfigOptionsProvider(options);
+
+            driver = driver.AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(additionalText));
+            driver = driver.WithUpdatedAnalyzerConfigOptions(optionsProvider);
+
+            driver = driver.RunGenerators(compilation);
+            var runResult = driver.GetRunResult();
+
+            Assert.DoesNotContain(runResult.Diagnostics, d => d.Id == "UFFI0021");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+    }
+
+    [Fact]
+    public void IncrementalGenerator_SuboptimalMissingExport_ExplicitOverrideSuppressesWarning()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "uniffisharp_suboptimal_override_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string mockLibPath = Path.Combine(tempDir, "mock_native.dll");
+
+        try
+        {
+            string boltJson = @"
+            {
+                ""magic"": ""boltffi.bindings"",
+                ""format"": { ""major"": 0, ""minor"": 1 },
+                ""surface"": ""Native"",
+                ""package"": {
+                    ""name"": { ""parts"": [""sample"", ""warn""] }
+                },
+                ""bindings"": {
+                    ""Native"": {
+                        ""package"": {
+                            ""name"": { ""parts"": [""sample"", ""warn""] }
+                        },
+                        ""decls"": [
+                            {
+                                ""Function"": {
+                                    ""name"": { ""parts"": [""parse"", ""positive""] },
+                                    ""symbol"": ""boltffi_sample_warn_parse_positive"",
+                                    ""callable"": {
+                                        ""execution"": ""Sync"",
+                                        ""returns"": { ""plan"": { ""DirectViaReturnSlot"": { ""Primitive"": ""I64"" } } },
+                                        ""params"": [
+                                            { ""name"": { ""parts"": [""val""] }, ""plan"": { ""Direct"": { ""Primitive"": ""I64"" } } }
+                                        ],
+                                        ""error"": { ""kind"": ""BoltError"" }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }";
+
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(boltJson);
+            byte[] framed = new byte[8 + 8 + jsonBytes.Length];
+            Encoding.ASCII.GetBytes("BFFIMD01").CopyTo(framed, 0);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(framed.AsSpan(8, 8), (ulong)jsonBytes.Length);
+            jsonBytes.CopyTo(framed, 16);
+            File.WriteAllBytes(mockLibPath, framed);
+
+            // User declared partial method with explicit [PreferBoltFFI], intentionally choosing BoltFFI
+            string userSource = @"
+            using UniFFISharp;
+
+            namespace SampleWarn;
+
+            public static partial class SampleWarnMethods
+            {
+                [PreferBoltFFI]
+                public static partial long ParsePositive(long val);
+            }
+            ";
+            var userTree = CSharpSyntaxTree.ParseText(userSource);
+
+            var compilation = CSharpCompilation.Create("TestAssembly",
+                syntaxTrees: new[] { userTree },
+                references: new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                    MetadataReference.CreateFromFile(typeof(PreferBoltFFIAttribute).Assembly.Location)
+                });
+
+            var generator = new UniFFIGenerator();
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+
+            string stampPath = Path.Combine(tempDir, "target.uniffi.stamp");
+            var additionalText = new TestAdditionalText(stampPath, mockLibPath);
+
+            var options = new Dictionary<string, string>
+            {
+                ["build_metadata.AdditionalFiles.UniFFI"] = "true",
+                ["build_property.UniFFIEngine"] = "Dual",
+                ["build_property.UniFFIEnginePrefer"] = "Auto",
+                ["build_property.UniFFIWarnSuboptimalEngine"] = "true"
+            };
+            var optionsProvider = new TestAnalyzerConfigOptionsProvider(options);
+
+            driver = driver.AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(additionalText));
+            driver = driver.WithUpdatedAnalyzerConfigOptions(optionsProvider);
+
+            driver = driver.RunGenerators(compilation);
+            var runResult = driver.GetRunResult();
+
+            Assert.DoesNotContain(runResult.Diagnostics, d => d.Id == "UFFI0021");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+    }
+
     private sealed class TestAdditionalText : AdditionalText
     {
         private readonly string path;

@@ -124,6 +124,9 @@ UniFFISharp supports seamless coexistence between its two engines, **UniFFISharp
     <!-- Selection: Auto (default), PreferBoltFFI, PreferUniFFI, Error (emits UFFI0020) -->
     <UniFFIEnginePrefer>Auto</UniFFIEnginePrefer>
 
+    <!-- Suboptimal engine warning (UFFI0021): default enabled in coexistence, disabled in single-engine -->
+    <UniFFIWarnSuboptimalEngine>true</UniFFIWarnSuboptimalEngine>
+
     <!-- Optional: redirect BoltFFI to a separate namespace to generate both without collision -->
     <BoltFFINamespace>MyCompany.Sdk.Bolt</BoltFFINamespace>
   </PropertyGroup>

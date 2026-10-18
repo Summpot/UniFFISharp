@@ -31,6 +31,14 @@ public class UniFFIGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor SuboptimalEngineDescriptor = new(
+        "UFFI0021",
+        "Suboptimal FFI engine binding in Auto mode",
+        "Method '{0}' is using {1}, but would achieve significantly better performance with {2} ({3}). Export it via #[{4}::export] in Rust to enable the faster path.",
+        "UniFFISharp",
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     static UniFFIGenerator()
     {
         try
@@ -188,6 +196,20 @@ namespace UniFFISharp
                 return null;
             });
 
+        var warnSuboptimalProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property.UniFFIWarnSuboptimalEngine", out var raw) &&
+                    !string.IsNullOrWhiteSpace(raw))
+                {
+                    if (bool.TryParse(raw.Trim(), out var parsed))
+                    {
+                        return (bool?)parsed;
+                    }
+                }
+                return null;
+            });
+
         // Separate extraction provider depending only on stamp and engine configuration
         var libraryMetadataProvider = stampProvider
             .Combine(engineProvider)
@@ -231,7 +253,8 @@ namespace UniFFISharp
             .Combine(boltNamespaceProvider)
             .Combine(engineProvider)
             .Combine(preferProvider)
-            .Combine(useNativeUnionsProvider);
+            .Combine(useNativeUnionsProvider)
+            .Combine(warnSuboptimalProvider);
 
         var langAndSupportProvider = langVersionProvider
             .Combine(unionSupportProvider);
@@ -243,7 +266,7 @@ namespace UniFFISharp
 
         context.RegisterSourceOutput(combinedProvider, (productionContext, pair) =>
         {
-            var (((libraryMetadatas, ((((customNamespace, boltNamespace), engineMode), preferMode), useNativeUnions)), (langVersion, hasUnionSupport)), userSyntaxItems) = pair;
+            var (((libraryMetadatas, (((((customNamespace, boltNamespace), engineMode), preferMode), useNativeUnions), warnSuboptimal)), (langVersion, hasUnionSupport)), userSyntaxItems) = pair;
             var generatedUniFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var generatedBoltFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -472,8 +495,26 @@ namespace UniFFISharp
                                         {
                                             overrideEngine = InteropEngine.BoltFFI;
                                         }
+                                        else if (string.Equals(preferMode, "PreferUniFFI", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            overrideEngine = InteropEngine.UniFFI;
+                                        }
 
-                                        var winningEngine = InteropArbitrator.SelectBestEngine(uniffiFn, boltFn, overrideEngine);
+                                        var decision = InteropArbitrator.Arbitrate(uniffiFn, boltFn, overrideEngine);
+                                        var winningEngine = decision.SelectedEngine;
+
+                                        bool shouldWarnSuboptimal = warnSuboptimal.HasValue ? warnSuboptimal.Value : true;
+                                        if (shouldWarnSuboptimal && decision.IsSuboptimalMissingExport)
+                                        {
+                                            productionContext.ReportDiagnostic(Diagnostic.Create(
+                                                SuboptimalEngineDescriptor,
+                                                Location.None,
+                                                pascalName,
+                                                decision.SelectedEngine,
+                                                decision.OptimalEngine,
+                                                decision.PerformanceReason,
+                                                decision.MissingMacro));
+                                        }
 
                                         if (winningEngine == InteropEngine.UniFFI)
                                         {
@@ -532,6 +573,63 @@ namespace UniFFISharp
                                         boltMethodConfigs ??= new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                         string qualified = $"{userMethod.ContainingTypeName}.{userMethod.MethodName}";
                                         boltMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true };
+                                    }
+                                }
+                            }
+                        }
+
+                        if (warnSuboptimal == true && matchedCi == null)
+                        {
+                            string methodsClassName = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
+                            var classPref = userTypePreferences.FirstOrDefault(tp =>
+                                string.Equals(tp.TypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
+                                (string.IsNullOrEmpty(tp.ContainingNamespace) || string.Equals(tp.ContainingNamespace, boltTargetNs, StringComparison.OrdinalIgnoreCase)));
+
+                            var userMethodLookup = new Dictionary<string, UserPartialMethodInfo>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var m in userPartialMethods)
+                            {
+                                if (string.Equals(m.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
+                                    (string.IsNullOrEmpty(m.ContainingNamespace) || string.Equals(m.ContainingNamespace, boltTargetNs, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    userMethodLookup[m.MethodName] = m;
+                                    if (!m.MethodName.EndsWith("Async"))
+                                    {
+                                        userMethodLookup[m.MethodName + "Async"] = m;
+                                    }
+                                }
+                            }
+
+                            foreach (var decl in env.Bindings.Native.Decls)
+                            {
+                                if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
+                                {
+                                    string p = decl.Function.Name.ToPascalCase();
+                                    userMethodLookup.TryGetValue(p, out var userMethod);
+                                    var overrideEngine = InteropEngine.Auto;
+                                    if (userMethod != null && userMethod.HasExplicitOverride && userMethod.Engine != InteropEngine.Auto)
+                                    {
+                                        overrideEngine = userMethod.Engine;
+                                    }
+                                    else if (classPref != null && classPref.Engine != InteropEngine.Auto)
+                                    {
+                                        overrideEngine = classPref.Engine;
+                                    }
+                                    else if (string.Equals(preferMode, "PreferBoltFFI", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        overrideEngine = InteropEngine.BoltFFI;
+                                    }
+
+                                    var decision = InteropArbitrator.Arbitrate(null, decl.Function, overrideEngine);
+                                    if (decision.IsSuboptimalMissingExport)
+                                    {
+                                        productionContext.ReportDiagnostic(Diagnostic.Create(
+                                            SuboptimalEngineDescriptor,
+                                            Location.None,
+                                            p,
+                                            decision.SelectedEngine,
+                                            decision.OptimalEngine,
+                                            decision.PerformanceReason,
+                                            decision.MissingMacro));
                                     }
                                 }
                             }
@@ -620,6 +718,59 @@ namespace UniFFISharp
                             var cloned = optionsToUse.Clone();
                             cloned.MethodConfigs = uniffiPartialConfigs;
                             optionsToUse = cloned;
+                        }
+
+                        if (warnSuboptimal == true)
+                        {
+                            var classPref = userTypePreferences.FirstOrDefault(tp =>
+                                string.Equals(tp.TypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
+                                (string.IsNullOrEmpty(tp.ContainingNamespace) || string.Equals(tp.ContainingNamespace, ciNs, StringComparison.OrdinalIgnoreCase)));
+
+                            var userMethodLookup = new Dictionary<string, UserPartialMethodInfo>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var m in userPartialMethods)
+                            {
+                                if (string.Equals(m.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
+                                    (string.IsNullOrEmpty(m.ContainingNamespace) || string.Equals(m.ContainingNamespace, ciNs, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    userMethodLookup[m.MethodName] = m;
+                                    if (!m.MethodName.EndsWith("Async"))
+                                    {
+                                        userMethodLookup[m.MethodName + "Async"] = m;
+                                    }
+                                }
+                            }
+
+                            foreach (var fn in ci.Functions)
+                            {
+                                string p = TypeHelper.ToPascalCase(fn.Name);
+                                userMethodLookup.TryGetValue(p, out var userMethod);
+                                var overrideEngine = InteropEngine.Auto;
+                                if (userMethod != null && userMethod.HasExplicitOverride && userMethod.Engine != InteropEngine.Auto)
+                                {
+                                    overrideEngine = userMethod.Engine;
+                                }
+                                else if (classPref != null && classPref.Engine != InteropEngine.Auto)
+                                {
+                                    overrideEngine = classPref.Engine;
+                                }
+                                else if (string.Equals(preferMode, "PreferUniFFI", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    overrideEngine = InteropEngine.UniFFI;
+                                }
+
+                                var decision = InteropArbitrator.Arbitrate(fn, null, overrideEngine);
+                                if (decision.IsSuboptimalMissingExport)
+                                {
+                                    productionContext.ReportDiagnostic(Diagnostic.Create(
+                                        SuboptimalEngineDescriptor,
+                                        Location.None,
+                                        p,
+                                        decision.SelectedEngine,
+                                        decision.OptimalEngine,
+                                        decision.PerformanceReason,
+                                        decision.MissingMacro));
+                                }
+                            }
                         }
                     }
 
