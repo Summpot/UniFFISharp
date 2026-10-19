@@ -184,12 +184,12 @@ public abstract class JsonNode
 
     private static JsonBoolean ParseBool(string json, ref int index)
     {
-        if (json.Substring(index).StartsWith("true"))
+        if (index + 4 <= json.Length && string.Compare(json, index, "true", 0, 4, StringComparison.Ordinal) == 0)
         {
             index += 4;
             return JsonBoolean.True;
         }
-        if (json.Substring(index).StartsWith("false"))
+        if (index + 5 <= json.Length && string.Compare(json, index, "false", 0, 5, StringComparison.Ordinal) == 0)
         {
             index += 5;
             return JsonBoolean.False;
@@ -199,7 +199,7 @@ public abstract class JsonNode
 
     private static JsonNull ParseNull(string json, ref int index)
     {
-        if (json.Substring(index).StartsWith("null"))
+        if (index + 4 <= json.Length && string.Compare(json, index, "null", 0, 4, StringComparison.Ordinal) == 0)
         {
             index += 4;
             return JsonNull.Instance;

@@ -247,5 +247,37 @@ public class BoltFfiRuntimeTests
         Assert.Equal("ZeroAlloc", reader.ReadString());
         Assert.Equal(written.Length, reader.Position);
     }
+
+    [Fact]
+    public void WireWriter_UnmanagedList_RoundtripsCorrectly()
+    {
+        var list = new List<int> { 10, 20, 30, -500, int.MaxValue };
+        var writer = new WireWriter();
+        writer.WriteUnmanagedList(list);
+
+        var reader = new WireReader(writer.WrittenSpan);
+        var output = reader.ReadUnmanagedList<int>();
+        Assert.Equal(list, output);
+    }
+
+    [Fact]
+    public void WireReader_CorruptListCount_ThrowsEndOfStreamException()
+    {
+        var writer = new WireWriter();
+        writer.WriteU32(1_000_000);
+
+        var reader = new WireReader(writer.WrittenSpan);
+        bool threw = false;
+        try
+        {
+            reader.ReadUnmanagedList<int>();
+        }
+        catch (System.IO.EndOfStreamException ex)
+        {
+            threw = true;
+            Assert.Contains("exceeds remaining buffer bytes", ex.Message);
+        }
+        Assert.True(threw);
+    }
 }
 

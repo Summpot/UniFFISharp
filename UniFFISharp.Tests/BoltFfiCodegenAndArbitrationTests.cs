@@ -1855,5 +1855,24 @@ public class BoltFfiCodegenAndArbitrationTests
         Assert.Equal(BoltFfiTypeKind.UInt32, optDecl.Parameters[0].Type.InnerType?.Kind);
         Assert.True(UniFFISharp.Generator.Metadata.BoltFfi.BoltFfiCoexistence.CanBind(optDecl));
     }
+
+    [Fact]
+    public void CallbackImplementationInfo_Equality_AccountsForImplementedInterfacesAndIsSealed()
+    {
+        var info1 = new UniFFISharp.Generator.Arbitration.CallbackImplementationInfo(
+            "MyNs.MyClass", "MyClass", isSealed: false, new List<string> { "IFoo" });
+        var info2 = new UniFFISharp.Generator.Arbitration.CallbackImplementationInfo(
+            "MyNs.MyClass", "MyClass", isSealed: false, new List<string> { "IFoo" });
+        var infoWithNewInterface = new UniFFISharp.Generator.Arbitration.CallbackImplementationInfo(
+            "MyNs.MyClass", "MyClass", isSealed: false, new List<string> { "IFoo", "IBar" });
+        var infoSealed = new UniFFISharp.Generator.Arbitration.CallbackImplementationInfo(
+            "MyNs.MyClass", "MyClass", isSealed: true, new List<string> { "IFoo" });
+
+        Assert.Equal(info1, info2);
+        Assert.Equal(info1.GetHashCode(), info2.GetHashCode());
+
+        Assert.NotEqual(info1, infoWithNewInterface);
+        Assert.NotEqual(info1, infoSealed);
+    }
 }
 

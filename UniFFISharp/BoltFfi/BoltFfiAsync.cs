@@ -1,9 +1,9 @@
 using System;
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using UniFFISharp.Collections;
 
 namespace UniFFISharp.BoltFfi;
 
@@ -15,18 +15,26 @@ public static class BoltFfiAsync
 
     public static unsafe nint ContinuationPointer => (nint)(delegate* unmanaged[Cdecl]<ulong, sbyte, void>)&OnFutureContinuation;
 
-    private static readonly ConcurrentDictionary<ulong, TaskCompletionSource<sbyte>> Continuations = new();
-    private static long nextContinuationId;
+    private static readonly ConcurrentHandleMap<TaskCompletionSource<sbyte>> Continuations = new();
+
+    public static Task<T> CallAsync<T>(
+        Func<nint> start,
+        Action<nint, ulong, nint> poll,
+        Func<nint, T> complete,
+        Action<nint> cancel,
+        Action<nint> free,
+        CancellationToken cancellationToken = default) =>
+        CallAsync<T>(start(), poll, complete, cancel, free, cancellationToken);
 
     public static async Task<T> CallAsync<T>(
-        Func<nint> start,
+        nint futureHandle,
         Action<nint, ulong, nint> poll,
         Func<nint, T> complete,
         Action<nint> cancel,
         Action<nint> free,
         CancellationToken cancellationToken = default)
     {
-        var future = new RustFutureOwner(start(), cancel, free);
+        var future = new RustFutureOwner(futureHandle, cancel, free);
         CancellationTokenRegistration cancellationRegistration = cancellationToken.Register(
             static state => ((RustFutureOwner)state!).Cancel(), future);
         try
@@ -37,7 +45,6 @@ public static class BoltFfiAsync
                 sbyte pollResult = await PollOnceAsync(future, poll, cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (pollResult == PollReady) break;
-                await RepollOnThreadPoolAsync().ConfigureAwait(false);
             }
             cancellationRegistration.Dispose();
             return complete(future.Handle);
@@ -61,8 +68,17 @@ public static class BoltFfiAsync
         Action<nint> cancel,
         Action<nint> free,
         CancellationToken cancellationToken = default) =>
+        CallAsyncVoid(start(), poll, complete, cancel, free, cancellationToken);
+
+    public static Task CallAsyncVoid(
+        nint futureHandle,
+        Action<nint, ulong, nint> poll,
+        Action<nint> complete,
+        Action<nint> cancel,
+        Action<nint> free,
+        CancellationToken cancellationToken = default) =>
         CallAsync<object?>(
-            start,
+            futureHandle,
             poll,
             future => { complete(future); return null; },
             cancel,
@@ -92,14 +108,14 @@ public static class BoltFfiAsync
         }
         catch
         {
-            Continuations.TryRemove(callbackData, out _);
+            Continuations.Remove(callbackData, out _);
             throw;
         }
         var state = new PollState(callbackData, cancellationToken);
         CancellationTokenRegistration registration = cancellationToken.Register(static value =>
         {
             var current = (PollState)value!;
-            if (Continuations.TryRemove(current.CallbackData, out var pending))
+            if (Continuations.Remove(current.CallbackData, out var pending) && pending != null)
                 pending.TrySetCanceled(current.CancellationToken);
         }, state);
         return AwaitPollAsync(completion.Task, registration);
@@ -113,30 +129,15 @@ public static class BoltFfiAsync
         finally { registration.Dispose(); }
     }
 
-    private static Task RepollOnThreadPoolAsync()
-    {
-        var completion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        ThreadPool.QueueUserWorkItem(
-            static state => ((TaskCompletionSource<object?>)state!).TrySetResult(null),
-            completion);
-        return completion.Task;
-    }
-
-    private static ulong RegisterContinuation(TaskCompletionSource<sbyte> completion)
-    {
-        while (true)
-        {
-            ulong callbackData = unchecked((ulong)Interlocked.Increment(ref nextContinuationId));
-            if (callbackData != 0 && Continuations.TryAdd(callbackData, completion)) return callbackData;
-        }
-    }
+    private static ulong RegisterContinuation(TaskCompletionSource<sbyte> completion) =>
+        Continuations.Insert(completion);
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static void OnFutureContinuation(ulong callbackData, sbyte pollResult)
     {
         try
         {
-            if (Continuations.TryRemove(callbackData, out var completion))
+            if (Continuations.Remove(callbackData, out var completion) && completion != null)
                 completion.TrySetResult(pollResult);
         }
         catch

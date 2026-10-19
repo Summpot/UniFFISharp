@@ -25,7 +25,20 @@ public static class PeMetadataExtractor
         return all.Count > 0 ? all[0] : null;
     }
 
-    public static IReadOnlyList<ComponentInterface> ExtractAll(string dllPath)
+    public static bool IsCached(string dllPath, long ticks, long length)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(dllPath);
+            return s_cache.TryGetValue(fullPath, out var cached) && cached.Ticks == ticks && cached.Length == length;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static IReadOnlyList<ComponentInterface> ExtractAll(string dllPath, byte[]? fileBytes = null)
     {
         if (!File.Exists(dllPath))
         {
@@ -46,13 +59,13 @@ public static class PeMetadataExtractor
                 return cached.Metadata;
             }
 
-            var result = ExtractAllInternal(fullPath);
+            var result = (fileBytes != null && fileToInspect == fullPath) ? ExtractAll(fileBytes) : ExtractAllInternal(fullPath);
             s_cache[fullPath] = (ticks, len, result);
             return result;
         }
         catch
         {
-            return ExtractAllInternal(dllPath);
+            return fileBytes != null ? ExtractAll(fileBytes) : ExtractAllInternal(dllPath);
         }
     }
 

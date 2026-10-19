@@ -22,8 +22,20 @@ public static class BoltFfiMetadataExtractor
 
     /// <summary>
     /// Extracts all BoltFFI metadata envelopes from a library or archive file path.
-    /// </summary>
-    public static IReadOnlyList<BoltFfiMetadataEnvelope> ExtractAll(string filePath)
+    public static bool IsCached(string filePath, long ticks, long length)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(filePath);
+            return s_cache.TryGetValue(fullPath, out var cached) && cached.Ticks == ticks && cached.Length == length;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static IReadOnlyList<BoltFfiMetadataEnvelope> ExtractAll(string filePath, byte[]? fileBytes = null)
     {
         if (!File.Exists(filePath)) return Array.Empty<BoltFfiMetadataEnvelope>();
 
@@ -39,7 +51,7 @@ public static class BoltFfiMetadataExtractor
                 return cached.Envelopes;
             }
 
-            var results = ExtractAllInternal(fullPath);
+            var results = fileBytes != null ? ExtractAll(fileBytes) : ExtractAllInternal(fullPath);
             s_cache[fullPath] = (ticks, len, results);
             return results;
         }

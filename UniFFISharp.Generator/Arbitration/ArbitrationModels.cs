@@ -131,11 +131,40 @@ public sealed class CallbackImplementationInfo : IEquatable<CallbackImplementati
     {
         if (other is null) return false;
         if (ReferenceEquals(this, other)) return true;
-        return string.Equals(FullyQualifiedTypeName, other.FullyQualifiedTypeName, StringComparison.Ordinal);
+        if (!string.Equals(FullyQualifiedTypeName, other.FullyQualifiedTypeName, StringComparison.Ordinal) ||
+            !string.Equals(TypeName, other.TypeName, StringComparison.Ordinal) ||
+            IsSealed != other.IsSealed ||
+            ImplementedInterfaces.Count != other.ImplementedInterfaces.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < ImplementedInterfaces.Count; i++)
+        {
+            if (!string.Equals(ImplementedInterfaces[i], other.ImplementedInterfaces[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public override bool Equals(object? obj) => Equals(obj as CallbackImplementationInfo);
 
-    public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(FullyQualifiedTypeName);
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            int hash = StringComparer.Ordinal.GetHashCode(FullyQualifiedTypeName);
+            hash = (hash * 397) ^ IsSealed.GetHashCode();
+            hash = (hash * 397) ^ ImplementedInterfaces.Count.GetHashCode();
+            foreach (var iface in ImplementedInterfaces)
+            {
+                hash = (hash * 397) ^ (iface != null ? StringComparer.Ordinal.GetHashCode(iface) : 0);
+            }
+            return hash;
+        }
+    }
 }
 

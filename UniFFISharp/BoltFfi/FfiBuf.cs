@@ -15,12 +15,6 @@ public struct FfiBuf
 
     public static FfiBuf Empty => default;
 
-    public static FfiBuf FromString(string? str)
-    {
-        if (string.IsNullOrEmpty(str)) return FromBytes(Array.Empty<byte>());
-        return FromBytes(Encoding.UTF8.GetBytes(str));
-    }
-
     public static FfiBuf FromBytes(byte[]? bytes)
     {
         if (bytes == null || bytes.Length == 0)

@@ -107,6 +107,8 @@ public static class BoltFfiCodeGenerator
             }
         }
         sb.AppendLine();
+        sb.AppendLine("[module: global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine();
 
         // 2. Namespace
         string ns = string.IsNullOrWhiteSpace(targetNamespace) ? cratePascal : targetNamespace;
@@ -1352,10 +1354,6 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
-        if (!func.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Callback))
-        {
-            sb.AppendLine("        [SuppressGCTransition]");
-        }
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
         if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
             sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
@@ -1438,11 +1436,11 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
+                nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
-        sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
         sb.AppendLine($"        internal static extern nint {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -1527,7 +1525,8 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
+                nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
@@ -1540,11 +1539,9 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
-        if (!func.Parameters.Any(p => p.Type.Kind == BoltFfiTypeKind.Callback))
-        {
-            sb.AppendLine("        [SuppressGCTransition]");
-        }
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
+        if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
+            sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
     }
@@ -1566,6 +1563,10 @@ public static class BoltFfiCodeGenerator
         var postStmts = new List<string>();
         var fixedVars = new List<(string ptrType, string ptrName, string targetExpr)>();
         var callArgs = new List<string>(leadingCallArgs);
+        if (isAsync)
+        {
+            preStmts.Add("nint asyncFutureHandle = 0;");
+        }
 
         foreach (var p in func.Parameters)
         {
@@ -1746,52 +1747,7 @@ public static class BoltFfiCodeGenerator
 
         if (isAsync)
         {
-            // Call via BoltFfiAsync
-            if (retType == "void")
-            {
-                sb.AppendLine($"{curIndent}return BoltFfiAsync.CallAsyncVoid(");
-                sb.AppendLine($"{curIndent}    () => {callExpr},");
-                sb.AppendLine($"{curIndent}    (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
-                sb.AppendLine($"{curIndent}    (future) => {{ NativeMethods.{func.AsyncCompleteSymbol}(future, out FfiStatus status); BoltFfiAsync.ThrowIfStatus(status, cancellationToken); }},");
-                sb.AppendLine($"{curIndent}    (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
-                sb.AppendLine($"{curIndent}    (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
-                sb.AppendLine($"{curIndent}    cancellationToken);");
-            }
-            else
-            {
-                sb.AppendLine($"{curIndent}return BoltFfiAsync.CallAsync<{retType}>(");
-                sb.AppendLine($"{curIndent}    () => {callExpr},");
-                sb.AppendLine($"{curIndent}    (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
-                sb.AppendLine($"{curIndent}    (future) =>");
-                sb.AppendLine($"{curIndent}    {{");
-                sb.AppendLine($"{curIndent}        var retVal = NativeMethods.{func.AsyncCompleteSymbol}(future, out FfiStatus status);");
-                sb.AppendLine($"{curIndent}        BoltFfiAsync.ThrowIfStatus(status, cancellationToken);");
-                if (func.ReturnType.Kind == BoltFfiTypeKind.String)
-                {
-                    sb.AppendLine($"{curIndent}        try {{ return retVal.ReadString(); }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
-                }
-                else if (func.ReturnType.Kind == BoltFfiTypeKind.Bytes)
-                {
-                    sb.AppendLine($"{curIndent}        try {{ return retVal.ToArray(); }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
-                }
-                else if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
-                {
-                    string targetCls = !string.IsNullOrEmpty(func.ReturnType.CustomTypeName) ? ToPascal(func.ReturnType.CustomTypeName) : retType;
-                    sb.AppendLine($"{curIndent}        return new {targetCls}(retVal, true);");
-                }
-                else if (NeedsWireBuffer(func.ReturnType))
-                {
-                    sb.AppendLine($"{curIndent}        try {{ var reader = new WireReader(retVal); return {WireReadExpr(func.ReturnType)}; }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
-                }
-                else
-                {
-                    sb.AppendLine($"{curIndent}        return retVal;");
-                }
-                sb.AppendLine($"{curIndent}    }},");
-                sb.AppendLine($"{curIndent}    (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
-                sb.AppendLine($"{curIndent}    (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
-                sb.AppendLine($"{curIndent}    cancellationToken);");
-            }
+            sb.AppendLine($"{curIndent}asyncFutureHandle = {callExpr};");
         }
         else if (func.HasError)
         {
@@ -1929,6 +1885,56 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine($"{curIndent}    {post}");
             }
             sb.AppendLine($"{curIndent}}}");
+        }
+
+        if (isAsync)
+        {
+            string asyncIndent = indent + "    ";
+            if (retType == "void")
+            {
+                sb.AppendLine($"{asyncIndent}return BoltFfiAsync.CallAsyncVoid(");
+                sb.AppendLine($"{asyncIndent}    asyncFutureHandle,");
+                sb.AppendLine($"{asyncIndent}    (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
+                sb.AppendLine($"{asyncIndent}    (future) => {{ NativeMethods.{func.AsyncCompleteSymbol}(future, out FfiStatus status); BoltFfiAsync.ThrowIfStatus(status, cancellationToken); }},");
+                sb.AppendLine($"{asyncIndent}    (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
+                sb.AppendLine($"{asyncIndent}    (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
+                sb.AppendLine($"{asyncIndent}    cancellationToken);");
+            }
+            else
+            {
+                sb.AppendLine($"{asyncIndent}return BoltFfiAsync.CallAsync<{retType}>(");
+                sb.AppendLine($"{asyncIndent}    asyncFutureHandle,");
+                sb.AppendLine($"{asyncIndent}    (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
+                sb.AppendLine($"{asyncIndent}    (future) =>");
+                sb.AppendLine($"{asyncIndent}    {{");
+                sb.AppendLine($"{asyncIndent}        var retVal = NativeMethods.{func.AsyncCompleteSymbol}(future, out FfiStatus status);");
+                sb.AppendLine($"{asyncIndent}        BoltFfiAsync.ThrowIfStatus(status, cancellationToken);");
+                if (func.ReturnType.Kind == BoltFfiTypeKind.String)
+                {
+                    sb.AppendLine($"{asyncIndent}        try {{ return retVal.ReadString(); }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
+                }
+                else if (func.ReturnType.Kind == BoltFfiTypeKind.Bytes)
+                {
+                    sb.AppendLine($"{asyncIndent}        try {{ return retVal.ToArray(); }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
+                }
+                else if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
+                {
+                    string targetCls = !string.IsNullOrEmpty(func.ReturnType.CustomTypeName) ? ToPascal(func.ReturnType.CustomTypeName) : retType;
+                    sb.AppendLine($"{asyncIndent}        return new {targetCls}(retVal, true);");
+                }
+                else if (NeedsWireBuffer(func.ReturnType))
+                {
+                    sb.AppendLine($"{asyncIndent}        try {{ var reader = new WireReader(retVal); return {WireReadExpr(func.ReturnType)}; }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
+                }
+                else
+                {
+                    sb.AppendLine($"{asyncIndent}        return retVal;");
+                }
+                sb.AppendLine($"{asyncIndent}    }},");
+                sb.AppendLine($"{asyncIndent}    (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
+                sb.AppendLine($"{asyncIndent}    (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
+                sb.AppendLine($"{asyncIndent}    cancellationToken);");
+            }
         }
 
         // Close method
@@ -2094,6 +2100,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Record => $"{QualifyType(ty)}.Decode(ref {readerVar})",
             BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode(ref {readerVar})",
             BoltFfiTypeKind.Sequence when ty.IsDirectVec => $"{readerVar}.ReadDirectList<{ty.InnerType?.Kind switch { BoltFfiTypeKind.Record or BoltFfiTypeKind.Enum => QualifyType(ty.InnerType), _ => MapType(ty.InnerType ?? BoltFfiType.Void) }}>()",
+            BoltFfiTypeKind.Sequence when IsBlittablePrimitive(ty.InnerType) => $"{readerVar}.ReadUnmanagedList<{MapType(ty.InnerType!)}>()",
             BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
             BoltFfiTypeKind.Map => $"{readerVar}.ReadMap((ref WireReader {keyVar}) => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), keyVar)}, (ref WireReader {valVar}) => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, valVar)})",
             BoltFfiTypeKind.Set => $"{readerVar}.ReadSet((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
@@ -2123,6 +2130,20 @@ public static class BoltFfiCodeGenerator
         };
     }
 
+    private static bool IsBlittablePrimitive(BoltFfiType? ty)
+    {
+        if (ty == null) return false;
+        return ty.Kind switch
+        {
+            BoltFfiTypeKind.Int8 or BoltFfiTypeKind.UInt8 or
+            BoltFfiTypeKind.Int16 or BoltFfiTypeKind.UInt16 or
+            BoltFfiTypeKind.Int32 or BoltFfiTypeKind.UInt32 or
+            BoltFfiTypeKind.Int64 or BoltFfiTypeKind.UInt64 or
+            BoltFfiTypeKind.Float32 or BoltFfiTypeKind.Float64 => true,
+            _ => false
+        };
+    }
+
     private static string WireWriteStatement(BoltFfiType ty, string expr, string writerVar = "writer")
     {
         return ty.Kind switch
@@ -2146,6 +2167,7 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Uri => $"{writerVar}.WriteUri({expr})",
             BoltFfiTypeKind.Record => $"({expr}).Encode({writerVar})",
             BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"{writerVar}.WriteI32((int)({expr}))" : $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Sequence when IsBlittablePrimitive(ty.InnerType) => $"{writerVar}.WriteUnmanagedList({expr})",
             BoltFfiTypeKind.Sequence => $"{writerVar}.WriteList({expr}, (w, item) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "item", "w")})",
             BoltFfiTypeKind.Map => $"{writerVar}.WriteMap({expr}, (w, k) => {WireWriteStatement(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "k", "w")}, (w, v) => {WireWriteStatement(ty.ValueType ?? BoltFfiType.Void, "v", "w")})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch

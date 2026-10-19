@@ -117,4 +117,69 @@ public class RustBufferBoundaryTests
             }
         }
     }
+
+    [Fact]
+    public void TestBigEndianStream_BatchInt32List_RoundtripsCorrectly()
+    {
+        var input = new System.Collections.Generic.List<int> { 0, 1, -1, int.MaxValue, int.MinValue, 42, 1337 };
+        byte[] buffer = new byte[4 + input.Count * sizeof(int)];
+        unsafe
+        {
+            fixed (byte* p = buffer)
+            {
+                var writeStream = new BigEndianStream(p, buffer.Length);
+                writeStream.WriteInt32List(input);
+                Assert.Equal(buffer.Length, writeStream.Position);
+
+                var readStream = new BigEndianStream(p, buffer.Length);
+                var output = readStream.ReadInt32List();
+                Assert.Equal(input, output);
+            }
+        }
+    }
+
+    [Fact]
+    public void TestBigEndianStream_BatchDoubleList_RoundtripsCorrectly()
+    {
+        var input = new System.Collections.Generic.List<double> { 0.0, 3.1415926535, -2.71828, double.MaxValue, double.MinValue };
+        byte[] buffer = new byte[4 + input.Count * sizeof(double)];
+        unsafe
+        {
+            fixed (byte* p = buffer)
+            {
+                var writeStream = new BigEndianStream(p, buffer.Length);
+                writeStream.WriteFloat64List(input);
+                Assert.Equal(buffer.Length, writeStream.Position);
+
+                var readStream = new BigEndianStream(p, buffer.Length);
+                var output = readStream.ReadFloat64List();
+                Assert.Equal(input, output);
+            }
+        }
+    }
+
+    [Fact]
+    public void TestBigEndianStream_CorruptCountExceedingRemaining_ThrowsUniffiException()
+    {
+        byte[] payload = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(0, 4), 1_000_000);
+        unsafe
+        {
+            fixed (byte* p = payload)
+            {
+                var stream = new BigEndianStream(p, payload.Length);
+                bool threw = false;
+                try
+                {
+                    stream.ReadInt32List();
+                }
+                catch (UniffiException ex)
+                {
+                    threw = true;
+                    Assert.Contains("exceeds remaining buffer bytes", ex.Message);
+                }
+                Assert.True(threw);
+            }
+        }
+    }
 }

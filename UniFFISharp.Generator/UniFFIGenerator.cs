@@ -225,8 +225,38 @@ namespace UniFFISharp
                 bool enableUniFFI = !string.Equals(engineMode, "BoltFFI", StringComparison.OrdinalIgnoreCase);
                 bool enableBoltFFI = !string.Equals(engineMode, "UniFFI", StringComparison.OrdinalIgnoreCase);
 
-                var ciList = enableUniFFI ? PeMetadataExtractor.ExtractAll(libPath) : Array.Empty<ComponentInterface>();
-                var boltEnvelopes = enableBoltFFI ? BoltFfiMetadataExtractor.ExtractAll(libPath) : Array.Empty<BoltFfiMetadataEnvelope>();
+                IReadOnlyList<ComponentInterface> ciList = Array.Empty<ComponentInterface>();
+                IReadOnlyList<BoltFfiMetadataEnvelope> boltEnvelopes = Array.Empty<BoltFfiMetadataEnvelope>();
+
+                if (enableUniFFI && enableBoltFFI)
+                {
+                    try
+                    {
+                        string fullPath = Path.GetFullPath(libPath);
+                        var fi = new FileInfo(fullPath);
+                        long ticks = fi.LastWriteTimeUtc.Ticks;
+                        long len = fi.Length;
+                        bool peCached = PeMetadataExtractor.IsCached(fullPath, ticks, len);
+                        bool boltCached = BoltFfiMetadataExtractor.IsCached(fullPath, ticks, len);
+
+                        byte[]? sharedBytes = (!peCached || !boltCached) ? File.ReadAllBytes(fullPath) : null;
+                        ciList = PeMetadataExtractor.ExtractAll(fullPath, sharedBytes);
+                        boltEnvelopes = BoltFfiMetadataExtractor.ExtractAll(fullPath, sharedBytes);
+                    }
+                    catch
+                    {
+                        ciList = PeMetadataExtractor.ExtractAll(libPath);
+                        boltEnvelopes = BoltFfiMetadataExtractor.ExtractAll(libPath);
+                    }
+                }
+                else if (enableUniFFI)
+                {
+                    ciList = PeMetadataExtractor.ExtractAll(libPath);
+                }
+                else if (enableBoltFFI)
+                {
+                    boltEnvelopes = BoltFfiMetadataExtractor.ExtractAll(libPath);
+                }
 
                 return new ExtractedLibraryMetadata(
                     stamp,
@@ -815,8 +845,22 @@ namespace UniFFISharp
         }
         if (node is ClassDeclarationSyntax c)
         {
-            return (c.Modifiers.Any(SyntaxKind.PartialKeyword) && c.AttributeLists.Count > 0) ||
-                   (c.BaseList != null && c.BaseList.Types.Count > 0);
+            if (c.AttributeLists.Count > 0)
+                return true;
+
+            if (c.BaseList != null && c.BaseList.Types.Count > 0)
+            {
+                foreach (var baseType in c.BaseList.Types)
+                {
+                    string text = baseType.Type.ToString();
+                    int lastDot = text.LastIndexOf('.');
+                    string simpleName = lastDot >= 0 ? text.Substring(lastDot + 1) : text;
+                    if (simpleName.Length >= 2 && simpleName[0] == 'I' && char.IsUpper(simpleName[1]))
+                    {
+                        return true;
+                    }
+                }
+            }
         }
         return false;
     }

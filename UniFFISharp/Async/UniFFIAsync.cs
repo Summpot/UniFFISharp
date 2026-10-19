@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using UniFFISharp.Callbacks;
 using UniFFISharp.Collections;
 using UniFFISharp.Helpers;
@@ -15,35 +16,30 @@ public delegate void UniFfiFutureCallback(ulong continuationHandle, byte pollRes
 
 public sealed class UniffiForeignFutureHandle : IDisposable
 {
-    public CancellationTokenSource Cts { get; } = new();
-    private readonly object _lock = new();
-    private bool _callbackInvoked = false;
+    private CancellationTokenSource? _cts;
+    private int _callbackInvoked;
+
+    public CancellationTokenSource Cts => _cts ??= new();
 
     public void MarkDropped()
     {
-        lock (_lock)
+        if (Interlocked.CompareExchange(ref _callbackInvoked, 1, 0) == 0)
         {
-            if (!_callbackInvoked)
-            {
-                Cts.Cancel();
-            }
+            _cts?.Cancel();
         }
     }
 
     public void InvokeCallbackOnce(Action invoke)
     {
-        bool shouldInvoke;
-        lock (_lock)
+        if (Interlocked.CompareExchange(ref _callbackInvoked, 1, 0) == 0)
         {
-            shouldInvoke = !_callbackInvoked;
-            if (shouldInvoke) _callbackInvoked = true;
+            invoke();
         }
-        if (shouldInvoke) invoke();
     }
 
     public void Dispose()
     {
-        Cts.Dispose();
+        _cts?.Dispose();
     }
 }
 
@@ -55,7 +51,32 @@ public static class _UniFFIAsync
     public delegate F CompleteFuncDelegate<F>(ulong handle, ref UniffiRustCallStatus status);
     public delegate void CompleteActionDelegate(ulong handle, ref UniffiRustCallStatus status);
 
-    private static readonly ConcurrentHandleMap<TaskCompletionSource<byte>> _asyncHandleMap = new();
+    private sealed class UniffiFutureState : IValueTaskSource<byte>
+    {
+        private ManualResetValueTaskSourceCore<byte> _core = new() { RunContinuationsAsynchronously = true };
+        public ulong RustFuture;
+        public Action<ulong>? CancelFunc;
+        public CancellationToken CancellationToken;
+
+        public ValueTask<byte> AsValueTask() => new(this, _core.Version);
+
+        public void Reset() => _core.Reset();
+
+        public void SetResult(byte result) => _core.SetResult(result);
+
+        public void SetCanceled()
+        {
+            try { CancelFunc?.Invoke(RustFuture); } catch { }
+            try { _core.SetException(new OperationCanceledException(CancellationToken)); } catch { }
+        }
+
+        public byte GetResult(short token) => _core.GetResult(token);
+        public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            _core.OnCompleted(continuation, state, token, flags);
+    }
+
+    private static readonly ConcurrentHandleMap<UniffiFutureState> _asyncHandleMap = new();
 
     public static readonly ConcurrentHandleMap<UniffiForeignFutureHandle> ForeignFuturesMap = new();
 
@@ -82,52 +103,14 @@ public static class _UniFFIAsync
     {
         try
         {
-            if (_asyncHandleMap.Remove(continuationHandle, out TaskCompletionSource<byte>? task) && task != null)
+            if (_asyncHandleMap.TryGet(continuationHandle, out UniffiFutureState? state) && state != null)
             {
-                task.SetResult(pollResult);
+                state.SetResult(pollResult);
             }
         }
         catch
         {
         }
-    }
-
-    private static async Task PollFuture(
-        ulong rustFuture,
-        Action<ulong, IntPtr, ulong> pollFunc,
-        Action<ulong>? cancelFunc = null,
-        CancellationToken cancellationToken = default)
-    {
-        byte pollResult;
-        do
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var tcs = new TaskCompletionSource<byte>(TaskCreationOptions.RunContinuationsAsynchronously);
-            ulong mapEntry = _asyncHandleMap.Insert(tcs);
-            CancellationTokenRegistration reg = default;
-            if (cancellationToken.CanBeCanceled && cancelFunc != null)
-            {
-                reg = cancellationToken.Register(() =>
-                {
-                    if (_asyncHandleMap.Remove(mapEntry, out var pendingTcs) && pendingTcs != null)
-                    {
-                        pendingTcs.TrySetCanceled(cancellationToken);
-                    }
-                    try { cancelFunc(rustFuture); } catch { }
-                });
-            }
-
-            try
-            {
-                pollFunc(rustFuture, ContinuationCallbackPointer, mapEntry);
-                pollResult = await tcs.Task.ConfigureAwait(false);
-            }
-            finally
-            {
-                reg.Dispose();
-            }
-        }
-        while (pollResult != UNIFFI_RUST_FUTURE_POLL_READY);
     }
 
     public static async Task<T> UniffiRustCallAsync<T, F, E>(
@@ -141,9 +124,34 @@ public static class _UniFFIAsync
         CancellationToken cancellationToken = default
     ) where E : Exception
     {
+        var state = new UniffiFutureState
+        {
+            RustFuture = rustFuture,
+            CancelFunc = cancelFunc,
+            CancellationToken = cancellationToken
+        };
+        ulong mapEntry = _asyncHandleMap.Insert(state);
+        CancellationTokenRegistration reg = default;
+        if (cancellationToken.CanBeCanceled)
+        {
+            reg = cancellationToken.Register(static s => ((UniffiFutureState)s!).SetCanceled(), state);
+        }
+
         try
         {
-            await PollFuture(rustFuture, pollFunc, cancelFunc, cancellationToken).ConfigureAwait(false);
+            byte pollResult;
+            do
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                pollFunc(rustFuture, ContinuationCallbackPointer, mapEntry);
+                pollResult = await state.AsValueTask().ConfigureAwait(false);
+                if (pollResult != UNIFFI_RUST_FUTURE_POLL_READY)
+                {
+                    state.Reset();
+                }
+            }
+            while (pollResult != UNIFFI_RUST_FUTURE_POLL_READY);
+
             var status = new UniffiRustCallStatus();
             var result = completeFunc(rustFuture, ref status);
             if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);
@@ -151,6 +159,8 @@ public static class _UniFFIAsync
         }
         finally
         {
+            reg.Dispose();
+            _asyncHandleMap.Remove(mapEntry, out _);
             freeFunc(rustFuture);
         }
     }
@@ -165,15 +175,42 @@ public static class _UniFFIAsync
         CancellationToken cancellationToken = default
     ) where E : Exception
     {
+        var state = new UniffiFutureState
+        {
+            RustFuture = rustFuture,
+            CancelFunc = cancelFunc,
+            CancellationToken = cancellationToken
+        };
+        ulong mapEntry = _asyncHandleMap.Insert(state);
+        CancellationTokenRegistration reg = default;
+        if (cancellationToken.CanBeCanceled)
+        {
+            reg = cancellationToken.Register(static s => ((UniffiFutureState)s!).SetCanceled(), state);
+        }
+
         try
         {
-            await PollFuture(rustFuture, pollFunc, cancelFunc, cancellationToken).ConfigureAwait(false);
+            byte pollResult;
+            do
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                pollFunc(rustFuture, ContinuationCallbackPointer, mapEntry);
+                pollResult = await state.AsValueTask().ConfigureAwait(false);
+                if (pollResult != UNIFFI_RUST_FUTURE_POLL_READY)
+                {
+                    state.Reset();
+                }
+            }
+            while (pollResult != UNIFFI_RUST_FUTURE_POLL_READY);
+
             var status = new UniffiRustCallStatus();
             completeFunc(rustFuture, ref status);
             if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, errorHandler);
         }
         finally
         {
+            reg.Dispose();
+            _asyncHandleMap.Remove(mapEntry, out _);
             freeFunc(rustFuture);
         }
     }

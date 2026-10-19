@@ -52,10 +52,17 @@ public sealed class ConcurrentHandleMap<T> where T : class
     private readonly SlotEntry[] _rootEntries;
     private int _allocatedSlots;
 
+#pragma warning disable CS0169
+    // Cache line padding (ensures _freeHead is isolated on a dedicated 64-byte cache line, avoiding false sharing)
+    private long _padBefore1, _padBefore2, _padBefore3, _padBefore4, _padBefore5, _padBefore6, _padBefore7;
+
     // Packed 64-bit tagged pointer for lock-free Treiber stack:
     // Upper 32 bits: monotonically increasing ABA tag
     // Lower 32 bits: head slot index (signed int, -1 = NoSlot)
     private long _freeHead = Pack(0, NoSlot);
+
+    private long _padAfter1, _padAfter2, _padAfter3, _padAfter4, _padAfter5, _padAfter6, _padAfter7;
+#pragma warning restore CS0169
 
     public ConcurrentHandleMap()
     {

@@ -16,6 +16,7 @@
     <RepositoryUrl>https://github.com/Summpot/UniFFISharp</RepositoryUrl>
     <PackageTags>uniffi;rust;csharp;interop;ffi;generator;sourcegenerator</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>

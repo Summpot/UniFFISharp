@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -41,8 +42,22 @@ public unsafe ref struct WireReader
     {
         if (position + count > span.Length)
         {
-            throw new EndOfStreamException($"Corrupt wire buffer: unexpected end of stream reading {typeName} (at offset {position}, required {count}, buffer length {span.Length})");
+            ThrowCorruptWireBuffer(count, typeName);
         }
+    }
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowCorruptWireBuffer(int count, string typeName)
+    {
+        throw new EndOfStreamException($"Corrupt wire buffer: unexpected end of stream reading {typeName} (at offset {position}, required {count}, buffer length {span.Length})");
+    }
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowCorruptWireBuffer(string message)
+    {
+        throw new EndOfStreamException(message);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -184,6 +199,10 @@ public unsafe ref struct WireReader
     {
         int count = checked((int)ReadU32());
         if (count == 0) return Array.Empty<T>();
+        if (count > span.Length - position)
+        {
+            throw new EndOfStreamException($"Corrupt wire buffer: array count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
         var items = new T[count];
         for (int i = 0; i < count; i++)
         {
@@ -196,6 +215,10 @@ public unsafe ref struct WireReader
     {
         int count = checked((int)ReadU32());
         if (count == 0) return new List<T>(0);
+        if (count > span.Length - position)
+        {
+            throw new EndOfStreamException($"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
         var list = new List<T>(count);
         for (int i = 0; i < count; i++)
         {
@@ -211,12 +234,29 @@ public unsafe ref struct WireReader
         if (remainingBytes == 0 || elemSize == 0) return new List<T>(0);
         int count = remainingBytes / elemSize;
         var list = new List<T>(count);
-        var srcSpan = MemoryMarshal.Cast<byte, T>(span.Slice(position, count * elemSize));
-        for (int i = 0; i < count; i++)
+        CollectionsMarshal.SetCount(list, count);
+        var dest = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(list));
+        int totalBytes = count * elemSize;
+        span.Slice(position, totalBytes).CopyTo(dest);
+        position += totalBytes;
+        return list;
+    }
+
+    public List<T> ReadUnmanagedList<T>() where T : unmanaged
+    {
+        int count = checked((int)ReadU32());
+        if (count == 0) return new List<T>(0);
+        int elemSize = Unsafe.SizeOf<T>();
+        long bytesNeeded = (long)count * elemSize;
+        if (bytesNeeded > span.Length - position)
         {
-            list.Add(srcSpan[i]);
+            ThrowCorruptWireBuffer($"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {span.Length - position}");
         }
-        position += count * elemSize;
+        var list = new List<T>(count);
+        CollectionsMarshal.SetCount(list, count);
+        var dest = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(list));
+        span.Slice(position, (int)bytesNeeded).CopyTo(dest);
+        position += (int)bytesNeeded;
         return list;
     }
 
@@ -224,6 +264,11 @@ public unsafe ref struct WireReader
         where TKey : notnull
     {
         int count = checked((int)ReadU32());
+        if (count == 0) return new Dictionary<TKey, TValue>(0);
+        if ((long)count * 2 > span.Length - position)
+        {
+            throw new EndOfStreamException($"Corrupt wire buffer: map count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
         var map = new Dictionary<TKey, TValue>(count);
         for (int i = 0; i < count; i++)
         {

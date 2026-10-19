@@ -1,7 +1,9 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace UniFFISharp.BoltFfi;
@@ -18,6 +20,7 @@ public sealed class WireWriter
 
     private byte[] buffer;
     private int position;
+    private bool _fromArrayPool;
 
     /// <summary>
     /// Rents a reusable WireWriter instance from the thread-local pool.
@@ -43,6 +46,13 @@ public sealed class WireWriter
     public static void Return(WireWriter? writer)
     {
         if (writer == null) return;
+        if (writer._fromArrayPool)
+        {
+            ArrayPool<byte>.Shared.Return(writer.buffer);
+            writer.buffer = Array.Empty<byte>();
+            writer._fromArrayPool = false;
+            return;
+        }
         if (writer.buffer.Length > MaxCachedBufferCapacity) return;
 
         var pool = t_pool;
@@ -81,8 +91,23 @@ public sealed class WireWriter
         if (position + count > buffer.Length)
         {
             int newCap = Math.Max(buffer.Length * 2, position + count);
-            var newBuf = new byte[newCap];
+            byte[] newBuf;
+            bool wasFromPool = _fromArrayPool;
+            if (newCap > MaxCachedBufferCapacity)
+            {
+                newBuf = ArrayPool<byte>.Shared.Rent(newCap);
+                _fromArrayPool = true;
+            }
+            else
+            {
+                newBuf = new byte[newCap];
+                _fromArrayPool = false;
+            }
             global::System.Buffer.BlockCopy(buffer, 0, newBuf, 0, position);
+            if (wasFromPool)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
             buffer = newBuf;
         }
     }
@@ -170,12 +195,11 @@ public sealed class WireWriter
             WriteU32(0);
             return;
         }
-        int utf8Len = Encoding.UTF8.GetByteCount(str);
-        EnsureCapacity(4 + utf8Len);
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(position), (uint)utf8Len);
-        position += 4;
-        Encoding.UTF8.GetBytes(str, 0, str.Length, buffer, position);
-        position += utf8Len;
+        int maxBytes = 4 + checked(str.Length * 3);
+        EnsureCapacity(maxBytes);
+        int bytesWritten = Encoding.UTF8.GetBytes(str.AsSpan(), buffer.AsSpan(position + 4, buffer.Length - (position + 4)));
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(position, 4), (uint)bytesWritten);
+        position += 4 + bytesWritten;
     }
 
     public void WriteBytes(byte[]? bytes)
@@ -244,6 +268,34 @@ public sealed class WireWriter
         {
             elementWriter(this, items[i]);
         }
+    }
+
+    public void WriteUnmanagedList<T>(IReadOnlyList<T>? items) where T : unmanaged
+    {
+        if (items == null || items.Count == 0)
+        {
+            WriteU32(0);
+            return;
+        }
+        int count = items.Count;
+        WriteU32((uint)count);
+        int elemSize = Unsafe.SizeOf<T>();
+        int byteSize = checked(count * elemSize);
+        EnsureCapacity(byteSize);
+        if (items is List<T> list)
+        {
+            var src = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(list));
+            src.CopyTo(buffer.AsSpan(position, byteSize));
+        }
+        else
+        {
+            for (int i = 0; i < count; i++)
+            {
+                T val = items[i];
+                MemoryMarshal.AsBytes(new ReadOnlySpan<T>(in val)).CopyTo(buffer.AsSpan(position + i * elemSize, elemSize));
+            }
+        }
+        position += byteSize;
     }
 
     public void WriteMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue>? map, Action<WireWriter, TKey> keyWriter, Action<WireWriter, TValue> valueWriter)

@@ -30,8 +30,15 @@ public static class BoltFfiStreamHelper
                     yield return item;
                 }
                 if (items.Length != 0) continue;
-                int waitResult = await Task.Run(() => wait(subscription, waitTimeoutMs), cancellationToken).ConfigureAwait(false);
-                if (waitResult < 0) yield break;
+                // Fast non-blocking probe (timeout = 0)
+                int probeResult = wait(subscription, 0);
+                if (probeResult < 0) yield break;
+                if (probeResult == 0)
+                {
+                    // No data available: cooperative async backoff to prevent ThreadPool starvation
+                    int delayMs = waitTimeoutMs > 0 ? Math.Min(waitTimeoutMs, 10) : 10;
+                    await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         finally

@@ -54,6 +54,8 @@ public static class CodeGenerator
         cb.AppendLine("using UniFFISharp.Callbacks;");
         cb.AppendLine("using UniFFISharp.Async;");
         cb.AppendLine();
+        cb.AppendLine("[module: global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        cb.AppendLine();
         cb.AppendLine($"namespace {ns};");
         cb.AppendLine();
         cb.AppendLine($"using _UniFFILib = _UniFFILib_{crateNorm};");
@@ -412,40 +414,85 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine();
-            using (cb.Block($"public override int AllocationSize(List<{innerCsType}> value)"))
+            if (TypeHelper.IsFfiPrimitive(inner))
             {
-                cb.AppendLine("if (value == null) return 4;");
-                cb.AppendLine("int size = 4;");
-                using (cb.Block("foreach (var item in value)"))
+                string typeIdent = TypeHelper.ToTypeIdentifier(inner);
+                TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+                using (cb.Block($"public override int AllocationSize(List<{innerCsType}> value)"))
                 {
-                    cb.AppendLine($"size += {innerConverter}.AllocationSize(item);");
+                    cb.AppendLine($"return value == null ? 4 : checked(4 + value.Count * {elemSize});");
                 }
-                cb.AppendLine("return size;");
-            }
-            cb.AppendLine();
-            using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
-            {
-                using (cb.Block("if (value == null)"))
+                cb.AppendLine();
+                using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
                 {
-                    cb.AppendLine("stream.WriteInt32(0);");
-                    cb.AppendLine("return;");
+                    cb.AppendLine($"stream.Write{typeIdent}List(value);");
                 }
-                cb.AppendLine("stream.WriteInt32(value.Count);");
-                using (cb.Block("foreach (var item in value)"))
+                cb.AppendLine();
+                using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
                 {
-                    cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
+                    cb.AppendLine($"return stream.Read{typeIdent}List();");
                 }
             }
-            cb.AppendLine();
-            using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
+            else
             {
-                cb.AppendLine("int count = stream.ReadInt32();");
-                cb.AppendLine($"var list = new List<{innerCsType}>(count);");
-                using (cb.Block("for (int i = 0; i < count; i++)"))
+                bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+                using (cb.Block($"public override int AllocationSize(List<{innerCsType}> value)"))
                 {
-                    cb.AppendLine($"list.Add({innerConverter}.Read(ref stream));");
+                    if (isFixed)
+                    {
+                        cb.AppendLine($"return value == null ? 4 : checked(4 + value.Count * {elemSize});");
+                    }
+                    else
+                    {
+                        cb.AppendLine("if (value == null) return 4;");
+                        cb.AppendLine("int size = 4;");
+                        using (cb.Block("foreach (var item in value)"))
+                        {
+                            cb.AppendLine($"size += {innerConverter}.AllocationSize(item);");
+                        }
+                        cb.AppendLine("return size;");
+                    }
                 }
-                cb.AppendLine("return list;");
+                cb.AppendLine();
+                using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
+                {
+                    using (cb.Block("if (value == null)"))
+                    {
+                        cb.AppendLine("stream.WriteInt32(0);");
+                        cb.AppendLine("return;");
+                    }
+                    cb.AppendLine("stream.WriteInt32(value.Count);");
+                    using (cb.Block("foreach (var item in value)"))
+                    {
+                        cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
+                    }
+                }
+                cb.AppendLine();
+                using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
+                {
+                    cb.AppendLine("int count = stream.ReadInt32();");
+                    int minBytes = isFixed ? elemSize : 1;
+                    if (minBytes > 1)
+                    {
+                        using (cb.Block($"if (count < 0 || (long)count * {minBytes} > stream.Remaining)"))
+                        {
+                            cb.AppendLine("throw new UniffiException($\"Corrupt stream: sequence count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                        }
+                    }
+                    else
+                    {
+                        using (cb.Block("if (count < 0 || count > stream.Remaining)"))
+                        {
+                            cb.AppendLine("throw new UniffiException($\"Corrupt stream: sequence count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                        }
+                    }
+                    cb.AppendLine($"var list = new List<{innerCsType}>(count);");
+                    using (cb.Block("for (int i = 0; i < count; i++)"))
+                    {
+                        cb.AppendLine($"list.Add({innerConverter}.Read(ref stream));");
+                    }
+                    cb.AppendLine("return list;");
+                }
             }
         }
         cb.AppendLine();
@@ -461,6 +508,11 @@ public static class CodeGenerator
         string valConverter = TypeHelper.ConverterInstance(val, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
+        bool keyFixed = TypeHelper.TryGetFixedAllocationSize(key, out int keySize);
+        bool valFixed = TypeHelper.TryGetFixedAllocationSize(val, out int valSize);
+        bool isFixed = keyFixed && valFixed;
+        int pairSize = isFixed ? (keySize + valSize) : 2;
+
         using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<Dictionary<{keyCsType}, {valCsType}>>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
@@ -470,13 +522,20 @@ public static class CodeGenerator
             cb.AppendLine();
             using (cb.Block($"public override int AllocationSize(Dictionary<{keyCsType}, {valCsType}> value)"))
             {
-                cb.AppendLine("if (value == null) return 4;");
-                cb.AppendLine("int size = 4;");
-                using (cb.Block("foreach (var kv in value)"))
+                if (isFixed)
                 {
-                    cb.AppendLine($"size += {keyConverter}.AllocationSize(kv.Key) + {valConverter}.AllocationSize(kv.Value);");
+                    cb.AppendLine($"return value == null ? 4 : checked(4 + value.Count * {pairSize});");
                 }
-                cb.AppendLine("return size;");
+                else
+                {
+                    cb.AppendLine("if (value == null) return 4;");
+                    cb.AppendLine("int size = 4;");
+                    using (cb.Block("foreach (var kv in value)"))
+                    {
+                        cb.AppendLine($"size += {keyConverter}.AllocationSize(kv.Key) + {valConverter}.AllocationSize(kv.Value);");
+                    }
+                    cb.AppendLine("return size;");
+                }
             }
             cb.AppendLine();
             using (cb.Block($"public override void Write(Dictionary<{keyCsType}, {valCsType}> value, ref BigEndianStream stream)"))
@@ -497,6 +556,10 @@ public static class CodeGenerator
             using (cb.Block($"public override Dictionary<{keyCsType}, {valCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
+                using (cb.Block($"if (count < 0 || (long)count * {pairSize} > stream.Remaining)"))
+                {
+                    cb.AppendLine("throw new UniffiException($\"Corrupt stream: map count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                }
                 cb.AppendLine($"var dict = new Dictionary<{keyCsType}, {valCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
@@ -517,6 +580,9 @@ public static class CodeGenerator
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
+        bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+        int minBytes = isFixed ? elemSize : 1;
+
         using (cb.Block($"public sealed partial class {convName} : FfiConverterRustBuffer<HashSet<{innerCsType}>>"))
         {
             cb.AppendLine($"public static readonly {convName} INSTANCE = new();");
@@ -526,13 +592,20 @@ public static class CodeGenerator
             cb.AppendLine();
             using (cb.Block($"public override int AllocationSize(HashSet<{innerCsType}> value)"))
             {
-                cb.AppendLine("if (value == null) return 4;");
-                cb.AppendLine("int size = 4;");
-                using (cb.Block("foreach (var item in value)"))
+                if (isFixed)
                 {
-                    cb.AppendLine($"size += {innerConverter}.AllocationSize(item);");
+                    cb.AppendLine($"return value == null ? 4 : checked(4 + value.Count * {elemSize});");
                 }
-                cb.AppendLine("return size;");
+                else
+                {
+                    cb.AppendLine("if (value == null) return 4;");
+                    cb.AppendLine("int size = 4;");
+                    using (cb.Block("foreach (var item in value)"))
+                    {
+                        cb.AppendLine($"size += {innerConverter}.AllocationSize(item);");
+                    }
+                    cb.AppendLine("return size;");
+                }
             }
             cb.AppendLine();
             using (cb.Block($"public override void Write(HashSet<{innerCsType}> value, ref BigEndianStream stream)"))
@@ -552,6 +625,20 @@ public static class CodeGenerator
             using (cb.Block($"public override HashSet<{innerCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
+                if (minBytes > 1)
+                {
+                    using (cb.Block($"if (count < 0 || (long)count * {minBytes} > stream.Remaining)"))
+                    {
+                        cb.AppendLine("throw new UniffiException($\"Corrupt stream: set count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                    }
+                }
+                else
+                {
+                    using (cb.Block("if (count < 0 || count > stream.Remaining)"))
+                    {
+                        cb.AppendLine("throw new UniffiException($\"Corrupt stream: set count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                    }
+                }
                 cb.AppendLine($"var set = new HashSet<{innerCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
@@ -2012,18 +2099,22 @@ public static class CodeGenerator
                 string rawRetType = m.ReturnType != null ? TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver) : "void";
                 string retType = m.IsAsync ? (m.ReturnType != null ? $"Task<{rawRetType}>" : "Task") : rawRetType;
                 var paramDecls = new List<string>();
+                var preLowerStmts = new List<string>();
                 var callArgs = new List<string>();
                 foreach (var p in m.Inputs)
                 {
                     string def = p.DefaultValue != null ? $" = {p.DefaultValue}" : "";
-                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))}{def}");
+                    string pEscaped = TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name));
+                    paramDecls.Add($"{TypeHelper.ToCSharpType(p.Type, crateNorm, namespaceResolver)} {pEscaped}{def}");
                     if (TypeHelper.IsFfiPrimitive(p.Type))
                     {
-                        callArgs.Add(TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name)));
+                        callArgs.Add(pEscaped);
                     }
                     else
                     {
-                        callArgs.Add($"{TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lower({TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(p.Name))})");
+                        string loweredVar = $"{TypeHelper.SanitizeIdentifier(TypeHelper.ToCamelCase(p.Name))}_lowered";
+                        preLowerStmts.Add($"var {loweredVar} = {TypeHelper.ConverterInstance(p.Type, crateNorm, namespaceResolver)}.Lower({pEscaped});");
+                        callArgs.Add(loweredVar);
                     }
                 }
 
@@ -2039,11 +2130,13 @@ public static class CodeGenerator
                     var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
                     using (cb.Block($"public async {retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
                     {
+                        foreach (var stmt in preLowerStmts) cb.AppendLine(stmt);
                         cb.AppendLine("IncrementCallCounter();");
                         cb.AppendLine("ulong futureHandle;");
                         using (cb.Block("try"))
                         {
-                            cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix});");
+                            cb.AppendLine("var selfPtr = CloneRustArcPtr();");
+                            cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr{argsPrefix});");
                         }
                         using (cb.Block("finally"))
                         {
@@ -2086,18 +2179,20 @@ public static class CodeGenerator
                     cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
                     using (cb.Block($"public {retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
+                        foreach (var stmt in preLowerStmts) cb.AppendLine(stmt);
                         cb.AppendLine("IncrementCallCounter();");
                         using (cb.Block("try"))
                         {
+                            cb.AppendLine("var selfPtr = CloneRustArcPtr();");
                             cb.AppendLine("var status = new UniffiRustCallStatus();");
                             if (m.ReturnType == null)
                             {
-                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"_UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr{argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                             }
                             else
                             {
-                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(CloneRustArcPtr(){argsPrefix}, ref status);");
+                                cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr{argsPrefix}, ref status);");
                                 cb.AppendLine($"if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status, {errorHandler});");
                                 if (TypeHelper.IsFfiPrimitive(m.ReturnType))
                                 {
