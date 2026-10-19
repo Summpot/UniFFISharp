@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UniFFISharp.Generator.Arbitration;
 using UniFFISharp.Generator.Codegen;
 using UniFFISharp.Generator.Metadata;
@@ -82,5 +84,30 @@ public class BoltFfiCoexistenceTests
         Assert.Contains("public static partial class PixevalNativeMethods", source);
         Assert.Contains("[return: MarshalAs(UnmanagedType.U1)]", source);
         Assert.Contains("[MarshalAs(UnmanagedType.U1)] bool value", source);
+    }
+
+    [Fact]
+    public void ErrorEnumWithUniFfiDefinitionEmitsDecoderExtensionOnly()
+    {
+        string json = """
+        {"magic":"boltffi.bindings","format":{"major":0,"minor":1},"surface":"Native",
+         "package":{"name":{"parts":["test_pkg"]}},
+         "bindings":{"Native":{"decls":[
+            {"Enum":{"Data":{"name":{"parts":["config","error"]},"role":"ErrorPayload",
+             "variants":[{"name":{"parts":["io"]},"tag":0,"payload":{"Struct":[{"key":{"Named":{"parts":["message"]}},"ty":"String"}]}},
+                         {"name":{"parts":["yaml"]},"tag":1,"payload":{"Struct":[{"key":{"Named":{"parts":["message"]}},"ty":"String"}]}}]}}}
+         ]}}}
+        """;
+        var envelope = BoltFfiMetadataEnvelope.Parse(json)!;
+        var uniffiErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ConfigError" };
+        string source = BoltFfiCodeGenerator.Generate(envelope, "test.dll", "Test.Namespace", uniffiDefinedErrorEnums: uniffiErrors);
+
+        Assert.Contains("public partial class ConfigError", source);
+        Assert.Contains("internal static ConfigError Decode(ref WireReader reader)", source);
+        Assert.Contains("0 => new ConfigError.Io(reader.ReadString())", source);
+        Assert.Contains("1 => new ConfigError.Yaml(reader.ReadString())", source);
+        // It should NOT declare the variant child classes or constructors (UniFFI owns those)
+        Assert.DoesNotContain("public sealed partial class Io", source);
+        Assert.DoesNotContain("protected ConfigError(", source);
     }
 }

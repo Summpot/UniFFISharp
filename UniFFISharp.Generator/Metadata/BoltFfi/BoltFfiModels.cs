@@ -16,6 +16,7 @@ public sealed class BoltFfiMetadataEnvelope
     public BoltFfiPackageInfo Package { get; set; } = new();
     public string ContractHash { get; set; } = string.Empty;
     public BoltFfiSerializedBindings Bindings { get; set; } = new();
+    public string RawJson { get; set; } = string.Empty;
 
     public bool IsValid => Magic == "boltffi.bindings";
 
@@ -24,7 +25,9 @@ public sealed class BoltFfiMetadataEnvelope
         try
         {
             var node = JsonNode.Parse(json);
-            return FromJson(node);
+            var env = FromJson(node);
+            if (env != null) env.RawJson = json;
+            return env;
         }
         catch
         {
@@ -279,6 +282,7 @@ public sealed class BoltFfiNativeBindings
                     foreach (var init in decl.Class.Initializers)
                     {
                         init.ReturnType = new BoltFfiType { Kind = BoltFfiTypeKind.Class, CustomTypeName = decl.Class.Name.ToPascalCase() };
+                        ResolveType(init.ErrorType);
                         foreach (var p in init.Parameters) ResolveType(p.Type);
                     }
                     foreach (var m in decl.Class.Methods)
@@ -517,7 +521,9 @@ public sealed class BoltFfiEnumDecl
         {
             enumDecl.IsCStyle = true;
         }
-        if (target["is_error"]?.AsBool() == true)
+        if (target["is_error"]?.AsBool() == true ||
+            node["role"]?.AsString() == "ErrorPayload" ||
+            target["role"]?.AsString() == "ErrorPayload")
         {
             enumDecl.IsError = true;
         }
@@ -658,7 +664,9 @@ public sealed class BoltFfiFunctionDecl
             if (err is JsonObject && err["None"] == null)
             {
                 func.HasError = true;
-                if (err["Payload"] is JsonNode pNode) func.ErrorType = BoltFfiType.FromJson(pNode["ty"] ?? pNode);
+                if (err["EncodedViaReturnSlot"] is JsonNode encSlot) func.ErrorType = BoltFfiType.FromJson(encSlot["ty"] ?? encSlot);
+                else if (err["EncodedViaOutPointer"] is JsonNode encOut) func.ErrorType = BoltFfiType.FromJson(encOut["ty"] ?? encOut);
+                else if (err["Payload"] is JsonNode pNode) func.ErrorType = BoltFfiType.FromJson(pNode["ty"] ?? pNode);
                 else if (err["Custom"] != null) func.ErrorType = BoltFfiType.FromJson(err["Custom"]);
                 else if (err["Enum"] != null) func.ErrorType = BoltFfiType.FromJson(err);
                 else if (err["Record"] != null) func.ErrorType = BoltFfiType.FromJson(err);
@@ -696,6 +704,31 @@ public sealed class BoltFfiFunctionDecl
                     else if (plan["DirectViaOutPointer"] is JsonNode slot4)
                     {
                         func.ReturnType = BoltFfiType.FromDirectValue(slot4["ty"] ?? slot4);
+                    }
+                    else if (plan["EncodedViaOutPointer"] is JsonNode slot5)
+                    {
+                        func.ReturnType = BoltFfiType.FromJson(slot5["ty"] ?? slot5);
+                    }
+                    else if (plan["HandleViaOutPointer"] is JsonNode slot6)
+                    {
+                        func.ReturnType = BoltFfiType.FromJson(slot6["target"] ?? slot6);
+                    }
+                    else if ((plan["DirectVecViaReturnSlot"] ?? plan["DirectVecViaOutPointer"]) is JsonNode slot7)
+                    {
+                        func.ReturnType = new BoltFfiType
+                        {
+                            Kind = BoltFfiTypeKind.Sequence,
+                            InnerType = BoltFfiType.FromDirectValue(slot7["element"] ?? slot7),
+                            IsDirectVec = true
+                        };
+                    }
+                    else if ((plan["EncodedVecViaReturnSlot"] ?? plan["EncodedVecViaOutPointer"]) is JsonNode slot8)
+                    {
+                        func.ReturnType = new BoltFfiType
+                        {
+                            Kind = BoltFfiTypeKind.Sequence,
+                            InnerType = BoltFfiType.FromJson(slot8["element"] ?? slot8["ty"] ?? slot8)
+                        };
                     }
                 }
                 else if (returns["Value"] != null)
@@ -913,6 +946,7 @@ public sealed class BoltFfiType
     public BoltFfiType? ValueType { get; set; }
     public bool IsDirectRecord { get; set; } = true;
     public bool IsCStyleEnum { get; set; } = true;
+    public bool IsDirectVec { get; set; }
 
     public static BoltFfiType Void => new() { Kind = BoltFfiTypeKind.Void };
     public static BoltFfiType Primitive(BoltFfiTypeKind kind) => new() { Kind = kind };
@@ -1105,6 +1139,47 @@ public sealed class BoltFfiType
         {
             if (val["Direct"] is JsonNode d) return FromDirectValue(d["ty"] ?? d);
             if (val["Encoded"] is JsonNode e) return FromJson(e["ty"] ?? e);
+            if (val["DirectVec"] is JsonNode dv)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Sequence,
+                    InnerType = FromDirectValue(dv["element"] ?? dv),
+                    IsDirectVec = true
+                };
+            }
+            if (val["EncodedVec"] is JsonNode ev)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Sequence,
+                    InnerType = FromJson(ev["element"] ?? ev["ty"] ?? ev)
+                };
+            }
+            if (val["ScalarOption"] is JsonNode so)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Option,
+                    InnerType = ParsePrimitive(so["primitive"]?.AsString() ?? so.AsString())
+                };
+            }
+            if (val["DirectOption"] is JsonNode doNode)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Option,
+                    InnerType = FromDirectValue(doNode["ty"] ?? doNode["element"] ?? doNode)
+                };
+            }
+            if (val["EncodedOption"] is JsonNode eoNode)
+            {
+                return new BoltFfiType
+                {
+                    Kind = BoltFfiTypeKind.Option,
+                    InnerType = FromJson(eoNode["ty"] ?? eoNode["element"] ?? eoNode)
+                };
+            }
             if (val["Handle"] is JsonNode h)
             {
                 var target = h["target"];
@@ -1153,6 +1228,47 @@ public sealed class BoltFfiType
         if (node["Encoded"] is JsonNode enc)
         {
             return FromJson(enc["ty"] ?? enc);
+        }
+        if (node["DirectVec"] is JsonNode dvNode)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Sequence,
+                InnerType = FromDirectValue(dvNode["element"] ?? dvNode),
+                IsDirectVec = true
+            };
+        }
+        if (node["EncodedVec"] is JsonNode evNode)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Sequence,
+                InnerType = FromJson(evNode["element"] ?? evNode["ty"] ?? evNode)
+            };
+        }
+        if (node["ScalarOption"] is JsonNode soTop)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Option,
+                InnerType = ParsePrimitive(soTop["primitive"]?.AsString() ?? soTop.AsString())
+            };
+        }
+        if (node["DirectOption"] is JsonNode doTop)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Option,
+                InnerType = FromDirectValue(doTop["ty"] ?? doTop["element"] ?? doTop)
+            };
+        }
+        if (node["EncodedOption"] is JsonNode eoTop)
+        {
+            return new BoltFfiType
+            {
+                Kind = BoltFfiTypeKind.Option,
+                InnerType = FromJson(eoTop["ty"] ?? eoTop["element"] ?? eoTop)
+            };
         }
         return FromJson(node);
     }

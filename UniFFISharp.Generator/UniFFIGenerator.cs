@@ -335,6 +335,19 @@ namespace UniFFISharp
                     return nsConfig.ResolveNamespace(norm, false);
                 };
 
+                var allUniffiErrorEnums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in validCis)
+                {
+                    foreach (var e in c.Enums)
+                    {
+                        if (e.Shape == EnumShape.ErrorFlat || e.Shape == EnumShape.ErrorComplex)
+                        {
+                            allUniffiErrorEnums.Add(e.Name);
+                            allUniffiErrorEnums.Add(TypeHelper.ToPascalCase(e.Name));
+                        }
+                    }
+                }
+
                 // Collision detection and arbitration
                 if (boltEnvelopes != null && boltEnvelopes.Count > 0)
                 {
@@ -390,31 +403,38 @@ namespace UniFFISharp
                                 {
                                     var uniffiSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                                     foreach (var r in matchedCi.Records) uniffiSymbols.Add(r.Name);
-                                    foreach (var e in matchedCi.Enums) uniffiSymbols.Add(e.Name);
+                                    foreach (var e in matchedCi.Enums)
+                                    {
+                                        if (e.Shape != EnumShape.ErrorFlat && e.Shape != EnumShape.ErrorComplex)
+                                        {
+                                            uniffiSymbols.Add(e.Name);
+                                        }
+                                    }
                                     foreach (var o in matchedCi.Objects) uniffiSymbols.Add(o.Name);
                                     foreach (var ci in matchedCi.CallbackInterfaces) uniffiSymbols.Add(ci.Name);
 
-                                    // Drop colliding symbols from BoltFFI
+                                    // Drop colliding symbols from BoltFFI (keeping error enums for decoder generation)
                                     env.Bindings.Native.Decls.RemoveAll(d => uniffiSymbols.Contains(d.DeclName));
                                 }
                                 else
                                 {
-                                    // Drop colliding C-style enums and error enums from BoltFFI so UniFFI's canonical representations
-                                    // (1-indexed flat enums and UniffiException error hierarchies) are preserved.
+                                    // Drop colliding C-style enums from BoltFFI so UniFFI's canonical representations
+                                    // (1-indexed flat enums) are preserved.
+                                    // Error enums are kept in BoltFFI to emit partial class Decode extensions,
+                                    // integrating with UniFFI's UniffiException error hierarchies.
                                     // Tagged unions / data enums are preserved in BoltFFI so they can emit C# 15 native unions with Decode/Encode.
-                                    var uniffiNonTaggedEnums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    var uniffiCStyleEnums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                                     foreach (var e in matchedCi.Enums)
                                     {
-                                        if (e.Shape == EnumShape.ErrorFlat || e.Shape == EnumShape.ErrorComplex ||
-                                            (e.Shape == EnumShape.Enum && e.Variants.All(v => v.Fields.Count == 0)))
+                                        if (e.Shape == EnumShape.Enum && e.Variants.All(v => v.Fields.Count == 0))
                                         {
-                                            uniffiNonTaggedEnums.Add(e.Name);
+                                            uniffiCStyleEnums.Add(e.Name);
                                         }
                                     }
 
                                     env.Bindings.Native.Decls.RemoveAll(d =>
                                         d.Kind == BoltFfiDeclKind.Enum &&
-                                        uniffiNonTaggedEnums.Contains(d.DeclName));
+                                        uniffiCStyleEnums.Contains(d.DeclName));
 
                                     boltMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                     uniffiMethodConfigs = new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
@@ -500,7 +520,7 @@ namespace UniFFISharp
                                             overrideEngine = InteropEngine.UniFFI;
                                         }
 
-                                        var decision = InteropArbitrator.Arbitrate(uniffiFn, boltFn, overrideEngine);
+                                        var decision = InteropArbitrator.Arbitrate(uniffiFn, boltFn, overrideEngine, matchedCi);
                                         var winningEngine = decision.SelectedEngine;
 
                                         bool shouldWarnSuboptimal = warnSuboptimal.HasValue ? warnSuboptimal.Value : true;
@@ -540,6 +560,7 @@ namespace UniFFISharp
                                     suppressTypeDefinitions = new HashSet<string>(
                                         env.Bindings.Native.Decls.Where(d => !string.IsNullOrEmpty(d.DeclName)).Select(d => d.DeclName),
                                         StringComparer.OrdinalIgnoreCase);
+                                    suppressTypeDefinitions.ExceptWith(allUniffiErrorEnums);
                                     matchedCi.Objects.RemoveAll(o => suppressTypeDefinitions.Contains(o.Name));
                                     matchedCi.CallbackInterfaces.RemoveAll(ci => suppressTypeDefinitions.Contains(ci.Name));
 
@@ -675,7 +696,8 @@ namespace UniFFISharp
                                 additionalUsings: allUsings,
                                 typeToNamespace: typeToNs,
                                 options: codeGenOptions,
-                                callbackImplementations: callbackImplementations);
+                                callbackImplementations: callbackImplementations,
+                                uniffiDefinedErrorEnums: allUniffiErrorEnums);
                             if (!string.IsNullOrEmpty(boltSource))
                             {
                                 productionContext.AddSource(
@@ -758,7 +780,7 @@ namespace UniFFISharp
                                     overrideEngine = InteropEngine.UniFFI;
                                 }
 
-                                var decision = InteropArbitrator.Arbitrate(fn, null, overrideEngine);
+                                var decision = InteropArbitrator.Arbitrate(fn, null, overrideEngine, ci);
                                 if (decision.IsSuboptimalMissingExport)
                                 {
                                     productionContext.ReportDiagnostic(Diagnostic.Create(

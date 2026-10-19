@@ -173,4 +173,19 @@ public class BoltFfiMetadataExtractorTests
         string code = UniFFISharp.Generator.Codegen.BoltFfiCodeGenerator.Generate(envs[0], "test_bolt.dll", "TestBolt");
         System.IO.File.WriteAllText(@"C:\Users\Summp\.gemini\antigravity\brain\9b5fc636-03e2-416c-abef-16eb7bb978cc\scratch\generated_bolt.cs", code);
     }
+
+    [Fact]
+    public void DumpPixevalEnvelopes()
+    {
+        string dllPath = @"C:\Users\Summp\source\repos\Pixeval\src\Pixeval\bin\Debug\net10.0\pixeval_native.dll";
+        var envs = BoltFfiMetadataExtractor.ExtractAll(dllPath);
+        var sb = new StringBuilder();
+        sb.AppendLine($"File exists: {System.IO.File.Exists(dllPath)}, Count: {envs.Count}");
+        foreach (var env in envs)
+        {
+            sb.AppendLine($"Pkg: '{env.Package.PackageName}'");
+            System.IO.File.WriteAllText($@"C:\Users\Summp\source\repos\UniFFISharp\dump_{env.Package.PackageName}.json", env.RawJson);
+        }
+        System.IO.File.WriteAllText(@"C:\Users\Summp\source\repos\UniFFISharp\dump_info.txt", sb.ToString());
+    }
 }

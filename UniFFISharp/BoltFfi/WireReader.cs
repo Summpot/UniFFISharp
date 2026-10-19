@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace UniFFISharp.BoltFfi;
@@ -200,6 +201,22 @@ public unsafe ref struct WireReader
         {
             list.Add(elementReader(ref this));
         }
+        return list;
+    }
+
+    public List<T> ReadDirectList<T>() where T : unmanaged
+    {
+        int remainingBytes = span.Length - position;
+        int elemSize = Unsafe.SizeOf<T>();
+        if (remainingBytes == 0 || elemSize == 0) return new List<T>(0);
+        int count = remainingBytes / elemSize;
+        var list = new List<T>(count);
+        var srcSpan = MemoryMarshal.Cast<byte, T>(span.Slice(position, count * elemSize));
+        for (int i = 0; i < count; i++)
+        {
+            list.Add(srcSpan[i]);
+        }
+        position += count * elemSize;
         return list;
     }
 

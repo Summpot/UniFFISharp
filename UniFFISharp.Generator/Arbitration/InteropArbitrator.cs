@@ -47,18 +47,22 @@ public static class InteropArbitrator
     /// <summary>
     /// Arbitrates between UniFFI and BoltFFI for a given function signature,
     /// returning detailed decision metadata including suboptimal missing export detection.
+    /// <summary>
+    /// Arbitrates between UniFFI and BoltFFI for a given function signature,
+    /// returning detailed decision metadata including suboptimal missing export detection.
     /// </summary>
     public static ArbitrationDecision Arbitrate(
         FnMetadata? uniffiFn,
         BoltFfiFunctionDecl? boltFn,
-        InteropEngine overrideEngine = InteropEngine.Auto)
+        InteropEngine overrideEngine = InteropEngine.Auto,
+        ComponentInterface? ci = null)
     {
         if (uniffiFn == null && boltFn == null)
         {
             return new ArbitrationDecision(InteropEngine.Auto, InteropEngine.Auto, false, null);
         }
 
-        var (optimalEngine, reason) = PredictOptimalEngine(uniffiFn, boltFn);
+        var (optimalEngine, reason) = PredictOptimalEngine(uniffiFn, boltFn, ci);
 
         InteropEngine selectedEngine;
         if (uniffiFn != null && boltFn != null)
@@ -100,13 +104,15 @@ public static class InteropArbitrator
     /// <param name="uniffiFn">Metadata of the UniFFI function declaration, if available.</param>
     /// <param name="boltFn">Metadata of the BoltFFI function declaration, if available.</param>
     /// <param name="overrideEngine">Explicit override engine specified by user attribute or configuration.</param>
+    /// <param name="ci">Component interface containing record definitions, if available.</param>
     /// <returns>The winning <see cref="InteropEngine"/> that should emit the method.</returns>
     public static InteropEngine SelectBestEngine(
         FnMetadata? uniffiFn,
         BoltFfiFunctionDecl? boltFn,
-        InteropEngine overrideEngine = InteropEngine.Auto)
+        InteropEngine overrideEngine = InteropEngine.Auto,
+        ComponentInterface? ci = null)
     {
-        return Arbitrate(uniffiFn, boltFn, overrideEngine).SelectedEngine;
+        return Arbitrate(uniffiFn, boltFn, overrideEngine, ci).SelectedEngine;
     }
 
     /// <summary>
@@ -115,7 +121,8 @@ public static class InteropArbitrator
     /// </summary>
     public static (InteropEngine Optimal, string? Reason) PredictOptimalEngine(
         FnMetadata? uniffiFn,
-        BoltFfiFunctionDecl? boltFn)
+        BoltFfiFunctionDecl? boltFn,
+        ComponentInterface? ci = null)
     {
         // 1. Fallible pure scalar operations (Result<Scalar, Error>):
         // UniFFI returns the scalar directly in the CPU register (RAX/XMM0) and passes 'ref UniffiRustCallStatus'
@@ -142,7 +149,7 @@ public static class InteropArbitrator
         // Complex record returns favor UniFFI's decoder: QueryComplexEntities50 takes
         // 18.17 us vs BoltFFI's 19.15 us, with the same 25,656B allocation.
         // Apply this decoding heuristic through optional/collection wrappers, but keep direct records on BoltFFI.
-        if (ContainsEncodedRecordReturn(uniffiFn, boltFn))
+        if (ContainsEncodedRecordReturn(uniffiFn, boltFn, ci))
         {
             return (InteropEngine.UniFFI, "UniFFI record decoding has lower overhead on returns");
         }
@@ -254,7 +261,7 @@ public static class InteropArbitrator
         return stringInputsCount <= 1 && otherInputsScalar;
     }
 
-    private static bool ContainsEncodedRecordReturn(FnMetadata? uniffiFn, BoltFfiFunctionDecl? boltFn)
+    private static bool ContainsEncodedRecordReturn(FnMetadata? uniffiFn, BoltFfiFunctionDecl? boltFn, ComponentInterface? ci = null)
     {
         if (boltFn != null)
         {
@@ -262,6 +269,18 @@ public static class InteropArbitrator
         }
         if (uniffiFn?.ReturnType != null)
         {
+            if (uniffiFn.ReturnType.Kind == TypeKind.Record)
+            {
+                if (ci != null)
+                {
+                    var rec = ci.Records.FirstOrDefault(r => string.Equals(r.Name, uniffiFn.ReturnType.Name, StringComparison.OrdinalIgnoreCase));
+                    if (rec != null)
+                    {
+                        bool isDirect = rec.Fields.Count > 0 && rec.Fields.All(f => IsScalarPrimitive(f.Type));
+                        return !isDirect;
+                    }
+                }
+            }
             return ContainsUniFFICollectionOfRecords(uniffiFn.ReturnType);
         }
         return false;
@@ -277,7 +296,7 @@ public static class InteropArbitrator
                 (type.KeyType != null && (type.KeyType.Kind == TypeKind.Record || ContainsUniFFICollectionOfRecords(type.KeyType))) ||
                 (type.ValueType != null && (type.ValueType.Kind == TypeKind.Record || ContainsUniFFICollectionOfRecords(type.ValueType))),
             TypeKind.Option =>
-                type.InnerType != null && ContainsUniFFICollectionOfRecords(type.InnerType),
+                type.InnerType != null && (type.InnerType.Kind == TypeKind.Record || ContainsUniFFICollectionOfRecords(type.InnerType)),
             _ => false
         };
     }

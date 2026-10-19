@@ -10,6 +10,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
 using UniFFISharp.Generator;
+using UniFFISharp.Generator.Arbitration;
 using UniFFISharp.Generator.Codegen;
 using UniFFISharp.Generator.Metadata;
 using UniFFISharp.Generator.Metadata.BoltFfi;
@@ -1558,6 +1559,301 @@ public class BoltFfiCodegenAndArbitrationTests
             .Where(d => d.Severity == DiagnosticSeverity.Error)
             .ToList();
         Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfi_FallibleStringReturn_EmitsValidOutBufAndFree()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""fallible""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""fallible""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""format"", ""yaml""] },
+                                ""symbol"": ""boltffi_parity_fallible_format_yaml"",
+                                ""callable"": {
+                                    ""execution"": ""Sync"",
+                                    ""returns"": {
+                                        ""plan"": {
+                                            ""DirectViaReturnSlot"": {
+                                                ""Primitive"": ""String""
+                                            }
+                                        }
+                                    },
+                                    ""params"": [
+                                        {
+                                            ""name"": { ""parts"": [""input""] },
+                                            ""plan"": { ""Direct"": { ""Primitive"": ""String"" } }
+                                        }
+                                    ],
+                                    ""error"": { ""kind"": ""BoltError"" }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "mock_lib.dll", "Parity.Fallible");
+
+        Assert.Contains("internal static extern FfiBuf boltffi_parity_fallible_format_yaml", source);
+        Assert.Contains("out FfiBuf out_val", source);
+        Assert.Contains("FfiBuf outNativeVal = default;", source);
+        Assert.Contains("out outNativeVal", source);
+        Assert.Contains("try { return outNativeVal.ReadString(); } finally { NativeMethods.boltffi_free_buf(outNativeVal); }", source);
+
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void BoltFfi_FallibleBytesReturn_EmitsValidOutBufAndFree()
+    {
+        string json = @"
+        {
+            ""magic"": ""boltffi.bindings"",
+            ""format"": { ""major"": 0, ""minor"": 1 },
+            ""surface"": ""Native"",
+            ""package"": {
+                ""name"": { ""parts"": [""parity"", ""fallible""] }
+            },
+            ""bindings"": {
+                ""Native"": {
+                    ""package"": {
+                        ""name"": { ""parts"": [""parity"", ""fallible""] }
+                    },
+                    ""decls"": [
+                        {
+                            ""Function"": {
+                                ""name"": { ""parts"": [""build"", ""archive""] },
+                                ""symbol"": ""boltffi_parity_fallible_build_archive"",
+                                ""callable"": {
+                                    ""execution"": ""Sync"",
+                                    ""returns"": {
+                                        ""plan"": {
+                                            ""DirectViaReturnSlot"": {
+                                                ""Primitive"": ""Bytes""
+                                            }
+                                        }
+                                    },
+                                    ""params"": [],
+                                    ""error"": { ""kind"": ""BoltError"" }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }";
+
+        var env = BoltFfiMetadataEnvelope.Parse(json);
+        Assert.NotNull(env);
+
+        string source = BoltFfiCodeGenerator.Generate(env!, "mock_lib.dll", "Parity.Fallible");
+
+        Assert.Contains("internal static extern FfiBuf boltffi_parity_fallible_build_archive", source);
+        Assert.Contains("out FfiBuf out_val", source);
+        Assert.Contains("FfiBuf outNativeVal = default;", source);
+        Assert.Contains("out outNativeVal", source);
+        Assert.Contains("try { return outNativeVal.ToArray(); } finally { NativeMethods.boltffi_free_buf(outNativeVal); }", source);
+
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void UniFfi_EnumConverter_EmitsSwitchMappingInsteadOfDirectCast()
+    {
+        var ci = new ComponentInterface
+        {
+            Namespace = "Sample.Enums",
+            CrateName = "sample_enums",
+            Enums = new List<EnumMetadata>
+            {
+                new()
+                {
+                    Name = "ImageFormat",
+                    Shape = EnumShape.Enum,
+                    Variants = new List<VariantMetadata>
+                    {
+                        new() { Name = "Jpeg" },
+                        new() { Name = "Png" },
+                        new() { Name = "Webp" }
+                    }
+                }
+            }
+        };
+
+        string source = CodeGenerator.Generate(ci, "sample_enums");
+
+        Assert.Contains("public enum ImageFormat", source);
+        Assert.Contains("Jpeg = 0", source);
+        Assert.Contains("Png = 1", source);
+        Assert.Contains("Webp = 2", source);
+
+        // Converter should use explicit variant mapping switch rather than direct (int) cast
+        Assert.Contains("case ImageFormat.Jpeg: stream.WriteInt32(1); break;", source);
+        Assert.Contains("case ImageFormat.Png: stream.WriteInt32(2); break;", source);
+        Assert.Contains("case ImageFormat.Webp: stream.WriteInt32(3); break;", source);
+        Assert.Contains("1 => ImageFormat.Jpeg,", source);
+        Assert.Contains("2 => ImageFormat.Png,", source);
+        Assert.Contains("3 => ImageFormat.Webp,", source);
+        Assert.DoesNotContain("stream.WriteInt32((int)value)", source);
+        Assert.DoesNotContain("(ImageFormat)tag", source);
+
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var errors = syntaxTree.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Arbitrate_ComplexRecordReturn_MissingBoltFfi_SelectsUniFfiWithoutWarning()
+    {
+        var ci = new ComponentInterface
+        {
+            Namespace = "Sample.Models",
+            CrateName = "sample_models",
+            Records = new List<RecordMetadata>
+            {
+                new()
+                {
+                    Name = "FolderSnapshot",
+                    Fields = new List<FieldMetadata>
+                    {
+                        new() { Name = "id", Type = UniFFIType.Primitive(TypeKind.Int64) },
+                        new() { Name = "retry_at", Type = new UniFFIType { Kind = TypeKind.Option, InnerType = UniFFIType.Primitive(TypeKind.Int64) } }
+                    }
+                }
+            }
+        };
+
+        var uniffiFn = new FnMetadata
+        {
+            Name = "compute_snapshot",
+            ReturnType = new UniFFIType { Kind = TypeKind.Record, Name = "FolderSnapshot" },
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "id", Type = UniFFIType.Primitive(TypeKind.Int64) }
+            }
+        };
+
+        var (optimal, reason) = InteropArbitrator.PredictOptimalEngine(uniffiFn, null, ci);
+        Assert.Equal(InteropEngine.UniFFI, optimal);
+        Assert.Contains("record decoding", reason);
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null, InteropEngine.Auto, ci);
+
+        Assert.Equal(InteropEngine.UniFFI, decision.SelectedEngine);
+        Assert.Equal(InteropEngine.UniFFI, decision.OptimalEngine);
+        Assert.False(decision.IsSuboptimalMissingExport);
+        Assert.Null(decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void Arbitrate_OptionRecordReturn_MissingBoltFfi_SelectsUniFfiWithoutWarning()
+    {
+        var uniffiFn = new FnMetadata
+        {
+            Name = "try_find_position",
+            ReturnType = new UniFFIType
+            {
+                Kind = TypeKind.Option,
+                InnerType = new UniFFIType { Kind = TypeKind.Record, Name = "GridPlacement" }
+            },
+            Inputs = new List<FnParamMetadata>
+            {
+                new() { Name = "span", Type = UniFFIType.Primitive(TypeKind.Int32) }
+            }
+        };
+
+        var (optimal, reason) = InteropArbitrator.PredictOptimalEngine(uniffiFn, null);
+        Assert.Equal(InteropEngine.UniFFI, optimal);
+        Assert.Contains("record decoding", reason);
+
+        var decision = InteropArbitrator.Arbitrate(uniffiFn, null, InteropEngine.Auto);
+
+        Assert.Equal(InteropEngine.UniFFI, decision.SelectedEngine);
+        Assert.Equal(InteropEngine.UniFFI, decision.OptimalEngine);
+        Assert.False(decision.IsSuboptimalMissingExport);
+        Assert.Null(decision.PerformanceReason);
+    }
+
+    [Fact]
+    public void BoltFfiModels_DirectVecAndReturnPlanParsing()
+    {
+        string funcJson = @"{
+            ""id"": 15,
+            ""name"": { ""parts"": [""transcode"", ""bytes""], ""source_spelling"": ""transcode_bytes"" },
+            ""symbol"": { ""id"": 15, ""name"": ""boltffi_function_transcode_bytes"" },
+            ""callable"": {
+                ""params"": [
+                    {
+                        ""name"": { ""parts"": [""frame"", ""delays"", ""ms""], ""source_spelling"": ""frame_delays_ms"" },
+                        ""payload"": { ""Value"": { ""DirectVec"": { ""element"": { ""Primitive"": ""U32"" } } } }
+                    }
+                ],
+                ""returns"": {
+                    ""plan"": { ""EncodedViaOutPointer"": { ""ty"": ""Bytes"" } }
+                },
+                ""error"": { ""EncodedViaReturnSlot"": { ""ty"": { ""Enum"": 25 } } }
+            }
+        }";
+
+        var node = UniFFISharp.Generator.Metadata.BoltFfi.JsonNode.Parse(funcJson);
+        var decl = BoltFfiFunctionDecl.FromJson(node);
+
+        Assert.True(decl.HasError);
+        Assert.Equal(BoltFfiTypeKind.Bytes, decl.ReturnType.Kind);
+        Assert.Single(decl.Parameters);
+        Assert.Equal(BoltFfiTypeKind.Sequence, decl.Parameters[0].Type.Kind);
+        Assert.Equal(BoltFfiTypeKind.UInt32, decl.Parameters[0].Type.InnerType?.Kind);
+        Assert.True(UniFFISharp.Generator.Metadata.BoltFfi.BoltFfiCoexistence.CanBind(decl));
+
+        // Test ScalarOption
+        string optionFuncJson = @"{
+            ""id"": 16,
+            ""name"": { ""parts"": [""layout"", ""can"", ""place""], ""source_spelling"": ""layout_can_place"" },
+            ""symbol"": { ""id"": 16, ""name"": ""boltffi_function_layout_can_place"" },
+            ""callable"": {
+                ""params"": [
+                    {
+                        ""name"": { ""parts"": [""moving"", ""index""], ""source_spelling"": ""moving_index"" },
+                        ""payload"": { ""Value"": { ""ScalarOption"": { ""primitive"": ""U32"" } } }
+                    }
+                ],
+                ""returns"": { ""plan"": ""Void"" }
+            }
+        }";
+
+        var optNode = UniFFISharp.Generator.Metadata.BoltFfi.JsonNode.Parse(optionFuncJson);
+        var optDecl = BoltFfiFunctionDecl.FromJson(optNode);
+        Assert.Single(optDecl.Parameters);
+        Assert.Equal(BoltFfiTypeKind.Option, optDecl.Parameters[0].Type.Kind);
+        Assert.Equal(BoltFfiTypeKind.UInt32, optDecl.Parameters[0].Type.InnerType?.Kind);
+        Assert.True(UniFFISharp.Generator.Metadata.BoltFfi.BoltFfiCoexistence.CanBind(optDecl));
     }
 }
 

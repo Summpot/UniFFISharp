@@ -1297,6 +1297,7 @@ public static class CodeGenerator
         options ??= new CodeGeneratorOptions();
         string enumName = TypeHelper.ToPascalCase(enm.Name);
         bool suppressDecl = options.SuppressTypeDefinitions != null &&
+            enm.Shape != EnumShape.ErrorFlat && enm.Shape != EnumShape.ErrorComplex &&
             (options.SuppressTypeDefinitions.Contains(enm.Name) || options.SuppressTypeDefinitions.Contains(enumName));
 
         if (!suppressDecl)
@@ -1316,7 +1317,7 @@ public static class CodeGenerator
                         var v = enm.Variants[i];
                         string comma = (i < enm.Variants.Count - 1) ? "," : "";
                         AppendDocComment(cb, v.Docstring);
-                        cb.AppendLine($"{TypeHelper.ToPascalCase(v.Name)} = {i + 1}{comma}");
+                        cb.AppendLine($"{TypeHelper.ToPascalCase(v.Name)} = {i}{comma}");
                     }
                 }
                 cb.AppendLine();
@@ -1329,30 +1330,52 @@ public static class CodeGenerator
                 cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
                 cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
                 cb.AppendLine($"public override int AllocationSize({enumName} value) => 4;");
-                cb.AppendLine($"public override void Write({enumName} value, ref BigEndianStream stream) => stream.WriteInt32((int)value);");
+                using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
+                {
+                    using (cb.Block("switch (value)"))
+                    {
+                        for (int i = 0; i < enm.Variants.Count; i++)
+                        {
+                            var v = enm.Variants[i];
+                            cb.AppendLine($"case {enumName}.{TypeHelper.ToPascalCase(v.Name)}: stream.WriteInt32({i + 1}); break;");
+                        }
+                        cb.AppendLine("default: throw new global::System.ArgumentOutOfRangeException(nameof(value), value, null);");
+                    }
+                }
                 using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
-                    cb.AppendLine($"return ({enumName})tag;");
+                    using (cb.Block("return tag switch", ";"))
+                    {
+                        for (int i = 0; i < enm.Variants.Count; i++)
+                        {
+                            var v = enm.Variants[i];
+                            cb.AppendLine($"{i + 1} => {enumName}.{TypeHelper.ToPascalCase(v.Name)},");
+                        }
+                        cb.AppendLine($"_ => throw new global::System.ArgumentOutOfRangeException(nameof(stream), $\"Unexpected tag {{tag}} for enum {enumName}\")");
+                    }
                 }
             }
             cb.AppendLine();
         }
         else if (enm.Shape == EnumShape.ErrorFlat)
         {
-            // Flat error enum
-            using (cb.Block($"public partial class {enumName} : UniffiException"))
+            if (!suppressDecl)
             {
-                cb.AppendLine($"public {enumName}(string message) : base(message) {{ }}");
-                cb.AppendLine();
-                foreach (var v in enm.Variants)
+                // Flat error enum
+                using (cb.Block($"public partial class {enumName} : UniffiException"))
                 {
-                    string vName = TypeHelper.ToPascalCase(v.Name);
-                    AppendDocComment(cb, v.Docstring);
-                    cb.AppendLine($"public partial class {vName} : {enumName} {{ public {vName}(string message) : base(message) {{ }} }}");
+                    cb.AppendLine($"public {enumName}(string message) : base(message) {{ }}");
+                    cb.AppendLine();
+                    foreach (var v in enm.Variants)
+                    {
+                        string vName = TypeHelper.ToPascalCase(v.Name);
+                        AppendDocComment(cb, v.Docstring);
+                        cb.AppendLine($"public partial class {vName} : {enumName} {{ public {vName}(string message = \"\") : base(message) {{ }} }}");
+                    }
                 }
+                cb.AppendLine();
             }
-            cb.AppendLine();
 
             using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
             {
@@ -1408,47 +1431,50 @@ public static class CodeGenerator
         }
         else if (enm.Shape == EnumShape.ErrorComplex)
         {
-            // Complex error enum
-            using (cb.Block($"public abstract partial class {enumName} : UniffiException"))
+            if (!suppressDecl)
             {
-                cb.AppendLine($"private {enumName}(string message = \"\") : base(message) {{ }}");
-                cb.AppendLine();
-                foreach (var v in enm.Variants)
+                // Complex error enum
+                using (cb.Block($"public abstract partial class {enumName} : UniffiException"))
                 {
-                    AppendDocComment(cb, v.Docstring);
-                    string vName = TypeHelper.ToPascalCase(v.Name);
-                    if (v.Fields.Count == 0)
+                    cb.AppendLine($"private {enumName}(string message = \"\") : base(message) {{ }}");
+                    cb.AppendLine();
+                    foreach (var v in enm.Variants)
                     {
-                        cb.AppendLine($"public sealed partial class {vName} : {enumName} {{ public {vName}() : base(\"{vName}\") {{ }} }}");
-                    }
-                    else
-                    {
-                        var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
-                        var paramDecls = new List<string>();
-                        foreach (var f in orderedFields)
+                        AppendDocComment(cb, v.Docstring);
+                        string vName = TypeHelper.ToPascalCase(v.Name);
+                        if (v.Fields.Count == 0)
                         {
-                            string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
-                            paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
+                            cb.AppendLine($"public sealed partial class {vName} : {enumName} {{ public {vName}() : base(\"{vName}\") {{ }} }}");
                         }
-                        using (cb.Block($"public sealed partial class {vName} : {enumName}"))
+                        else
                         {
-                            foreach (var f in v.Fields)
+                            var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
+                            var paramDecls = new List<string>();
+                            foreach (var f in orderedFields)
                             {
-                                cb.AppendLine($"public {TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} {{ get; }}");
+                                string def = f.DefaultValue != null ? $" = {f.DefaultValue}" : "";
+                                paramDecls.Add($"{TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}{def}");
                             }
-                            cb.AppendLine();
-                            using (cb.Block($"public {vName}({string.Join(", ", paramDecls)}) : base(\"{vName}\")"))
+                            using (cb.Block($"public sealed partial class {vName} : {enumName}"))
                             {
                                 foreach (var f in v.Fields)
                                 {
-                                    cb.AppendLine($"this.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} = {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))};");
+                                    cb.AppendLine($"public {TypeHelper.ToCSharpType(f.Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} {{ get; }}");
+                                }
+                                cb.AppendLine();
+                                using (cb.Block($"public {vName}({string.Join(", ", paramDecls)}) : base(\"{vName}\")"))
+                                {
+                                    foreach (var f in v.Fields)
+                                    {
+                                        cb.AppendLine($"this.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))} = {TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))};");
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                cb.AppendLine();
             }
-            cb.AppendLine();
 
             using (cb.Block($"public sealed partial class FfiConverterType{enumName} : FfiConverterRustBuffer<{enumName}>, CallStatusErrorHandler<{enumName}>"))
             {
