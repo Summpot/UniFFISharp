@@ -54,8 +54,6 @@ public static class CodeGenerator
         cb.AppendLine("using UniFFISharp.Callbacks;");
         cb.AppendLine("using UniFFISharp.Async;");
         cb.AppendLine();
-        cb.AppendLine("[module: global::System.Runtime.CompilerServices.SkipLocalsInit]");
-        cb.AppendLine();
         cb.AppendLine($"namespace {ns};");
         cb.AppendLine();
         cb.AppendLine($"using _UniFFILib = _UniFFILib_{crateNorm};");

@@ -107,8 +107,6 @@ public static class BoltFfiCodeGenerator
             }
         }
         sb.AppendLine();
-        sb.AppendLine("[module: global::System.Runtime.CompilerServices.SkipLocalsInit]");
-        sb.AppendLine();
 
         // 2. Namespace
         string ns = string.IsNullOrWhiteSpace(targetNamespace) ? cratePascal : targetNamespace;
