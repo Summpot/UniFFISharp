@@ -270,6 +270,14 @@ public sealed class WireWriter
         }
     }
 
+    public void WriteUnmanaged<T>(T value) where T : unmanaged
+    {
+        int size = Unsafe.SizeOf<T>();
+        EnsureCapacity(size);
+        MemoryMarshal.Write(buffer.AsSpan(position, size), in value);
+        position += size;
+    }
+
     public void WriteUnmanagedList<T>(IReadOnlyList<T>? items) where T : unmanaged
     {
         if (items == null || items.Count == 0)

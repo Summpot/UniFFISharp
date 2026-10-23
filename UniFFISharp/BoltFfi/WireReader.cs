@@ -227,6 +227,15 @@ public unsafe ref struct WireReader
         return list;
     }
 
+    public T ReadUnmanaged<T>() where T : unmanaged
+    {
+        int size = Unsafe.SizeOf<T>();
+        Require(size, typeof(T).Name);
+        T value = MemoryMarshal.Read<T>(span.Slice(position, size));
+        position += size;
+        return value;
+    }
+
     public List<T> ReadDirectList<T>() where T : unmanaged
     {
         int remainingBytes = span.Length - position;

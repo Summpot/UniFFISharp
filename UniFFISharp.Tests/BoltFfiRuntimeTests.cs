@@ -11,6 +11,31 @@ namespace UniFFISharp.Tests;
 
 public class BoltFfiRuntimeTests
 {
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct PaddedRecord
+    {
+        public ushort Port;
+        public byte Direction;
+    }
+
+    [Fact]
+    public void DirectRecordsConsumeNativePaddingBeforeFollowingFields()
+    {
+        byte[] fixture = [0x34, 0x12, 2, 0xff, 0x78, 0x56, 0x34, 0x12];
+        var reader = new WireReader(fixture);
+        var record = reader.ReadUnmanaged<PaddedRecord>();
+        Assert.Equal((ushort)0x1234, record.Port);
+        Assert.Equal((byte)2, record.Direction);
+        Assert.Equal(0x12345678u, reader.ReadU32());
+        Assert.Equal(fixture.Length, reader.Position);
+
+        var writer = new WireWriter();
+        writer.WriteUnmanaged(record);
+        writer.WriteU32(0x12345678);
+        Assert.Equal(fixture.Length, writer.Length);
+        Assert.Equal(fixture.AsSpan(4).ToArray(), writer.WrittenSpan.Slice(4).ToArray());
+    }
+
     [Fact]
     public void WireWriterAndReader_RoundTripsPrimitives()
     {
