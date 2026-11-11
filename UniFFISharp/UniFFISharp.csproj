@@ -1,14 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>UniFFISharp</RootNamespace>
     <AssemblyName>UniFFISharp</AssemblyName>
     <PackageId>UniFFISharp</PackageId>
-    <Version>0.3.12</Version>
+    <Version>0.3.13</Version>
     <Authors>Summpot</Authors>
     <Description>Zero-CLI, zero-boilerplate UniFFI binding generator and runtime for Rust + C# interoperability.</Description>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
