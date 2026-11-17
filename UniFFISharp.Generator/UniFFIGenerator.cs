@@ -210,6 +210,20 @@ namespace UniFFISharp
                 return null;
             });
 
+        var skipChecksumsProvider = context.AnalyzerConfigOptionsProvider
+            .Select((options, _) =>
+            {
+                if (options.GlobalOptions.TryGetValue("build_property.UniFFISkipChecksums", out var raw) &&
+                    !string.IsNullOrWhiteSpace(raw))
+                {
+                    if (bool.TryParse(raw.Trim(), out var parsed))
+                    {
+                        return parsed;
+                    }
+                }
+                return false;
+            });
+
         // Separate extraction provider depending only on stamp and engine configuration
         var libraryMetadataProvider = stampProvider
             .Combine(engineProvider)
@@ -233,13 +247,19 @@ namespace UniFFISharp
                     try
                     {
                         string fullPath = Path.GetFullPath(libPath);
-                        var fi = new FileInfo(fullPath);
-                        long ticks = fi.LastWriteTimeUtc.Ticks;
-                        long len = fi.Length;
-                        bool peCached = PeMetadataExtractor.IsCached(fullPath, ticks, len);
-                        bool boltCached = BoltFfiMetadataExtractor.IsCached(fullPath, ticks, len);
+                        string peTarget = PeMetadataExtractor.ResolveTargetFilePath(fullPath);
+                        var peFi = new FileInfo(peTarget);
+                        bool peCached = PeMetadataExtractor.IsCached(fullPath, peFi.LastWriteTimeUtc.Ticks, peFi.Length);
 
-                        byte[]? sharedBytes = (!peCached || !boltCached) ? File.ReadAllBytes(fullPath) : null;
+                        var fullFi = new FileInfo(fullPath);
+                        bool boltCached = BoltFfiMetadataExtractor.IsCached(fullPath, fullFi.LastWriteTimeUtc.Ticks, fullFi.Length);
+
+                        bool canShareBytes =
+                            !fullPath.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) &&
+                            !fullPath.EndsWith(".a", StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(peTarget, fullPath, StringComparison.OrdinalIgnoreCase);
+
+                        byte[]? sharedBytes = (canShareBytes && (!peCached || !boltCached)) ? File.ReadAllBytes(fullPath) : null;
                         ciList = PeMetadataExtractor.ExtractAll(fullPath, sharedBytes);
                         boltEnvelopes = BoltFfiMetadataExtractor.ExtractAll(fullPath, sharedBytes);
                     }
@@ -264,7 +284,10 @@ namespace UniFFISharp
                     ciList ?? Array.Empty<ComponentInterface>(),
                     boltEnvelopes ?? Array.Empty<BoltFfiMetadataEnvelope>()
                 );
-            });
+            })
+            .Collect()
+            .Select(static (items, _) =>
+                new EquatableArray<ExtractedLibraryMetadata>(items.IsDefaultOrEmpty ? Array.Empty<ExtractedLibraryMetadata>() : items.ToArray()));
 
         var langVersionProvider = context.ParseOptionsProvider
             .Select((options, _) => options is CSharpParseOptions csOptions ? csOptions.LanguageVersion : LanguageVersion.Default);
@@ -277,32 +300,57 @@ namespace UniFFISharp
                 predicate: static (node, _) => IsCandidatePartialSyntax(node),
                 transform: static (ctx, ct) => ExtractPartialDeclaration(ctx, ct))
             .Where(static item => item != null)
-            .Collect();
+            .Collect()
+            .Select(static (items, _) =>
+            {
+                if (items.IsDefaultOrEmpty)
+                {
+                    return new UserSyntaxSnapshot(
+                        EquatableArray<UserPartialMethodInfo>.Empty,
+                        EquatableArray<UserTypePreferenceInfo>.Empty,
+                        EquatableArray<CallbackImplementationInfo>.Empty);
+                }
+
+                var partialMethods = new List<UserPartialMethodInfo>();
+                var typePrefs = new List<UserTypePreferenceInfo>();
+                var callbackImpls = new List<CallbackImplementationInfo>();
+                foreach (var item in items)
+                {
+                    if (item is UserPartialMethodInfo pm) partialMethods.Add(pm);
+                    else if (item is UserTypePreferenceInfo tp) typePrefs.Add(tp);
+                    else if (item is CallbackImplementationInfo ci) callbackImpls.Add(ci);
+                }
+
+                return new UserSyntaxSnapshot(
+                    partialMethods.Count > 0 ? new EquatableArray<UserPartialMethodInfo>(partialMethods.ToArray()) : EquatableArray<UserPartialMethodInfo>.Empty,
+                    typePrefs.Count > 0 ? new EquatableArray<UserTypePreferenceInfo>(typePrefs.ToArray()) : EquatableArray<UserTypePreferenceInfo>.Empty,
+                    callbackImpls.Count > 0 ? new EquatableArray<CallbackImplementationInfo>(callbackImpls.ToArray()) : EquatableArray<CallbackImplementationInfo>.Empty);
+            });
 
         var configProvider = namespaceProvider
             .Combine(boltNamespaceProvider)
             .Combine(engineProvider)
             .Combine(preferProvider)
             .Combine(useNativeUnionsProvider)
-            .Combine(warnSuboptimalProvider);
+            .Combine(warnSuboptimalProvider.Combine(skipChecksumsProvider));
 
         var langAndSupportProvider = langVersionProvider
             .Combine(unionSupportProvider);
 
-        var combinedProvider = libraryMetadataProvider.Collect()
+        var combinedProvider = libraryMetadataProvider
             .Combine(configProvider)
             .Combine(langAndSupportProvider)
             .Combine(userSyntaxProvider);
 
         context.RegisterSourceOutput(combinedProvider, (productionContext, pair) =>
         {
-            var (((libraryMetadatas, (((((customNamespace, boltNamespace), engineMode), preferMode), useNativeUnions), warnSuboptimal)), (langVersion, hasUnionSupport)), userSyntaxItems) = pair;
+            var (((libraryMetadatas, (((((customNamespace, boltNamespace), engineMode), preferMode), useNativeUnions), (warnSuboptimal, skipChecksums))), (langVersion, hasUnionSupport)), userSyntaxSnapshot) = pair;
             var generatedUniFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var generatedBoltFFICrates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            var userPartialMethods = userSyntaxItems.OfType<UserPartialMethodInfo>().ToList();
-            var userTypePreferences = userSyntaxItems.OfType<UserTypePreferenceInfo>().ToList();
-            var callbackImplementations = userSyntaxItems.OfType<CallbackImplementationInfo>().ToList();
+            var userPartialMethods = userSyntaxSnapshot.PartialMethods;
+            var userTypePreferences = userSyntaxSnapshot.TypePreferences;
+            var callbackImplementations = userSyntaxSnapshot.CallbackImplementations;
             var crateCiOptions = new Dictionary<string, CodeGeneratorOptions>(StringComparer.OrdinalIgnoreCase);
 
             var nsConfig = new NamespaceConfig(customNamespace);
@@ -312,7 +360,8 @@ namespace UniFFISharp
             {
                 LanguageVersion = langVersion,
                 HasUnionAttributeSupport = hasUnionSupport,
-                UseNativeUnions = useNativeUnions
+                UseNativeUnions = useNativeUnions,
+                SkipChecksums = skipChecksums
             };
 
             foreach (var metadata in libraryMetadatas)
@@ -343,16 +392,20 @@ namespace UniFFISharp
                 if (validCis.Count > 0)
                     boltEnvelopes = BoltFfiCoexistence.Prepare(boltEnvelopes, validCis.Select(c => c.CrateName), typeToCrate);
 
+                var crateToNs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 for (int i = 0; i < validCis.Count; i++)
                 {
                     bool isRoot = (i == 0);
-                    validCis[i].Namespace = nsConfig.ResolveNamespace(validCis[i].CrateName, isRoot);
+                    string resolvedNs = nsConfig.ResolveNamespace(validCis[i].CrateName, isRoot);
+                    crateToNs[validCis[i].CrateName.Replace('-', '_')] = resolvedNs;
                 }
 
-                var crateToNs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var c in validCis)
+                string ResolveCiNamespace(Metadata.ComponentInterface ci)
                 {
-                    crateToNs[c.CrateName.Replace('-', '_')] = c.Namespace;
+                    string norm = ci.CrateName.Replace('-', '_');
+                    return crateToNs.TryGetValue(norm, out var resolved)
+                        ? resolved
+                        : (!string.IsNullOrEmpty(ci.Namespace) ? ci.Namespace : TypeHelper.ToPascalCase(ci.CrateName));
                 }
 
                 Func<string, string> nsResolver = crate =>
@@ -402,11 +455,15 @@ namespace UniFFISharp
                         Dictionary<string, MethodEmissionConfig>? uniffiMethodConfigs = null;
                         HashSet<string>? suppressTypeDefinitions = null;
 
+                        // Work on a local copy of decls so cached metadata is never mutated across incremental runs
+                        var boltDecls = new List<BoltFfiDecl>(env.Bindings.Native.Decls);
+
                         // Check collision against UniFFI CI
                         var matchedCi = validCis.FirstOrDefault(c => string.Equals(c.CrateName.Replace('-', '_'), crateNorm, StringComparison.OrdinalIgnoreCase));
+                        string matchedCiNs = matchedCi != null ? ResolveCiNamespace(matchedCi) : string.Empty;
                         if (matchedCi != null)
                         {
-                            bool sameNamespace = string.Equals(matchedCi.Namespace, boltTargetNs, StringComparison.OrdinalIgnoreCase);
+                            bool sameNamespace = string.Equals(matchedCiNs, boltTargetNs, StringComparison.OrdinalIgnoreCase);
                             if (sameNamespace)
                             {
                                 if (string.Equals(preferMode, "Error", StringComparison.OrdinalIgnoreCase))
@@ -425,7 +482,7 @@ namespace UniFFISharp
                                                 SymbolCollisionDescriptor,
                                                 Location.None,
                                                 sym,
-                                                matchedCi.Namespace));
+                                                matchedCiNs));
                                         }
                                     }
                                 }
@@ -443,12 +500,12 @@ namespace UniFFISharp
                                     foreach (var o in matchedCi.Objects) uniffiSymbols.Add(o.Name);
                                     foreach (var ci in matchedCi.CallbackInterfaces) uniffiSymbols.Add(ci.Name);
 
-                                    // Drop colliding symbols from BoltFFI (keeping error enums for decoder generation)
-                                    env.Bindings.Native.Decls.RemoveAll(d => uniffiSymbols.Contains(d.DeclName));
+                                    // Drop colliding symbols from BoltFFI copy (keeping error enums for decoder generation)
+                                    boltDecls.RemoveAll(d => uniffiSymbols.Contains(d.DeclName));
                                 }
                                 else
                                 {
-                                    // Drop colliding C-style enums from BoltFFI so UniFFI's canonical representations
+                                    // Drop colliding C-style enums from BoltFFI copy so UniFFI's canonical representations
                                     // (1-indexed flat enums) are preserved.
                                     // Error enums are kept in BoltFFI to emit partial class Decode extensions,
                                     // integrating with UniFFI's UniffiException error hierarchies.
@@ -462,7 +519,7 @@ namespace UniFFISharp
                                         }
                                     }
 
-                                    env.Bindings.Native.Decls.RemoveAll(d =>
+                                    boltDecls.RemoveAll(d =>
                                         d.Kind == BoltFfiDeclKind.Enum &&
                                         uniffiCStyleEnums.Contains(d.DeclName));
 
@@ -472,7 +529,7 @@ namespace UniFFISharp
 
                                     var classPref = userTypePreferences.FirstOrDefault(tp =>
                                         string.Equals(tp.TypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
-                                        (string.IsNullOrEmpty(tp.ContainingNamespace) || string.Equals(tp.ContainingNamespace, matchedCi.Namespace, StringComparison.OrdinalIgnoreCase)));
+                                        (string.IsNullOrEmpty(tp.ContainingNamespace) || string.Equals(tp.ContainingNamespace, matchedCiNs, StringComparison.OrdinalIgnoreCase)));
 
                                     var uniffiFnLookup = new Dictionary<string, FnMetadata>(StringComparer.OrdinalIgnoreCase);
                                     var allFnNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -492,7 +549,7 @@ namespace UniFFISharp
                                     }
 
                                     var boltDeclLookup = new Dictionary<string, BoltFfiDecl>(StringComparer.OrdinalIgnoreCase);
-                                    foreach (var decl in env.Bindings.Native.Decls)
+                                    foreach (var decl in boltDecls)
                                     {
                                         if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
                                         {
@@ -513,7 +570,7 @@ namespace UniFFISharp
                                     foreach (var m in userPartialMethods)
                                     {
                                         if (string.Equals(m.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase) &&
-                                            (string.IsNullOrEmpty(m.ContainingNamespace) || string.Equals(m.ContainingNamespace, matchedCi.Namespace, StringComparison.OrdinalIgnoreCase)))
+                                            (string.IsNullOrEmpty(m.ContainingNamespace) || string.Equals(m.ContainingNamespace, matchedCiNs, StringComparison.OrdinalIgnoreCase)))
                                         {
                                             userMethodLookup[m.MethodName] = m;
                                             if (!m.MethodName.EndsWith("Async"))
@@ -531,6 +588,7 @@ namespace UniFFISharp
 
                                         userMethodLookup.TryGetValue(pascalName, out var userMethod);
                                         bool isUserPartial = userMethod != null;
+                                        bool suppressGc = userMethod?.SuppressGCTransition ?? false;
                                         var overrideEngine = InteropEngine.Auto;
 
                                         if (userMethod != null && userMethod.HasExplicitOverride && userMethod.Engine != InteropEngine.Auto)
@@ -568,13 +626,13 @@ namespace UniFFISharp
 
                                         if (winningEngine == InteropEngine.UniFFI)
                                         {
-                                            uniffiMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = isUserPartial };
-                                            boltMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = false, IsPartial = false };
+                                            uniffiMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = isUserPartial, SuppressGCTransition = suppressGc };
+                                            boltMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = false, IsPartial = false, SuppressGCTransition = suppressGc };
                                         }
                                         else
                                         {
-                                            uniffiMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = false, IsPartial = false };
-                                            boltMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = isUserPartial };
+                                            uniffiMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = false, IsPartial = false, SuppressGCTransition = suppressGc };
+                                            boltMethodConfigs[pascalName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = isUserPartial, SuppressGCTransition = suppressGc };
                                         }
                                     }
 
@@ -583,22 +641,23 @@ namespace UniFFISharp
                                         if (!string.Equals(userMethod.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase))
                                         {
                                             string qualified = $"{userMethod.ContainingTypeName}.{userMethod.MethodName}";
-                                            boltMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true };
+                                            boltMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
+                                            uniffiMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
                                         }
                                     }
 
                                     suppressTypeDefinitions = new HashSet<string>(
-                                        env.Bindings.Native.Decls.Where(d => !string.IsNullOrEmpty(d.DeclName)).Select(d => d.DeclName),
+                                        boltDecls.Where(d => !string.IsNullOrEmpty(d.DeclName)).Select(d => d.DeclName),
                                         StringComparer.OrdinalIgnoreCase);
                                     suppressTypeDefinitions.ExceptWith(allUniffiErrorEnums);
-                                    matchedCi.Objects.RemoveAll(o => suppressTypeDefinitions.Contains(o.Name));
-                                    matchedCi.CallbackInterfaces.RemoveAll(ci => suppressTypeDefinitions.Contains(ci.Name));
 
                                     var ciOptions = new CodeGeneratorOptions
                                     {
                                         LanguageVersion = codeGenOptions.LanguageVersion,
                                         HasUnionAttributeSupport = codeGenOptions.HasUnionAttributeSupport,
                                         UseNativeUnions = codeGenOptions.UseNativeUnions,
+                                        SkipChecksums = codeGenOptions.SkipChecksums,
+                                        ResolvedNamespace = matchedCiNs,
                                         MethodConfigs = uniffiMethodConfigs,
                                         SuppressTypeDefinitions = suppressTypeDefinitions
                                     };
@@ -617,13 +676,13 @@ namespace UniFFISharp
                                     if (string.Equals(userMethod.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase))
                                     {
                                         boltMethodConfigs ??= new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
-                                        boltMethodConfigs[userMethod.MethodName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true };
+                                        boltMethodConfigs[userMethod.MethodName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
                                     }
                                     else
                                     {
                                         boltMethodConfigs ??= new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
                                         string qualified = $"{userMethod.ContainingTypeName}.{userMethod.MethodName}";
-                                        boltMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true };
+                                        boltMethodConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
                                     }
                                 }
                             }
@@ -650,7 +709,7 @@ namespace UniFFISharp
                                 }
                             }
 
-                            foreach (var decl in env.Bindings.Native.Decls)
+                            foreach (var decl in boltDecls)
                             {
                                 if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
                                 {
@@ -709,7 +768,7 @@ namespace UniFFISharp
                             }
 
                             // Types defined in the current BoltFFI crate belong to boltTargetNs
-                            foreach (var decl in env.Bindings.Native.Decls)
+                            foreach (var decl in boltDecls)
                             {
                                 if (!string.IsNullOrEmpty(decl.DeclName))
                                 {
@@ -727,7 +786,8 @@ namespace UniFFISharp
                                 typeToNamespace: typeToNs,
                                 options: codeGenOptions,
                                 callbackImplementations: callbackImplementations,
-                                uniffiDefinedErrorEnums: allUniffiErrorEnums);
+                                uniffiDefinedErrorEnums: allUniffiErrorEnums,
+                                declsOverride: boltDecls);
                             if (!string.IsNullOrEmpty(boltSource))
                             {
                                 productionContext.AddSource(
@@ -746,10 +806,21 @@ namespace UniFFISharp
                     if (!generatedUniFFICrates.Add(crateNorm))
                         continue;
 
-                    var optionsToUse = crateCiOptions.TryGetValue(crateNorm, out var opt) ? opt : codeGenOptions;
+                    string ciNsResolved = ResolveCiNamespace(ci);
+                    CodeGeneratorOptions optionsToUse;
+                    if (crateCiOptions.TryGetValue(crateNorm, out var opt))
+                    {
+                        optionsToUse = opt;
+                    }
+                    else
+                    {
+                        optionsToUse = codeGenOptions.Clone();
+                        optionsToUse.ResolvedNamespace = ciNsResolved;
+                    }
+
                     if (optionsToUse.MethodConfigs == null)
                     {
-                        string ciNs = string.IsNullOrEmpty(ci.Namespace) ? TypeHelper.ToPascalCase(ci.CrateName) : TypeHelper.ToPascalCase(ci.Namespace);
+                        string ciNs = TypeHelper.ToPascalCase(ciNsResolved);
                         string methodsClassName = $"{TypeHelper.ToPascalCase(crateNorm)}Methods";
                         Dictionary<string, MethodEmissionConfig>? uniffiPartialConfigs = null;
 
@@ -760,16 +831,21 @@ namespace UniFFISharp
                                 if (string.Equals(userMethod.ContainingTypeName, methodsClassName, StringComparison.OrdinalIgnoreCase))
                                 {
                                     uniffiPartialConfigs ??= new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
-                                    uniffiPartialConfigs[userMethod.MethodName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true };
+                                    uniffiPartialConfigs[userMethod.MethodName] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
+                                }
+                                else
+                                {
+                                    uniffiPartialConfigs ??= new Dictionary<string, MethodEmissionConfig>(StringComparer.OrdinalIgnoreCase);
+                                    string qualified = $"{userMethod.ContainingTypeName}.{userMethod.MethodName}";
+                                    uniffiPartialConfigs[qualified] = new MethodEmissionConfig { EmitMethod = true, IsPartial = true, SuppressGCTransition = userMethod.SuppressGCTransition };
                                 }
                             }
                         }
 
                         if (uniffiPartialConfigs != null)
                         {
-                            var cloned = optionsToUse.Clone();
-                            cloned.MethodConfigs = uniffiPartialConfigs;
-                            optionsToUse = cloned;
+                            optionsToUse = optionsToUse.Clone();
+                            optionsToUse.MethodConfigs = uniffiPartialConfigs;
                         }
 
                         if (warnSuboptimal == true)
@@ -826,7 +902,7 @@ namespace UniFFISharp
                         }
                     }
 
-                    string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver, optionsToUse);
+                    string source = CodeGenerator.Generate(ci, Path.GetFileName(libPath), nsResolver, optionsToUse, callbackImplementations);
                     productionContext.AddSource(
                         $"UniFFIBindings.{crateNorm}.g.cs",
                         SourceText.From(source, Encoding.UTF8, SourceHashAlgorithm.Sha256));
@@ -834,6 +910,24 @@ namespace UniFFISharp
             }
         });
     }
+
+    private static string? GetSimpleNameText(NameSyntax? name) => name switch
+    {
+        IdentifierNameSyntax id => id.Identifier.ValueText,
+        QualifiedNameSyntax q => q.Right.Identifier.ValueText,
+        GenericNameSyntax g => g.Identifier.ValueText,
+        AliasQualifiedNameSyntax a => a.Name.Identifier.ValueText,
+        _ => null
+    };
+
+    private static string? GetTypeIdentifierText(TypeSyntax type) => type switch
+    {
+        IdentifierNameSyntax id => id.Identifier.ValueText,
+        QualifiedNameSyntax q => q.Right.Identifier.ValueText,
+        GenericNameSyntax g => g.Identifier.ValueText,
+        AliasQualifiedNameSyntax a => a.Name.Identifier.ValueText,
+        _ => null
+    };
 
     private static bool IsCandidatePartialSyntax(SyntaxNode node)
     {
@@ -846,16 +940,29 @@ namespace UniFFISharp
         if (node is ClassDeclarationSyntax c)
         {
             if (c.AttributeLists.Count > 0)
-                return true;
+            {
+                foreach (var attrList in c.AttributeLists)
+                {
+                    foreach (var attr in attrList.Attributes)
+                    {
+                        string? name = GetSimpleNameText(attr.Name);
+                        if (name != null &&
+                            (name.IndexOf("Prefer", StringComparison.Ordinal) >= 0 ||
+                             name.StartsWith("UniFFI", StringComparison.Ordinal) ||
+                             name.StartsWith("BoltFFI", StringComparison.Ordinal)))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
 
             if (c.BaseList != null && c.BaseList.Types.Count > 0)
             {
                 foreach (var baseType in c.BaseList.Types)
                 {
-                    string text = baseType.Type.ToString();
-                    int lastDot = text.LastIndexOf('.');
-                    string simpleName = lastDot >= 0 ? text.Substring(lastDot + 1) : text;
-                    if (simpleName.Length >= 2 && simpleName[0] == 'I' && char.IsUpper(simpleName[1]))
+                    string? simpleName = GetTypeIdentifierText(baseType.Type);
+                    if (simpleName != null && simpleName.Length >= 2 && simpleName[0] == 'I' && char.IsUpper(simpleName[1]))
                     {
                         return true;
                     }
@@ -863,6 +970,13 @@ namespace UniFFISharp
             }
         }
         return false;
+    }
+
+    private static bool IsSuppressGCTransitionAttribute(AttributeData attr)
+    {
+        string? attrName = attr.AttributeClass?.Name;
+        return string.Equals(attrName, "SuppressGCTransitionAttribute", StringComparison.Ordinal) ||
+               string.Equals(attrName, "SuppressGCTransition", StringComparison.Ordinal);
     }
 
     private static object? ExtractPartialDeclaration(GeneratorSyntaxContext ctx, CancellationToken ct)
@@ -879,14 +993,18 @@ namespace UniFFISharp
 
             var engine = InteropEngine.Auto;
             bool hasExplicit = false;
+            bool suppressGCTransition = false;
 
             foreach (var attr in symbol.GetAttributes())
             {
-                if (TryResolveEngine(attr, out var resolved))
+                if (!hasExplicit && TryResolveEngine(attr, out var resolved))
                 {
                     engine = resolved;
                     hasExplicit = true;
-                    break;
+                }
+                if (IsSuppressGCTransitionAttribute(attr))
+                {
+                    suppressGCTransition = true;
                 }
             }
 
@@ -909,7 +1027,8 @@ namespace UniFFISharp
                 methodName: methodName,
                 parameterCount: symbol.Parameters.Length,
                 engine: engine,
-                hasExplicitOverride: hasExplicit
+                hasExplicitOverride: hasExplicit,
+                suppressGCTransition: suppressGCTransition
             );
         }
 
@@ -1021,6 +1140,45 @@ namespace UniFFISharp
     }
 }
 
+internal sealed class UserSyntaxSnapshot : IEquatable<UserSyntaxSnapshot>
+{
+    public EquatableArray<UserPartialMethodInfo> PartialMethods { get; }
+    public EquatableArray<UserTypePreferenceInfo> TypePreferences { get; }
+    public EquatableArray<CallbackImplementationInfo> CallbackImplementations { get; }
+
+    public UserSyntaxSnapshot(
+        EquatableArray<UserPartialMethodInfo> partialMethods,
+        EquatableArray<UserTypePreferenceInfo> typePreferences,
+        EquatableArray<CallbackImplementationInfo> callbackImplementations)
+    {
+        PartialMethods = partialMethods;
+        TypePreferences = typePreferences;
+        CallbackImplementations = callbackImplementations;
+    }
+
+    public bool Equals(UserSyntaxSnapshot? other)
+    {
+        if (other is null) return false;
+        if (ReferenceEquals(this, other)) return true;
+        return PartialMethods.Equals(other.PartialMethods) &&
+               TypePreferences.Equals(other.TypePreferences) &&
+               CallbackImplementations.Equals(other.CallbackImplementations);
+    }
+
+    public override bool Equals(object? obj) => Equals(obj as UserSyntaxSnapshot);
+
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            int hash = PartialMethods.GetHashCode();
+            hash = (hash * 397) ^ TypePreferences.GetHashCode();
+            hash = (hash * 397) ^ CallbackImplementations.GetHashCode();
+            return hash;
+        }
+    }
+}
+
 internal sealed class ExtractedLibraryMetadata : IEquatable<ExtractedLibraryMetadata>
 {
     public string Stamp { get; }
@@ -1044,11 +1202,25 @@ internal sealed class ExtractedLibraryMetadata : IEquatable<ExtractedLibraryMeta
     {
         if (other is null) return false;
         if (ReferenceEquals(this, other)) return true;
-        return string.Equals(Stamp, other.Stamp, StringComparison.Ordinal);
+        return string.Equals(Stamp, other.Stamp, StringComparison.Ordinal) &&
+               string.Equals(LibraryPath, other.LibraryPath, StringComparison.Ordinal) &&
+               ReferenceEquals(ComponentInterfaces, other.ComponentInterfaces) &&
+               ReferenceEquals(BoltEnvelopes, other.BoltEnvelopes);
     }
 
     public override bool Equals(object? obj) => Equals(obj as ExtractedLibraryMetadata);
-    public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(Stamp);
+
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            int hash = StringComparer.Ordinal.GetHashCode(Stamp);
+            hash = (hash * 397) ^ StringComparer.Ordinal.GetHashCode(LibraryPath);
+            hash = (hash * 397) ^ ComponentInterfaces.Count;
+            hash = (hash * 397) ^ BoltEnvelopes.Count;
+            return hash;
+        }
+    }
 }
 
 internal sealed class NamespaceConfig

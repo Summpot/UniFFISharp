@@ -14,7 +14,7 @@ public static class BoltFfiStreamHelper
         Func<ulong, int, int> wait,
         Action<ulong> unsubscribe,
         Action<ulong> free,
-        nuint batchSize = 16,
+        nuint batchSize = 64,
         int waitTimeoutMs = 100,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -35,9 +35,16 @@ public static class BoltFfiStreamHelper
                 if (probeResult < 0) yield break;
                 if (probeResult == 0)
                 {
-                    // No data available: cooperative async backoff to prevent ThreadPool starvation
-                    int delayMs = waitTimeoutMs > 0 ? Math.Min(waitTimeoutMs, 10) : 10;
-                    await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    // Single cooperative yield before entering timer backoff
+                    await Task.Yield();
+                    if (cancellationToken.IsCancellationRequested) yield break;
+                    probeResult = wait(subscription, 0);
+                    if (probeResult < 0) yield break;
+                    if (probeResult == 0)
+                    {
+                        int delayMs = waitTimeoutMs > 0 ? Math.Min(waitTimeoutMs, 10) : 10;
+                        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
         }

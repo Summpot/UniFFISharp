@@ -13,10 +13,11 @@ namespace UniFFISharp.Collections;
 /// Guarantees:
 /// 1. O(1) lock-free read access via direct chunked array indexing (~0.8 ns).
 /// 2. Zero GC heap allocations on Insert and Remove once chunks are allocated.
-/// 3. Lock-free Treiber stack intrusive freelist with ABA-tagging.
-/// 4. Cache-line friendly 16-byte contiguous SlotEntry layout (Version + NextFree + Target).
-/// 5. Generational safety: stale or duplicate handles are rejected, preventing use-after-free.
-/// 6. Rust-compatible odd handle alignment (lowest bit is always 1).
+/// 3. Thread-local 4-slot free cache to bypass the global Treiber stack CAS on matched Insert/Remove threads.
+/// 4. Lock-free Treiber stack intrusive freelist with ABA-tagging.
+/// 5. Cache-line friendly 16-byte contiguous SlotEntry layout (Version + NextFree + Target).
+/// 6. Generational safety: stale or duplicate handles are rejected, preventing use-after-free.
+/// 7. Rust-compatible odd handle alignment (lowest bit is always 1).
 /// </summary>
 public sealed class ConcurrentHandleMap<T> where T : class
 {
@@ -25,6 +26,7 @@ public sealed class ConcurrentHandleMap<T> where T : class
     private const int ChunkMask = ChunkSize - 1;
     private const int MaxChunks = 1024;          // Up to 1,048,576 concurrent live handles
     private const int NoSlot = -1;
+    private const int TlsCacheCapacity = 4;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SlotEntry
@@ -32,6 +34,23 @@ public sealed class ConcurrentHandleMap<T> where T : class
         public int Version;
         public int NextFree;
         public T? Target;
+    }
+
+    private struct TlsSlotEntry
+    {
+        public long MapId;
+        public int Slot;
+    }
+
+    [InlineArray(TlsCacheCapacity)]
+    private struct TlsSlotArray
+    {
+        private TlsSlotEntry _element0;
+    }
+
+    private sealed class TlsSlotCache
+    {
+        public TlsSlotArray Entries;
     }
 
     private sealed class SlotChunk
@@ -48,6 +67,12 @@ public sealed class ConcurrentHandleMap<T> where T : class
         }
     }
 
+    private static long s_nextMapId;
+
+    [ThreadStatic]
+    private static TlsSlotCache? t_slotCache;
+
+    private readonly long _mapId = Interlocked.Increment(ref s_nextMapId);
     private readonly SlotChunk?[] _chunks = new SlotChunk?[MaxChunks];
     private readonly SlotEntry[] _rootEntries;
     private int _allocatedSlots;
@@ -108,8 +133,52 @@ public sealed class ConcurrentHandleMap<T> where T : class
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryPopSlotFromTls(out int slot)
+    {
+        var cache = t_slotCache;
+        if (cache != null)
+        {
+            long mapId = _mapId;
+            for (int i = 0; i < TlsCacheCapacity; i++)
+            {
+                ref TlsSlotEntry cached = ref cache.Entries[i];
+                if (cached.MapId == mapId)
+                {
+                    slot = cached.Slot;
+                    cached.MapId = 0;
+                    return true;
+                }
+            }
+        }
+        slot = NoSlot;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryPushSlotToTls(int slot)
+    {
+        var cache = t_slotCache ??= new TlsSlotCache();
+        for (int i = 0; i < TlsCacheCapacity; i++)
+        {
+            ref TlsSlotEntry cached = ref cache.Entries[i];
+            if (cached.MapId == 0)
+            {
+                cached.MapId = _mapId;
+                cached.Slot = slot;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryPopFreeSlot(out int slot)
     {
+        if (TryPopSlotFromTls(out slot))
+        {
+            return true;
+        }
+
         var spinner = new SpinWait();
         while (true)
         {
@@ -136,6 +205,11 @@ public sealed class ConcurrentHandleMap<T> where T : class
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PushFreeSlot(int slot)
     {
+        if (TryPushSlotToTls(slot))
+        {
+            return;
+        }
+
         var spinner = new SpinWait();
         while (true)
         {
@@ -197,6 +271,12 @@ public sealed class ConcurrentHandleMap<T> where T : class
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGet(ulong handle, [NotNullWhen(true)] out T? result)
     {
+        if ((handle & 1UL) == 0)
+        {
+            result = null;
+            return false;
+        }
+
         int slot = (int)((handle & 0xFFFFFFFFUL) >> 1);
         int version = (int)(handle >> 32);
 
@@ -250,6 +330,14 @@ public sealed class ConcurrentHandleMap<T> where T : class
         {
             return result;
         }
+        ThrowInvalidHandle(handle);
+        return default!;
+    }
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidHandle(ulong handle)
+    {
         throw new InternalException($"ConcurrentHandleMap: Invalid or expired handle {handle}");
     }
 
@@ -260,6 +348,12 @@ public sealed class ConcurrentHandleMap<T> where T : class
     /// </summary>
     public bool Remove(ulong handle, [NotNullWhen(true)] out T? result)
     {
+        if ((handle & 1UL) == 0)
+        {
+            result = null;
+            return false;
+        }
+
         int slot = (int)((handle & 0xFFFFFFFFUL) >> 1);
         int version = (int)(handle >> 32);
 
@@ -271,7 +365,8 @@ public sealed class ConcurrentHandleMap<T> where T : class
                 T? target = Interlocked.Exchange(ref entry.Target, null);
                 if (target != null)
                 {
-                    Interlocked.Increment(ref entry.Version);
+                    // Interlocked.Exchange established exclusive slot ownership; release-write is sufficient before pushing to freelist.
+                    Volatile.Write(ref entry.Version, version + 1);
                     PushFreeSlot(slot);
                     result = target;
                     return true;
@@ -295,7 +390,7 @@ public sealed class ConcurrentHandleMap<T> where T : class
                     T? target = Interlocked.Exchange(ref entry.Target, null);
                     if (target != null)
                     {
-                        Interlocked.Increment(ref entry.Version);
+                        Volatile.Write(ref entry.Version, version + 1);
                         PushFreeSlot(slot);
                         result = target;
                         return true;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 
 namespace UniFFISharp.Generator.Arbitration;
@@ -10,10 +11,64 @@ public enum InteropEngine
     BoltFFI = 2
 }
 
+public readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IReadOnlyList<T>
+{
+    public static readonly EquatableArray<T> Empty = new(Array.Empty<T>());
+
+    private readonly T[]? _items;
+
+    public EquatableArray(T[]? items)
+    {
+        _items = items;
+    }
+
+    public int Count => _items?.Length ?? 0;
+
+    public T this[int index] => (_items ?? Array.Empty<T>())[index];
+
+    public bool Equals(EquatableArray<T> other)
+    {
+        int count = Count;
+        if (count != other.Count) return false;
+        if (count == 0) return true;
+        if (ReferenceEquals(_items, other._items)) return true;
+
+        var comparer = EqualityComparer<T>.Default;
+        for (int i = 0; i < count; i++)
+        {
+            if (!comparer.Equals(_items![i], other._items![i])) return false;
+        }
+        return true;
+    }
+
+    public override bool Equals(object? obj) => obj is EquatableArray<T> other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        int count = Count;
+        if (count == 0) return 0;
+        unchecked
+        {
+            var comparer = EqualityComparer<T>.Default;
+            int hash = count;
+            for (int i = 0; i < count; i++)
+            {
+                T item = _items![i];
+                hash = (hash * 397) ^ (item is null ? 0 : comparer.GetHashCode(item));
+            }
+            return hash;
+        }
+    }
+
+    public IEnumerator<T> GetEnumerator() => ((IEnumerable<T>)(_items ?? Array.Empty<T>())).GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
 public sealed class MethodEmissionConfig
 {
     public bool EmitMethod { get; set; } = true;
     public bool IsPartial { get; set; } = false;
+    public bool SuppressGCTransition { get; set; } = false;
 }
 
 public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
@@ -24,6 +79,7 @@ public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
     public int ParameterCount { get; }
     public InteropEngine Engine { get; }
     public bool HasExplicitOverride { get; }
+    public bool SuppressGCTransition { get; }
 
     public UserPartialMethodInfo(
         string containingNamespace,
@@ -31,7 +87,8 @@ public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
         string methodName,
         int parameterCount,
         InteropEngine engine,
-        bool hasExplicitOverride)
+        bool hasExplicitOverride,
+        bool suppressGCTransition = false)
     {
         ContainingNamespace = containingNamespace ?? string.Empty;
         ContainingTypeName = containingTypeName ?? string.Empty;
@@ -39,6 +96,7 @@ public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
         ParameterCount = parameterCount;
         Engine = engine;
         HasExplicitOverride = hasExplicitOverride;
+        SuppressGCTransition = suppressGCTransition;
     }
 
     public bool Equals(UserPartialMethodInfo? other)
@@ -50,7 +108,8 @@ public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
                string.Equals(MethodName, other.MethodName, StringComparison.Ordinal) &&
                ParameterCount == other.ParameterCount &&
                Engine == other.Engine &&
-               HasExplicitOverride == other.HasExplicitOverride;
+               HasExplicitOverride == other.HasExplicitOverride &&
+               SuppressGCTransition == other.SuppressGCTransition;
     }
 
     public override bool Equals(object? obj) => Equals(obj as UserPartialMethodInfo);
@@ -66,6 +125,7 @@ public sealed class UserPartialMethodInfo : IEquatable<UserPartialMethodInfo>
             hash = hash * 31 + ParameterCount.GetHashCode();
             hash = hash * 31 + Engine.GetHashCode();
             hash = hash * 31 + HasExplicitOverride.GetHashCode();
+            hash = hash * 31 + SuppressGCTransition.GetHashCode();
             return hash;
         }
     }
@@ -167,4 +227,3 @@ public sealed class CallbackImplementationInfo : IEquatable<CallbackImplementati
         }
     }
 }
-

@@ -219,6 +219,11 @@ public static class BoltFfiMetadataExtractor
 
     private static byte[]? ExtractSectionFromPeOrCoff(byte[] data)
     {
+        if (data.Length >= 20 && !(data[0] == (byte)'M' && data[1] == (byte)'Z'))
+        {
+            return ExtractSectionFromCoffObject(data);
+        }
+
         try
         {
             using var ms = new MemoryStream(data, false);
@@ -411,13 +416,13 @@ public static class BoltFfiMetadataExtractor
     {
         var list = new List<byte[]>();
         var memberOffsets = ArchiveMetadataExtractor.GetAllMemberOffsets(stream);
-        byte[] headerBuf = new byte[60];
+        byte[] headerBuf = new byte[64];
 
         foreach (long memberOffset in memberOffsets)
         {
             if (memberOffset + 60 > stream.Length) continue;
             stream.Position = memberOffset;
-            if (stream.Read(headerBuf, 0, 60) < 60) continue;
+            if (!ReadExactly(stream, headerBuf, 0, 60)) continue;
 
             string name = Encoding.ASCII.GetString(headerBuf, 0, 16).Trim();
             string sizeStr = Encoding.ASCII.GetString(headerBuf, 48, 10).Trim();
@@ -430,13 +435,9 @@ public static class BoltFfiMetadataExtractor
                 memberSize -= nLen;
             }
 
-            if (objStart + memberSize > stream.Length) continue;
+            if (memberSize < 20 || objStart + memberSize > stream.Length) continue;
 
-            byte[] objBytes = new byte[memberSize];
-            stream.Position = objStart;
-            if (stream.Read(objBytes, 0, memberSize) < memberSize) continue;
-
-            var secData = ExtractSectionFromAny(objBytes);
+            byte[]? secData = TryExtractSectionStreaming(stream, objStart, memberSize, headerBuf);
             if (secData != null && secData.Length >= 16)
             {
                 list.Add(secData);
@@ -444,6 +445,237 @@ public static class BoltFfiMetadataExtractor
         }
 
         return list;
+    }
+
+    private static byte[]? TryExtractSectionStreaming(Stream stream, long objStart, int memberSize, byte[] prefix)
+    {
+        int prefixLen = Math.Min(64, memberSize);
+        stream.Position = objStart;
+        if (!ReadExactly(stream, prefix, 0, prefixLen)) return null;
+
+        // ELF64 little-endian fast path
+        if (prefixLen >= 64 && prefix[0] == 0x7F && prefix[1] == (byte)'E' && prefix[2] == (byte)'L' && prefix[3] == (byte)'F')
+        {
+            if (prefix[4] == 2 && prefix[5] == 1)
+            {
+                return ExtractBoltFfiSectionFromElf64Stream(stream, objStart, memberSize, prefix);
+            }
+            return ReadMemberAndExtract(stream, objStart, memberSize);
+        }
+
+        // Mach-O 64-bit fast path
+        if (prefixLen >= 32)
+        {
+            uint magicLE = BinaryPrimitives.ReadUInt32LittleEndian(prefix.AsSpan(0, 4));
+            if (magicLE == 0xFEEDFACF || magicLE == 0xCFFAEDFE)
+            {
+                bool isLE = magicLE == 0xFEEDFACF;
+                return ExtractBoltFfiSectionFromMachO64Stream(stream, objStart, memberSize, prefix, isLE);
+            }
+            uint magicBE = BinaryPrimitives.ReadUInt32BigEndian(prefix.AsSpan(0, 4));
+            if (magicBE == 0xCAFEBABE || magicBE == 0xBEBAFECA || magicLE == 0xFEEDFACE || magicLE == 0xCEFAEDFE)
+            {
+                return ReadMemberAndExtract(stream, objStart, memberSize);
+            }
+        }
+
+        // COFF object fast path (no "MZ" PE signature)
+        if (!(prefix[0] == (byte)'M' && prefix[1] == (byte)'Z'))
+        {
+            return ExtractBoltFfiSectionFromCoffStream(stream, objStart, memberSize, prefix);
+        }
+
+        return ReadMemberAndExtract(stream, objStart, memberSize);
+    }
+
+    private static byte[]? ReadMemberAndExtract(Stream stream, long objStart, int memberSize)
+    {
+        byte[] objBytes = new byte[memberSize];
+        stream.Position = objStart;
+        if (!ReadExactly(stream, objBytes, 0, memberSize)) return null;
+        return ExtractSectionFromAny(objBytes);
+    }
+
+    private static byte[]? ExtractBoltFfiSectionFromCoffStream(Stream stream, long objStart, int memberSize, byte[] coffHeader)
+    {
+        ushort numSections = BitConverter.ToUInt16(coffHeader, 2);
+        uint symTableOffset = BitConverter.ToUInt32(coffHeader, 8);
+        uint numSyms = BitConverter.ToUInt32(coffHeader, 12);
+        ushort optHeaderSize = BitConverter.ToUInt16(coffHeader, 16);
+
+        long secHeadersStart = 20L + optHeaderSize;
+        int secHeadersBytesLen = numSections * 40;
+        if (numSections == 0 || secHeadersStart + secHeadersBytesLen > memberSize) return null;
+
+        byte[] secHeaders = new byte[secHeadersBytesLen];
+        stream.Position = objStart + secHeadersStart;
+        if (!ReadExactly(stream, secHeaders, 0, secHeadersBytesLen)) return null;
+
+        long strTableOffsetLong = (long)symTableOffset + (long)numSyms * 18L;
+        byte[]? longNameBuf = null;
+
+        for (int i = 0; i < numSections; i++)
+        {
+            int secOffset = i * 40;
+            uint rawDataSize = BitConverter.ToUInt32(secHeaders, secOffset + 16);
+            if (rawDataSize < 16) continue;
+
+            uint rawDataPtr = BitConverter.ToUInt32(secHeaders, secOffset + 20);
+            if ((ulong)rawDataPtr + rawDataSize > (ulong)memberSize) continue;
+
+            bool isMatch = false;
+            if (secHeaders[secOffset] == (byte)'/')
+            {
+                string offStr = Encoding.ASCII.GetString(secHeaders, secOffset + 1, 7).TrimEnd('\0', ' ');
+                if (int.TryParse(offStr, out int strOffset) && strOffset >= 4 && strTableOffsetLong + strOffset < memberSize)
+                {
+                    longNameBuf ??= new byte[16];
+                    int toRead = (int)Math.Min(16L, memberSize - (strTableOffsetLong + strOffset));
+                    stream.Position = objStart + strTableOffsetLong + strOffset;
+                    if (ReadExactly(stream, longNameBuf, 0, toRead))
+                    {
+                        int nullPos = Array.IndexOf(longNameBuf, (byte)0, 0, toRead);
+                        int nameLen = nullPos >= 0 ? nullPos : toRead;
+                        isMatch = nameLen == 8 && IsBoltFfiAscii(longNameBuf, 0);
+                    }
+                }
+            }
+            else
+            {
+                isMatch = IsBoltFfiAscii(secHeaders, secOffset);
+            }
+
+            if (isMatch)
+            {
+                byte[] slice = new byte[rawDataSize];
+                stream.Position = objStart + rawDataPtr;
+                if (!ReadExactly(stream, slice, 0, (int)rawDataSize)) return null;
+                return slice;
+            }
+        }
+
+        return null;
+    }
+
+    private static byte[]? ExtractBoltFfiSectionFromElf64Stream(Stream stream, long objStart, int memberSize, byte[] elfHeader)
+    {
+        ulong shoff = BinaryPrimitives.ReadUInt64LittleEndian(elfHeader.AsSpan(40, 8));
+        ushort shentsize = BinaryPrimitives.ReadUInt16LittleEndian(elfHeader.AsSpan(58, 2));
+        ushort shnum = BinaryPrimitives.ReadUInt16LittleEndian(elfHeader.AsSpan(60, 2));
+        ushort shstrndx = BinaryPrimitives.ReadUInt16LittleEndian(elfHeader.AsSpan(62, 2));
+
+        if (shentsize < 64 || shnum == 0 || shstrndx >= shnum || shoff + (ulong)shnum * shentsize > (ulong)memberSize)
+        {
+            return null;
+        }
+
+        int shTableSize = shnum * shentsize;
+        byte[] shTable = new byte[shTableSize];
+        stream.Position = objStart + (long)shoff;
+        if (!ReadExactly(stream, shTable, 0, shTableSize)) return null;
+
+        int strSecPos = shstrndx * shentsize;
+        ulong strSecOffset = BinaryPrimitives.ReadUInt64LittleEndian(shTable.AsSpan(strSecPos + 24, 8));
+        ulong strSecSize = BinaryPrimitives.ReadUInt64LittleEndian(shTable.AsSpan(strSecPos + 32, 8));
+        if (strSecOffset + strSecSize > (ulong)memberSize || strSecSize > int.MaxValue) return null;
+
+        byte[] strTab = new byte[(int)strSecSize];
+        stream.Position = objStart + (long)strSecOffset;
+        if (!ReadExactly(stream, strTab, 0, (int)strSecSize)) return null;
+
+        for (int i = 0; i < shnum; i++)
+        {
+            int sPos = i * shentsize;
+            uint sh_name = BinaryPrimitives.ReadUInt32LittleEndian(shTable.AsSpan(sPos, 4));
+            ulong offset = BinaryPrimitives.ReadUInt64LittleEndian(shTable.AsSpan(sPos + 24, 8));
+            ulong size = BinaryPrimitives.ReadUInt64LittleEndian(shTable.AsSpan(sPos + 32, 8));
+            if (size < 16 || offset + size > (ulong)memberSize || (ulong)sh_name >= strSecSize) continue;
+
+            int strStart = (int)sh_name;
+            int nullIdx = Array.IndexOf(strTab, (byte)0, strStart);
+            if (nullIdx - strStart == 8 && IsBoltFfiAscii(strTab, strStart))
+            {
+                byte[] slice = new byte[(int)size];
+                stream.Position = objStart + (long)offset;
+                if (!ReadExactly(stream, slice, 0, (int)size)) return null;
+                return slice;
+            }
+        }
+
+        return null;
+    }
+
+    private static byte[]? ExtractBoltFfiSectionFromMachO64Stream(Stream stream, long objStart, int memberSize, byte[] machHeader, bool isLE)
+    {
+        uint ncmds = ReadUInt32(machHeader, 16, isLE);
+        uint sizeofcmds = ReadUInt32(machHeader, 20, isLE);
+        if (ncmds == 0 || 32L + sizeofcmds > memberSize) return null;
+
+        byte[] cmds = new byte[sizeofcmds];
+        stream.Position = objStart + 32;
+        if (!ReadExactly(stream, cmds, 0, (int)sizeofcmds)) return null;
+
+        int cmdOffset = 0;
+        for (uint i = 0; i < ncmds && cmdOffset + 8 <= cmds.Length; i++)
+        {
+            uint cmd = ReadUInt32(cmds, cmdOffset, isLE);
+            uint cmdsize = ReadUInt32(cmds, cmdOffset + 4, isLE);
+            if (cmdsize < 8 || cmdOffset + (int)cmdsize > cmds.Length) break;
+
+            if (cmd == 0x19 /* LC_SEGMENT_64 */ && cmdOffset + 72 <= cmds.Length)
+            {
+                string segName = Encoding.ASCII.GetString(cmds, cmdOffset + 8, 16).TrimEnd('\0');
+                if (string.IsNullOrEmpty(segName) || segName.Equals("__DATA", StringComparison.OrdinalIgnoreCase))
+                {
+                    uint nsects = ReadUInt32(cmds, cmdOffset + 64, isLE);
+                    int secStart = cmdOffset + 72;
+                    for (uint s = 0; s < nsects && secStart + 80 <= cmds.Length; s++)
+                    {
+                        string sectName = Encoding.ASCII.GetString(cmds, secStart, 16).TrimEnd('\0');
+                        if (sectName.Equals("__boltffi", StringComparison.OrdinalIgnoreCase))
+                        {
+                            uint offset = ReadUInt32(cmds, secStart + 48, isLE);
+                            ulong size = ReadUInt64(cmds, secStart + 40, isLE);
+                            if (size >= 16 && offset + size <= (ulong)memberSize)
+                            {
+                                byte[] slice = new byte[(int)size];
+                                stream.Position = objStart + offset;
+                                if (!ReadExactly(stream, slice, 0, (int)size)) return null;
+                                return slice;
+                            }
+                        }
+                        secStart += 80;
+                    }
+                }
+            }
+
+            cmdOffset += (int)cmdsize;
+        }
+
+        return null;
+    }
+
+    private static bool IsBoltFfiAscii(byte[] data, int offset) =>
+        offset + 8 <= data.Length &&
+        data[offset + 0] == (byte)'.' &&
+        (data[offset + 1] | 0x20) == 'b' &&
+        (data[offset + 2] | 0x20) == 'o' &&
+        (data[offset + 3] | 0x20) == 'l' &&
+        (data[offset + 4] | 0x20) == 't' &&
+        (data[offset + 5] | 0x20) == 'f' &&
+        (data[offset + 6] | 0x20) == 'f' &&
+        (data[offset + 7] | 0x20) == 'i';
+
+    private static bool ReadExactly(Stream stream, byte[] buffer, int offset, int count)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            int n = stream.Read(buffer, offset + totalRead, count - totalRead);
+            if (n == 0) return false;
+            totalRead += n;
+        }
+        return true;
     }
 
     private static byte[] ExtractFromFatBinary(byte[] data)

@@ -156,11 +156,11 @@ public static class ElfMetadataExtractor
 
                 if (st_name == 0 || (int)strsec.offset + (int)st_name >= data.Length) continue;
 
-                int nullPos = Array.IndexOf<byte>(data, 0, (int)strsec.offset + (int)st_name);
-                if (nullPos < 0) continue;
-                string symName = Encoding.ASCII.GetString(data, (int)strsec.offset + (int)st_name, nullPos - ((int)strsec.offset + (int)st_name));
+                int strStart = (int)strsec.offset + (int)st_name;
+                int nullPos = Array.IndexOf<byte>(data, 0, strStart);
+                if (nullPos < 0 || !ArchiveMetadataExtractor.StartsWithUniffiMetaAscii(data, strStart, nullPos - strStart)) continue;
+                string symName = Encoding.ASCII.GetString(data, strStart, nullPos - strStart);
 
-                if (symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
                 {
                     if (st_shndx < shnum)
                     {
@@ -237,11 +237,11 @@ public static class ElfMetadataExtractor
 
                 if (st_name == 0 || (int)strsec.offset + (int)st_name >= data.Length) continue;
 
-                int nullPos = Array.IndexOf<byte>(data, 0, (int)strsec.offset + (int)st_name);
-                if (nullPos < 0) continue;
-                string symName = Encoding.ASCII.GetString(data, (int)strsec.offset + (int)st_name, nullPos - ((int)strsec.offset + (int)st_name));
+                int strStart = (int)strsec.offset + (int)st_name;
+                int nullPos = Array.IndexOf<byte>(data, 0, strStart);
+                if (nullPos < 0 || !ArchiveMetadataExtractor.StartsWithUniffiMetaAscii(data, strStart, nullPos - strStart)) continue;
+                string symName = Encoding.ASCII.GetString(data, strStart, nullPos - strStart);
 
-                if (symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
                 {
                     if (st_shndx < shnum)
                     {

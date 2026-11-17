@@ -164,7 +164,7 @@ public static class InteropArbitrator
         }
 
         // 4. Objects / Classes (Native Handle Table vs Arc Pointer):
-        // BoltFFI direct handle table calls with [SuppressGCTransition] achieve ~4.2 ns vs optimized UniFFI ~18 ns
+        // BoltFFI direct handle table calls achieve ~4.2 ns vs optimized UniFFI ~18 ns
         // (optimized from unoptimized ~48.88 ns by eliminating redundant CloneRustArcPtr P/Invoke & CAS spin).
         // BoltFFI also allocates less memory on lifecycle creation (24 B vs 40 B).
         if (HasClassSignature(uniffiFn, boltFn))
@@ -197,10 +197,10 @@ public static class InteropArbitrator
         }
 
         // 8. Infallible pure scalars:
-        // Direct C-ABI call with [SuppressGCTransition] (AddInt64: 0.743 ns vs UniFFI 2.756 ns).
+        // Direct C-ABI call avoids the status channel (AddInt64: 0.743 ns vs UniFFI 2.756 ns).
         if (!isFallible && IsPureScalarSignature(uniffiFn, boltFn))
         {
-            return (InteropEngine.BoltFFI, "direct P/Invoke with [SuppressGCTransition] avoids status channel (~73% lower latency)");
+            return (InteropEngine.BoltFFI, "direct P/Invoke avoids status channel (~73% lower latency)");
         }
 
         // 9. Other signature shapes use BoltFFI.

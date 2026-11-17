@@ -25,6 +25,24 @@ public static class PeMetadataExtractor
         return all.Count > 0 ? all[0] : null;
     }
 
+    public static string ResolveTargetFilePath(string dllPath)
+    {
+        string fullPath = Path.GetFullPath(dllPath);
+        if (fullPath.EndsWith(".lib", StringComparison.OrdinalIgnoreCase) ||
+            fullPath.EndsWith(".a", StringComparison.OrdinalIgnoreCase))
+        {
+            return fullPath;
+        }
+
+        string libCandidate = Path.ChangeExtension(fullPath, ".lib");
+        if (File.Exists(libCandidate)) return libCandidate;
+
+        string aCandidate = Path.ChangeExtension(fullPath, ".a");
+        if (File.Exists(aCandidate)) return aCandidate;
+
+        return fullPath;
+    }
+
     public static bool IsCached(string dllPath, long ticks, long length)
     {
         try
@@ -48,8 +66,7 @@ public static class PeMetadataExtractor
         try
         {
             string fullPath = Path.GetFullPath(dllPath);
-            string libCandidate = Path.ChangeExtension(fullPath, ".lib");
-            string fileToInspect = File.Exists(libCandidate) ? libCandidate : fullPath;
+            string fileToInspect = ResolveTargetFilePath(fullPath);
             var fi = new FileInfo(fileToInspect);
             long ticks = fi.LastWriteTimeUtc.Ticks;
             long len = fi.Length;
@@ -59,7 +76,9 @@ public static class PeMetadataExtractor
                 return cached.Metadata;
             }
 
-            var result = (fileBytes != null && fileToInspect == fullPath) ? ExtractAll(fileBytes) : ExtractAllInternal(fullPath);
+            var result = (fileBytes != null && string.Equals(fileToInspect, fullPath, StringComparison.OrdinalIgnoreCase))
+                ? ExtractAll(fileBytes)
+                : ExtractAllInternal(fullPath);
             s_cache[fullPath] = (ticks, len, result);
             return result;
         }
@@ -238,7 +257,7 @@ public static class PeMetadataExtractor
                 }
 
                 var reader = export.Address.CreateReader();
-                uint maxProbe = Math.Min(reader.RemainingLength, 64 * 1024);
+                uint maxProbe = Math.Min(reader.RemainingLength, 512u);
                 byte[] data = reader.ReadBytes((int)maxProbe);
 
                 if (data.Length == 0)
@@ -253,7 +272,8 @@ public static class PeMetadataExtractor
                     var metadataReader = new MetadataReader(data);
                     item = metadataReader.ReadItem();
                 }
-                catch (InvalidOperationException) when (maxProbe < reader.RemainingLength + maxProbe)
+                catch (Exception ex) when (maxProbe < reader.RemainingLength + maxProbe &&
+                                           (ex is InvalidOperationException || ex is ArgumentException))
                 {
                     var fullReader = export.Address.CreateReader();
                     data = fullReader.ReadToEnd();

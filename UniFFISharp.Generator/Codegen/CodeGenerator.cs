@@ -26,9 +26,20 @@ public static class CodeGenerator
 
     public static string Generate(ComponentInterface ci, string dllFileName, Func<string, string>? namespaceResolver, CodeGeneratorOptions? options)
     {
+        return Generate(ci, dllFileName, namespaceResolver, options, null);
+    }
+
+    public static string Generate(
+        ComponentInterface ci,
+        string dllFileName,
+        Func<string, string>? namespaceResolver,
+        CodeGeneratorOptions? options,
+        IReadOnlyList<Arbitration.CallbackImplementationInfo>? callbackImplementations)
+    {
         options ??= new CodeGeneratorOptions();
         var cb = new CSharpCodeBuilder();
-        string ns = string.IsNullOrEmpty(ci.Namespace) ? TypeHelper.ToPascalCase(ci.CrateName) : TypeHelper.ToPascalCase(ci.Namespace);
+        string rawNs = !string.IsNullOrEmpty(options.ResolvedNamespace) ? options.ResolvedNamespace! : ci.Namespace;
+        string ns = string.IsNullOrEmpty(rawNs) ? TypeHelper.ToPascalCase(ci.CrateName) : TypeHelper.ToPascalCase(rawNs);
         string crateNorm = TypeHelper.SanitizeIdentifier(ci.CrateName.Replace('-', '_'));
         string dllNameNoExt = TypeHelper.SanitizeIdentifier(Path.GetFileNameWithoutExtension(dllFileName));
 
@@ -62,7 +73,7 @@ public static class CodeGenerator
         // 1. Enums (Native unions first to keep offset minimal for partial union definitions)
         foreach (var enm in ci.Enums.OrderBy(e => (options.EffectiveUseNativeUnions && e.Shape == EnumShape.Enum && e.Variants.Any(v => v.Fields.Count > 0)) ? 0 : 1))
         {
-            GenerateEnum(cb, enm, crateNorm, namespaceResolver, options);
+            GenerateEnum(cb, enm, crateNorm, ci, namespaceResolver, options);
         }
 
         // 2. Records
@@ -74,12 +85,14 @@ public static class CodeGenerator
         // 3. Objects / Interfaces
         foreach (var obj in ci.Objects)
         {
+            if (IsTypeSuppressed(options, obj.Name, TypeHelper.ToPascalCase(obj.Name))) continue;
             GenerateObject(cb, obj, crateNorm, ci, namespaceResolver, options);
         }
 
         // 4. Callback Interfaces
         foreach (var cbi in ci.CallbackInterfaces)
         {
+            if (IsTypeSuppressed(options, cbi.Name, TypeHelper.ToPascalCase(cbi.Name))) continue;
             GenerateCallbackInterface(cb, cbi, crateNorm, namespaceResolver);
         }
 
@@ -94,10 +107,14 @@ public static class CodeGenerator
         GenerateCompositeConverters(cb, compositeTypes, crateNorm, namespaceResolver, ci, options);
 
         // 8. _UniFFILib P/Invoke class
-        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver);
+        GenerateLibraryClass(cb, ci, crateNorm, dllNameNoExt, namespaceResolver, options, callbackImplementations);
 
         return cb.ToString();
     }
+
+    private static bool IsTypeSuppressed(CodeGeneratorOptions options, string rawName, string pascalName) =>
+        options.SuppressTypeDefinitions != null &&
+        (options.SuppressTypeDefinitions.Contains(rawName) || options.SuppressTypeDefinitions.Contains(pascalName));
 
     private static void AppendDocComment(CSharpCodeBuilder cb, string? docstring)
     {
@@ -196,6 +213,7 @@ public static class CodeGenerator
         {
             cb.AppendLine("public static readonly FfiConverterString INSTANCE = new();");
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block("public override string Lift(RustBuffer value)"))
             {
                 using (cb.Block("try"))
@@ -212,22 +230,44 @@ public static class CodeGenerator
                 }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block("public override RustBuffer Lower(string value)"))
             {
                 cb.AppendLine("value ??= string.Empty;");
-                cb.AppendLine("int byteCount = Encoding.UTF8.GetByteCount(value);");
-                cb.AppendLine("var rbuf = _UniFFILib.Alloc(byteCount);");
-                using (cb.Block("if (byteCount > 0)"))
+                cb.AppendLine("int charLen = value.Length;");
+                using (cb.Block("if (charLen == 0)"))
+                {
+                    cb.AppendLine("return _UniFFILib.Alloc(0);");
+                }
+                using (cb.Block("if (charLen <= 256)"))
+                {
+                    cb.AppendLine("Span<byte> utf8 = stackalloc byte[charLen * 3];");
+                    cb.AppendLine("int byteCount = Encoding.UTF8.GetBytes(value.AsSpan(), utf8);");
+                    cb.AppendLine("var rbuf = _UniFFILib.Alloc(byteCount);");
+                    using (cb.Block("if (byteCount > 0 && rbuf.data != IntPtr.Zero)"))
+                    {
+                        using (cb.Block("unsafe"))
+                        {
+                            cb.AppendLine("utf8.Slice(0, byteCount).CopyTo(new Span<byte>((void*)rbuf.data, byteCount));");
+                        }
+                        cb.AppendLine("rbuf.len = (ulong)byteCount;");
+                    }
+                    cb.AppendLine("return rbuf;");
+                }
+                cb.AppendLine("int longByteCount = Encoding.UTF8.GetByteCount(value);");
+                cb.AppendLine("var longBuf = _UniFFILib.Alloc(longByteCount);");
+                using (cb.Block("if (longByteCount > 0)"))
                 {
                     using (cb.Block("unsafe"))
                     {
                         using (cb.Block("fixed (char* pChars = value)"))
                         {
-                            cb.AppendLine("Encoding.UTF8.GetBytes(pChars, value.Length, (byte*)rbuf.data.ToPointer(), byteCount);");
+                            cb.AppendLine("Encoding.UTF8.GetBytes(pChars, charLen, (byte*)longBuf.data.ToPointer(), longByteCount);");
                         }
                     }
+                    cb.AppendLine("longBuf.len = (ulong)longByteCount;");
                 }
-                cb.AppendLine("return rbuf;");
+                cb.AppendLine("return longBuf;");
             }
             cb.AppendLine();
             cb.AppendLine("public override int AllocationSize(string value) => 4 + Encoding.UTF8.GetByteCount(value ?? string.Empty);");
@@ -322,15 +362,15 @@ public static class CodeGenerator
             }
             else if (ty.Kind == TypeKind.Sequence)
             {
-                GenerateSequenceConverter(cb, ty, crateNorm, namespaceResolver);
+                GenerateSequenceConverter(cb, ty, crateNorm, namespaceResolver, ci);
             }
             else if (ty.Kind == TypeKind.Map)
             {
-                GenerateMapConverter(cb, ty, crateNorm, namespaceResolver);
+                GenerateMapConverter(cb, ty, crateNorm, namespaceResolver, ci);
             }
             else if (ty.Kind == TypeKind.Set)
             {
-                GenerateSetConverter(cb, ty, crateNorm, namespaceResolver);
+                GenerateSetConverter(cb, ty, crateNorm, namespaceResolver, ci);
             }
         }
     }
@@ -357,8 +397,14 @@ public static class CodeGenerator
         var inner = type.InnerType!;
         string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
+        string writeExpr = TypeHelper.ConverterWriteExpr(inner, isValExpr(inner, ci, options), "stream", crateNorm, namespaceResolver);
+        string readExpr = TypeHelper.ConverterReadExpr(inner, "stream", crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
         bool isVal = IsValueType(inner, ci, options);
+        bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, ci, out int innerSize);
+
+        static string isValExpr(UniFFIType t, ComponentInterface comp, CodeGeneratorOptions opts) =>
+            IsValueType(t, comp, opts) ? "value.Value" : "value!";
 
         using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<{innerCsType}?>"))
         {
@@ -367,13 +413,22 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override int AllocationSize({innerCsType}? value)"))
             {
-                cb.AppendLine("if (value == null) return 1;");
-                string valExpr = isVal ? "value.Value" : "value!";
-                cb.AppendLine($"return 1 + {innerConverter}.AllocationSize({valExpr});");
+                if (isFixed)
+                {
+                    cb.AppendLine($"return value == null ? 1 : {1 + innerSize};");
+                }
+                else
+                {
+                    cb.AppendLine("if (value == null) return 1;");
+                    string valExpr = isVal ? "value.Value" : "value!";
+                    cb.AppendLine($"return 1 + {innerConverter}.AllocationSize({valExpr});");
+                }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override void Write({innerCsType}? value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
@@ -382,23 +437,23 @@ public static class CodeGenerator
                     cb.AppendLine("return;");
                 }
                 cb.AppendLine("stream.WriteUInt8(1);");
-                string valExpr = isVal ? "value.Value" : "value!";
-                cb.AppendLine($"{innerConverter}.Write({valExpr}, ref stream);");
+                cb.AppendLine($"{writeExpr};");
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override {innerCsType}? Read(ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (stream.ReadUInt8() == 0)"))
                 {
                     cb.AppendLine("return null;");
                 }
-                cb.AppendLine($"return {innerConverter}.Read(ref stream);");
+                cb.AppendLine($"return {readExpr};");
             }
         }
         cb.AppendLine();
     }
 
-    private static void GenerateSequenceConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
+    private static void GenerateSequenceConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver, ComponentInterface ci)
     {
         var inner = type.InnerType!;
         string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
@@ -415,17 +470,20 @@ public static class CodeGenerator
             if (TypeHelper.IsFfiPrimitive(inner))
             {
                 string typeIdent = TypeHelper.ToTypeIdentifier(inner);
-                TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+                TypeHelper.TryGetFixedAllocationSize(inner, ci, out int elemSize);
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override int AllocationSize(List<{innerCsType}> value)"))
                 {
                     cb.AppendLine($"return value == null ? 4 : checked(4 + value.Count * {elemSize});");
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
                 {
                     cb.AppendLine($"stream.Write{typeIdent}List(value);");
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine($"return stream.Read{typeIdent}List();");
@@ -433,7 +491,10 @@ public static class CodeGenerator
             }
             else
             {
-                bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+                bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, ci, out int elemSize);
+                string writeItemExpr = TypeHelper.ConverterWriteExpr(inner, "span[i]", "stream", crateNorm, namespaceResolver);
+                string readItemExpr = TypeHelper.ConverterReadExpr(inner, "stream", crateNorm, namespaceResolver);
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override int AllocationSize(List<{innerCsType}> value)"))
                 {
                     if (isFixed)
@@ -444,14 +505,16 @@ public static class CodeGenerator
                     {
                         cb.AppendLine("if (value == null) return 4;");
                         cb.AppendLine("int size = 4;");
-                        using (cb.Block("foreach (var item in value)"))
+                        cb.AppendLine("var span = CollectionsMarshal.AsSpan(value);");
+                        using (cb.Block("for (int i = 0; i < span.Length; i++)"))
                         {
-                            cb.AppendLine($"size += {innerConverter}.AllocationSize(item);");
+                            cb.AppendLine($"size += {innerConverter}.AllocationSize(span[i]);");
                         }
                         cb.AppendLine("return size;");
                     }
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override void Write(List<{innerCsType}> value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("if (value == null)"))
@@ -459,13 +522,15 @@ public static class CodeGenerator
                         cb.AppendLine("stream.WriteInt32(0);");
                         cb.AppendLine("return;");
                     }
-                    cb.AppendLine("stream.WriteInt32(value.Count);");
-                    using (cb.Block("foreach (var item in value)"))
+                    cb.AppendLine("var span = CollectionsMarshal.AsSpan(value);");
+                    cb.AppendLine("stream.WriteInt32(span.Length);");
+                    using (cb.Block("for (int i = 0; i < span.Length; i++)"))
                     {
-                        cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
+                        cb.AppendLine($"{writeItemExpr};");
                     }
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override List<{innerCsType}> Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int count = stream.ReadInt32();");
@@ -477,17 +542,27 @@ public static class CodeGenerator
                             cb.AppendLine("throw new UniffiException($\"Corrupt stream: sequence count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
                         }
                     }
-                    else
+                    else if (minBytes == 1)
                     {
                         using (cb.Block("if (count < 0 || count > stream.Remaining)"))
                         {
                             cb.AppendLine("throw new UniffiException($\"Corrupt stream: sequence count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
                         }
                     }
-                    cb.AppendLine($"var list = new List<{innerCsType}>(count);");
-                    using (cb.Block("for (int i = 0; i < count; i++)"))
+                    else
                     {
-                        cb.AppendLine($"list.Add({innerConverter}.Read(ref stream));");
+                        using (cb.Block("if (count < 0)"))
+                        {
+                            cb.AppendLine("throw new UniffiException($\"Corrupt stream: negative sequence count {count}\");");
+                        }
+                    }
+                    cb.AppendLine($"if (count == 0) return new List<{innerCsType}>(0);");
+                    cb.AppendLine($"var list = new List<{innerCsType}>(count);");
+                    cb.AppendLine("CollectionsMarshal.SetCount(list, count);");
+                    cb.AppendLine("var dest = CollectionsMarshal.AsSpan(list);");
+                    using (cb.Block("for (int i = 0; i < dest.Length; i++)"))
+                    {
+                        cb.AppendLine($"dest[i] = {readItemExpr};");
                     }
                     cb.AppendLine("return list;");
                 }
@@ -496,7 +571,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateMapConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
+    private static void GenerateMapConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver, ComponentInterface ci)
     {
         var key = type.KeyType!;
         var val = type.ValueType!;
@@ -504,12 +579,18 @@ public static class CodeGenerator
         string valCsType = TypeHelper.ToCSharpType(val, crateNorm, namespaceResolver);
         string keyConverter = TypeHelper.ConverterInstance(key, crateNorm, namespaceResolver);
         string valConverter = TypeHelper.ConverterInstance(val, crateNorm, namespaceResolver);
+        string keyWriteExpr = TypeHelper.ConverterWriteExpr(key, "kv.Key", "stream", crateNorm, namespaceResolver);
+        string valWriteExpr = TypeHelper.ConverterWriteExpr(val, "kv.Value", "stream", crateNorm, namespaceResolver);
+        string keyReadExpr = TypeHelper.ConverterReadExpr(key, "stream", crateNorm, namespaceResolver);
+        string valReadExpr = TypeHelper.ConverterReadExpr(val, "stream", crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
-        bool keyFixed = TypeHelper.TryGetFixedAllocationSize(key, out int keySize);
-        bool valFixed = TypeHelper.TryGetFixedAllocationSize(val, out int valSize);
+        bool keyFixed = TypeHelper.TryGetFixedAllocationSize(key, ci, out int keySize);
+        bool valFixed = TypeHelper.TryGetFixedAllocationSize(val, ci, out int valSize);
         bool isFixed = keyFixed && valFixed;
         int pairSize = isFixed ? (keySize + valSize) : 2;
+        string keySizeExpr = keyFixed ? keySize.ToString() : $"{keyConverter}.AllocationSize(kv.Key)";
+        string valSizeExpr = valFixed ? valSize.ToString() : $"{valConverter}.AllocationSize(kv.Value)";
 
         using (cb.Block($"internal sealed partial class {convName} : FfiConverterRustBuffer<Dictionary<{keyCsType}, {valCsType}>>"))
         {
@@ -518,6 +599,7 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override int AllocationSize(Dictionary<{keyCsType}, {valCsType}> value)"))
             {
                 if (isFixed)
@@ -530,12 +612,13 @@ public static class CodeGenerator
                     cb.AppendLine("int size = 4;");
                     using (cb.Block("foreach (var kv in value)"))
                     {
-                        cb.AppendLine($"size += {keyConverter}.AllocationSize(kv.Key) + {valConverter}.AllocationSize(kv.Value);");
+                        cb.AppendLine($"size += {keySizeExpr} + {valSizeExpr};");
                     }
                     cb.AppendLine("return size;");
                 }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override void Write(Dictionary<{keyCsType}, {valCsType}> value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
@@ -546,23 +629,34 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Count);");
                 using (cb.Block("foreach (var kv in value)"))
                 {
-                    cb.AppendLine($"{keyConverter}.Write(kv.Key, ref stream);");
-                    cb.AppendLine($"{valConverter}.Write(kv.Value, ref stream);");
+                    cb.AppendLine($"{keyWriteExpr};");
+                    cb.AppendLine($"{valWriteExpr};");
                 }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override Dictionary<{keyCsType}, {valCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
-                using (cb.Block($"if (count < 0 || (long)count * {pairSize} > stream.Remaining)"))
+                if (pairSize > 0)
                 {
-                    cb.AppendLine("throw new UniffiException($\"Corrupt stream: map count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                    using (cb.Block($"if (count < 0 || (long)count * {pairSize} > stream.Remaining)"))
+                    {
+                        cb.AppendLine("throw new UniffiException($\"Corrupt stream: map count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
+                    }
+                }
+                else
+                {
+                    using (cb.Block("if (count < 0)"))
+                    {
+                        cb.AppendLine("throw new UniffiException($\"Corrupt stream: negative map count {count}\");");
+                    }
                 }
                 cb.AppendLine($"var dict = new Dictionary<{keyCsType}, {valCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
-                    cb.AppendLine($"var k = {keyConverter}.Read(ref stream);");
-                    cb.AppendLine($"var v = {valConverter}.Read(ref stream);");
+                    cb.AppendLine($"var k = {keyReadExpr};");
+                    cb.AppendLine($"var v = {valReadExpr};");
                     cb.AppendLine("dict[k] = v;");
                 }
                 cb.AppendLine("return dict;");
@@ -571,14 +665,16 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateSetConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver)
+    private static void GenerateSetConverter(CSharpCodeBuilder cb, UniFFIType type, string crateNorm, Func<string, string>? namespaceResolver, ComponentInterface ci)
     {
         var inner = type.InnerType!;
         string innerCsType = TypeHelper.ToCSharpType(inner, crateNorm, namespaceResolver);
         string innerConverter = TypeHelper.ConverterInstance(inner, crateNorm, namespaceResolver);
+        string writeItemExpr = TypeHelper.ConverterWriteExpr(inner, "item", "stream", crateNorm, namespaceResolver);
+        string readItemExpr = TypeHelper.ConverterReadExpr(inner, "stream", crateNorm, namespaceResolver);
         string convName = TypeHelper.ConverterClassName(type);
 
-        bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, out int elemSize);
+        bool isFixed = TypeHelper.TryGetFixedAllocationSize(inner, ci, out int elemSize);
         int minBytes = isFixed ? elemSize : 1;
 
         using (cb.Block($"public sealed partial class {convName} : FfiConverterRustBuffer<HashSet<{innerCsType}>>"))
@@ -588,6 +684,7 @@ public static class CodeGenerator
             cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
             cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override int AllocationSize(HashSet<{innerCsType}> value)"))
             {
                 if (isFixed)
@@ -606,6 +703,7 @@ public static class CodeGenerator
                 }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override void Write(HashSet<{innerCsType}> value, ref BigEndianStream stream)"))
             {
                 using (cb.Block("if (value == null)"))
@@ -616,10 +714,11 @@ public static class CodeGenerator
                 cb.AppendLine("stream.WriteInt32(value.Count);");
                 using (cb.Block("foreach (var item in value)"))
                 {
-                    cb.AppendLine($"{innerConverter}.Write(item, ref stream);");
+                    cb.AppendLine($"{writeItemExpr};");
                 }
             }
             cb.AppendLine();
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override HashSet<{innerCsType}> Read(ref BigEndianStream stream)"))
             {
                 cb.AppendLine("int count = stream.ReadInt32();");
@@ -630,17 +729,24 @@ public static class CodeGenerator
                         cb.AppendLine("throw new UniffiException($\"Corrupt stream: set count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
                     }
                 }
-                else
+                else if (minBytes == 1)
                 {
                     using (cb.Block("if (count < 0 || count > stream.Remaining)"))
                     {
                         cb.AppendLine("throw new UniffiException($\"Corrupt stream: set count {count} exceeds remaining buffer bytes {stream.Remaining}\");");
                     }
                 }
+                else
+                {
+                    using (cb.Block("if (count < 0)"))
+                    {
+                        cb.AppendLine("throw new UniffiException($\"Corrupt stream: negative set count {count}\");");
+                    }
+                }
                 cb.AppendLine($"var set = new HashSet<{innerCsType}>(count);");
                 using (cb.Block("for (int i = 0; i < count; i++)"))
                 {
-                    cb.AppendLine($"set.Add({innerConverter}.Read(ref stream));");
+                    cb.AppendLine($"set.Add({readItemExpr});");
                 }
                 cb.AppendLine("return set;");
             }
@@ -648,8 +754,37 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateLibraryClass(CSharpCodeBuilder cb, ComponentInterface ci, string crateNorm, string dllName, Func<string, string>? namespaceResolver = null)
+    private static bool ShouldSuppressGCTransition(
+        CodeGeneratorOptions options,
+        string? objectPascalName,
+        string rawName,
+        string pascalName,
+        bool isAsync)
     {
+        if (isAsync || options.MethodConfigs == null) return false;
+        var configs = options.MethodConfigs;
+        if (!string.IsNullOrEmpty(objectPascalName))
+        {
+            if (configs.TryGetValue($"{objectPascalName}.{pascalName}", out var qcfg) && qcfg.SuppressGCTransition)
+                return true;
+        }
+        if ((configs.TryGetValue(pascalName, out var cfg) || configs.TryGetValue(rawName, out cfg)) && cfg.SuppressGCTransition)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static void GenerateLibraryClass(
+        CSharpCodeBuilder cb,
+        ComponentInterface ci,
+        string crateNorm,
+        string dllName,
+        Func<string, string>? namespaceResolver = null,
+        CodeGeneratorOptions? options = null,
+        IReadOnlyList<Arbitration.CallbackImplementationInfo>? callbackImplementations = null)
+    {
+        options ??= new CodeGeneratorOptions();
         using (cb.Block($"internal static partial class _UniFFILib_{crateNorm}"))
         {
             cb.AppendLine("#if (IOS || MACCATALYST || TVOS) && UNIFFI_STATIC_LINK");
@@ -660,6 +795,7 @@ public static class CodeGenerator
             cb.AppendLine();
 
             // Alloc / Free helpers
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block("public static RustBuffer Alloc(int size)"))
             {
                 cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -670,8 +806,10 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block("public static void Free(RustBuffer buffer)"))
             {
+                cb.AppendLine("if (buffer.data == IntPtr.Zero && buffer.capacity == 0) return;");
                 cb.AppendLine("var status = new UniffiRustCallStatus();");
                 cb.AppendLine($"ffi_{crateNorm}_rustbuffer_free(buffer, ref status);");
                 cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
@@ -689,42 +827,18 @@ public static class CodeGenerator
             using (cb.Block($"static _UniFFILib_{crateNorm}()"))
             {
                 cb.AppendLine("#if NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER");
-                using (cb.Block("try"))
-                {
-                    string escapedDll = TypeHelper.EscapeStringLiteral(dllName);
-                    using (cb.Block($"NativeLibrary.SetDllImportResolver(typeof(_UniFFILib_{crateNorm}).Assembly, (libraryName, assembly, searchPath) =>"))
-                    {
-                        using (cb.Block($"if (libraryName == DllName || libraryName == \"{escapedDll}\" || libraryName == \"{escapedDll}.dll\" || libraryName == \"__Internal\")"))
-                        {
-                            cb.AppendLine("IntPtr mainHandle = NativeLibrary.GetMainProgramHandle();");
-                            using (cb.Block($"if (NativeLibrary.TryGetExport(mainHandle, \"ffi_{crateNorm}_uniffi_contract_version\", out _))"))
-                            {
-                                cb.AppendLine("return mainHandle;");
-                            }
-                            using (cb.Block($"if (NativeLibrary.TryLoad(\"{escapedDll}\", assembly, searchPath, out IntPtr handle))"))
-                            {
-                                cb.AppendLine("return handle;");
-                            }
-                            using (cb.Block($"if (NativeLibrary.TryLoad(\"{escapedDll}.dll\", assembly, searchPath, out IntPtr handleDll))"))
-                            {
-                                cb.AppendLine("return handleDll;");
-                            }
-                        }
-                        cb.AppendLine("return IntPtr.Zero;");
-                    }
-                    cb.AppendLine(");");
-                }
-                using (cb.Block("catch (InvalidOperationException)"))
-                {
-                    cb.AppendLine("// Resolver already registered for this assembly");
-                }
+                cb.AppendLine($"UniffiLibraryResolver.Register(typeof(_UniFFILib_{crateNorm}).Assembly, DllName, \"ffi_{crateNorm}_uniffi_contract_version\");");
                 cb.AppendLine("#endif");
                 cb.AppendLine();
                 cb.AppendLine("uniffiCheckContractApiVersion();");
-                cb.AppendLine("uniffiCheckApiChecksums();");
+                if (!options.SkipChecksums)
+                {
+                    cb.AppendLine("uniffiCheckApiChecksums();");
+                }
 
                 foreach (var cbi in ci.CallbackInterfaces)
                 {
+                    if (IsTypeSuppressed(options, cbi.Name, TypeHelper.ToPascalCase(cbi.Name))) continue;
                     cb.AppendLine($"RegisterCallback_{TypeHelper.ToPascalCase(cbi.Name)}();");
                 }
             }
@@ -747,19 +861,24 @@ public static class CodeGenerator
             // Checksums Check
             using (cb.Block("static void uniffiCheckApiChecksums()"))
             {
-                foreach (var fn in ci.Functions)
+                if (!options.SkipChecksums)
                 {
-                    if (fn.Checksum.HasValue)
+                    bool firstChecksum = true;
+                    foreach (var fn in ci.Functions)
                     {
-                        using (cb.Block("try"))
+                        if (fn.Checksum.HasValue)
                         {
-                            string checkFn = $"uniffi_{crateNorm}_checksum_func_{TypeHelper.SanitizeIdentifier(fn.Name.ToLowerInvariant())}";
-                            cb.AppendLine($"var checksum = {checkFn}();");
-                            cb.AppendLine($"if (checksum != {fn.Checksum.Value}) throw new UniffiContractChecksumException($\"Checksum mismatch for {TypeHelper.EscapeStringLiteral(fn.Name)}: expected {fn.Checksum.Value}, got {{checksum}}\");");
-                        }
-                        using (cb.Block("catch (EntryPointNotFoundException)"))
-                        {
-                            cb.AppendLine("// Checksum symbol omitted; ignored.");
+                            using (cb.Block("try"))
+                            {
+                                string checkFn = $"uniffi_{crateNorm}_checksum_func_{TypeHelper.SanitizeIdentifier(fn.Name.ToLowerInvariant())}";
+                                cb.AppendLine($"var checksum = {checkFn}();");
+                                cb.AppendLine($"if (checksum != {fn.Checksum.Value}) throw new UniffiContractChecksumException($\"Checksum mismatch for {TypeHelper.EscapeStringLiteral(fn.Name)}: expected {fn.Checksum.Value}, got {{checksum}}\");");
+                            }
+                            using (cb.Block("catch (EntryPointNotFoundException)"))
+                            {
+                                cb.AppendLine(firstChecksum ? "return;" : "// Checksum symbol omitted; ignored.");
+                            }
+                            firstChecksum = false;
                         }
                     }
                 }
@@ -809,6 +928,7 @@ public static class CodeGenerator
             }
             foreach (var obj in ci.Objects)
             {
+                if (IsTypeSuppressed(options, obj.Name, TypeHelper.ToPascalCase(obj.Name))) continue;
                 foreach (var ctor in obj.Constructors) if (ctor.IsAsync) DeclareFutureFns(new UniFFIType { Kind = TypeKind.Interface });
                 foreach (var m in obj.Methods) if (m.IsAsync) DeclareFutureFns(m.ReturnType);
             }
@@ -817,7 +937,7 @@ public static class CodeGenerator
             foreach (var fn in ci.Functions)
             {
                 string fnLower = TypeHelper.SanitizeIdentifier(fn.Name.ToLowerInvariant());
-                if (fn.Checksum.HasValue)
+                if (!options.SkipChecksums && fn.Checksum.HasValue)
                 {
                     cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_checksum_func_{fnLower}\", CallingConvention = CallingConvention.Cdecl)]");
                     cb.AppendLine("[SuppressGCTransition]");
@@ -831,6 +951,7 @@ public static class CodeGenerator
                     ffiParams.Add($"{TypeHelper.ToFfiType(param.Type)} {TypeHelper.ToCamelCase(param.Name)}");
                 }
 
+                bool suppressGc = ShouldSuppressGCTransition(options, null, fn.Name, TypeHelper.ToPascalCase(fn.Name), fn.IsAsync);
                 if (fn.IsAsync)
                 {
                     // Async returns ulong (future handle) and takes NO status param
@@ -844,6 +965,7 @@ public static class CodeGenerator
                     ffiParams.Add("ref UniffiRustCallStatus status");
                     string paramList = string.Join(", ", ffiParams);
                     cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_func_{fnLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                    if (suppressGc) cb.AppendLine("[SuppressGCTransition]");
                     cb.AppendLine($"public static extern {retFfi} uniffi_{crateNorm}_fn_func_{fnLower}({paramList});");
                 }
                 cb.AppendLine();
@@ -852,6 +974,8 @@ public static class CodeGenerator
             // Object constructors & methods
             foreach (var obj in ci.Objects)
             {
+                string objPascal = TypeHelper.ToPascalCase(obj.Name);
+                if (IsTypeSuppressed(options, obj.Name, objPascal)) continue;
                 string objLower = TypeHelper.SanitizeIdentifier(obj.Name.ToLowerInvariant());
 
                 cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_clone_{objLower}\", CallingConvention = CallingConvention.Cdecl)]");
@@ -865,6 +989,8 @@ public static class CodeGenerator
                 foreach (var ctor in obj.Constructors)
                 {
                     string ctorLower = TypeHelper.SanitizeIdentifier(ctor.Name.ToLowerInvariant());
+                    string ctorPascal = ctor.Name == "new" ? objPascal : TypeHelper.ToPascalCase(ctor.Name);
+                    bool suppressGc = ShouldSuppressGCTransition(options, objPascal, ctor.Name, ctorPascal, ctor.IsAsync);
                     var ffiParams = new List<string>();
                     foreach (var param in ctor.Inputs)
                     {
@@ -880,6 +1006,7 @@ public static class CodeGenerator
                     {
                         ffiParams.Add("ref UniffiRustCallStatus status");
                         cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                        if (suppressGc) cb.AppendLine("[SuppressGCTransition]");
                         cb.AppendLine($"public static extern IntPtr uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", ffiParams)});");
                     }
                     cb.AppendLine();
@@ -888,6 +1015,8 @@ public static class CodeGenerator
                 foreach (var m in obj.Methods)
                 {
                     string mLower = TypeHelper.SanitizeIdentifier(m.Name.ToLowerInvariant());
+                    string mPascal = TypeHelper.ToPascalCase(m.Name);
+                    bool suppressGc = ShouldSuppressGCTransition(options, objPascal, m.Name, mPascal, m.IsAsync);
                     var ffiParams = new List<string> { "IntPtr ptr" };
                     foreach (var param in m.Inputs)
                     {
@@ -904,6 +1033,7 @@ public static class CodeGenerator
                         string retFfi = m.ReturnType != null ? TypeHelper.ToFfiType(m.ReturnType) : "void";
                         ffiParams.Add("ref UniffiRustCallStatus status");
                         cb.AppendLine($"[DllImport(DllName, EntryPoint = \"uniffi_{crateNorm}_fn_method_{objLower}_{mLower}\", CallingConvention = CallingConvention.Cdecl)]");
+                        if (suppressGc) cb.AppendLine("[SuppressGCTransition]");
                         cb.AppendLine($"public static extern {retFfi} uniffi_{crateNorm}_fn_method_{objLower}_{mLower}({string.Join(", ", ffiParams)});");
                     }
                     cb.AppendLine();
@@ -913,16 +1043,26 @@ public static class CodeGenerator
             // Callback Interfaces VTable & P/Invokes
             foreach (var cbi in ci.CallbackInterfaces)
             {
-                GenerateCallbackLibrarySupport(cb, cbi, crateNorm, namespaceResolver);
+                if (IsTypeSuppressed(options, cbi.Name, TypeHelper.ToPascalCase(cbi.Name))) continue;
+                GenerateCallbackLibrarySupport(cb, cbi, crateNorm, namespaceResolver, callbackImplementations);
             }
         }
         cb.AppendLine();
     }
 
-    private static void GenerateCallbackLibrarySupport(CSharpCodeBuilder cb, CallbackInterfaceMetadata cbi, string crateNorm, Func<string, string>? namespaceResolver = null)
+    private static void GenerateCallbackLibrarySupport(
+        CSharpCodeBuilder cb,
+        CallbackInterfaceMetadata cbi,
+        string crateNorm,
+        Func<string, string>? namespaceResolver = null,
+        IReadOnlyList<Arbitration.CallbackImplementationInfo>? callbackImplementations = null)
     {
         string cbiName = TypeHelper.ToPascalCase(cbi.Name);
         string cbiLower = TypeHelper.SanitizeIdentifier(cbi.Name.ToLowerInvariant());
+        string ifaceName = $"I{cbiName}";
+        var matchedImplementations = callbackImplementations?
+            .Where(impl => impl.ImplementedInterfaces.Any(i => i == ifaceName || i.EndsWith("." + ifaceName, StringComparison.Ordinal)))
+            .ToList();
 
         // 1. VTable Struct (UniFFI 0.32 layout: uniffi_free, uniffi_clone first, then method pointers)
         using (cb.Block($"[StructLayout(LayoutKind.Sequential)] public unsafe partial struct UniFfiVTable{cbiName}"))
@@ -1033,10 +1173,143 @@ public static class CodeGenerator
                 ffiParams.Add("IntPtr uniffiOutReturn");
 
                 string resultStruct = $"ForeignFutureStruct_{cbiName}_{i}";
+                string taskRetType = m.ReturnType != null ? $"Task<{TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver)}>" : "Task";
 
                 cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"private static unsafe void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
                 {
+                    using (cb.Block($"if (!FfiConverterType{cbiName}.handleMap.TryGet(uniffiHandle, out var obj) || obj == null)"))
+                    {
+                        cb.AppendLine("var pEarlyDropped = (ForeignFutureDroppedCallbackStruct*)uniffiOutReturn.ToPointer();");
+                        cb.AppendLine("pEarlyDropped->handle = 0;");
+                        cb.AppendLine("pEarlyDropped->free = _UniFFIAsync.DroppedCallbackPointer;");
+                        cb.AppendLine($"var earlyRet = new {resultStruct}();");
+                        cb.AppendLine("earlyRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                        using (cb.Block("try"))
+                        {
+                            cb.AppendLine($"earlyRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
+                        }
+                        using (cb.Block("catch")) { }
+                        cb.AppendLine($"((delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback)(uniffiCallbackData, earlyRet);");
+                        cb.AppendLine("return;");
+                    }
+                    cb.AppendLine();
+
+                    string callArgsJoined = string.Join(", ", callArgs);
+                    cb.AppendLine($"{taskRetType} callbackTask;");
+                    using (cb.Block("try"))
+                    {
+                        if (matchedImplementations != null && matchedImplementations.Count > 0)
+                        {
+                            for (int implIdx = 0; implIdx < matchedImplementations.Count; implIdx++)
+                            {
+                                string prefix = implIdx == 0 ? "if" : "else if";
+                                cb.AppendLine($"{prefix} (obj is {matchedImplementations[implIdx].FullyQualifiedTypeName} direct{implIdx})");
+                                using (cb.Block(""))
+                                {
+                                    cb.AppendLine($"callbackTask = direct{implIdx}.{methodName}({callArgsJoined});");
+                                }
+                            }
+                            using (cb.Block("else"))
+                            {
+                                cb.AppendLine($"callbackTask = obj.{methodName}({callArgsJoined});");
+                            }
+                        }
+                        else
+                        {
+                            cb.AppendLine($"callbackTask = obj.{methodName}({callArgsJoined});");
+                        }
+                    }
+                    if (m.Throws != null)
+                    {
+                        using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} syncEx)"))
+                        {
+                            cb.AppendLine("var pSyncErrDrop = (ForeignFutureDroppedCallbackStruct*)uniffiOutReturn.ToPointer();");
+                            cb.AppendLine("pSyncErrDrop->handle = 0;");
+                            cb.AppendLine("pSyncErrDrop->free = _UniFFIAsync.DroppedCallbackPointer;");
+                            cb.AppendLine($"var syncErrRet = new {resultStruct}();");
+                            using (cb.Block("try"))
+                            {
+                                cb.AppendLine("syncErrRet.callStatus.code = UniffiCallbackResponseStatus.ERROR;");
+                                cb.AppendLine($"syncErrRet.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(syncEx);");
+                            }
+                            using (cb.Block("catch"))
+                            {
+                                cb.AppendLine("syncErrRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                            }
+                            cb.AppendLine($"((delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback)(uniffiCallbackData, syncErrRet);");
+                            cb.AppendLine("return;");
+                        }
+                    }
+                    using (cb.Block("catch (Exception syncEx)"))
+                    {
+                        cb.AppendLine("var pSyncExDrop = (ForeignFutureDroppedCallbackStruct*)uniffiOutReturn.ToPointer();");
+                        cb.AppendLine("pSyncExDrop->handle = 0;");
+                        cb.AppendLine("pSyncExDrop->free = _UniFFIAsync.DroppedCallbackPointer;");
+                        cb.AppendLine($"var syncExRet = new {resultStruct}();");
+                        cb.AppendLine("syncExRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                        using (cb.Block("try"))
+                        {
+                            cb.AppendLine("syncExRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower(syncEx.Message);");
+                        }
+                        using (cb.Block("catch")) { }
+                        cb.AppendLine($"((delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback)(uniffiCallbackData, syncExRet);");
+                        cb.AppendLine("return;");
+                    }
+                    cb.AppendLine();
+
+                    // Fast path when callback completed synchronously
+                    using (cb.Block("if (callbackTask.IsCompleted)"))
+                    {
+                        cb.AppendLine("var pSyncDrop = (ForeignFutureDroppedCallbackStruct*)uniffiOutReturn.ToPointer();");
+                        cb.AppendLine("pSyncDrop->handle = 0;");
+                        cb.AppendLine("pSyncDrop->free = _UniFFIAsync.DroppedCallbackPointer;");
+                        cb.AppendLine($"var syncRet = new {resultStruct}();");
+                        using (cb.Block("try"))
+                        {
+                            if (m.ReturnType == null)
+                            {
+                                cb.AppendLine("callbackTask.GetAwaiter().GetResult();");
+                            }
+                            else
+                            {
+                                cb.AppendLine("var result = callbackTask.GetAwaiter().GetResult();");
+                                string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "result" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(result)";
+                                cb.AppendLine($"syncRet.returnValue = {loweredExpr};");
+                            }
+                            cb.AppendLine("syncRet.callStatus.code = UniffiCallbackResponseStatus.SUCCESS;");
+                        }
+                        if (m.Throws != null)
+                        {
+                            using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
+                            {
+                                using (cb.Block("try"))
+                                {
+                                    cb.AppendLine("syncRet.callStatus.code = UniffiCallbackResponseStatus.ERROR;");
+                                    cb.AppendLine($"syncRet.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
+                                }
+                                using (cb.Block("catch"))
+                                {
+                                    cb.AppendLine("syncRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                                }
+                            }
+                        }
+                        using (cb.Block("catch (Exception ex)"))
+                        {
+                            cb.AppendLine("syncRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                            using (cb.Block("try"))
+                            {
+                                cb.AppendLine("syncRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower(ex.Message);");
+                            }
+                            using (cb.Block("catch")) { }
+                        }
+                        cb.AppendLine($"((delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback)(uniffiCallbackData, syncRet);");
+                        cb.AppendLine("return;");
+                    }
+                    cb.AppendLine();
+
+                    // Async continuation path: allocate handle without CancellationTokenSource or Task.Run
                     cb.AppendLine("var futureHandle = new UniffiForeignFutureHandle();");
                     cb.AppendLine("var foreignHandle = _UniFFIAsync.ForeignFuturesMap.Insert(futureHandle);");
                     using (cb.Block("unsafe"))
@@ -1045,94 +1318,74 @@ public static class CodeGenerator
                         cb.AppendLine("pDropped->handle = foreignHandle;");
                         cb.AppendLine("pDropped->free = _UniFFIAsync.DroppedCallbackPointer;");
                     }
-                    cb.AppendLine();
+                    cb.AppendLine($"CompleteAsyncCallback_{cbiName}_{i}(callbackTask, futureHandle, foreignHandle, uniffiFutureCallback, uniffiCallbackData);");
+                }
+                cb.AppendLine();
 
-                    using (cb.Block($"if (!FfiConverterType{cbiName}.handleMap.TryGet(uniffiHandle, out var obj) || obj == null)"))
-                    {
-                        cb.AppendLine($"var earlyRet = new {resultStruct}();");
-                        cb.AppendLine("earlyRet.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                        using (cb.Block("try"))
-                        {
-                            cb.AppendLine($"earlyRet.callStatus.error_buf = FfiConverterString.INSTANCE.Lower($\"No callback found for handle {{uniffiHandle}}\");");
-                        }
-                        using (cb.Block("catch")) { }
-                        cb.AppendLine($"var earlyCb = (delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback;");
-                        cb.AppendLine("futureHandle.InvokeCallbackOnce(() => earlyCb(uniffiCallbackData, earlyRet));");
-                        cb.AppendLine("futureHandle.Dispose();");
-                        cb.AppendLine("return;");
-                    }
-                    cb.AppendLine();
-
-                    string callExpr = $"obj.{methodName}({string.Join(", ", callArgs)})";
-
-                    using (cb.Block("Task.Run(async () =>", ", futureHandle.Cts.Token);"))
+                cb.AppendLine("[SkipLocalsInit]");
+                using (cb.Block($"private static async void CompleteAsyncCallback_{cbiName}_{i}({taskRetType} callbackTask, UniffiForeignFutureHandle futureHandle, ulong foreignHandle, IntPtr uniffiFutureCallback, ulong uniffiCallbackData)"))
+                {
+                    using (cb.Block("try"))
                     {
                         cb.AppendLine($"var ret = new {resultStruct}();");
                         using (cb.Block("try"))
                         {
+                            if (m.ReturnType == null)
+                            {
+                                cb.AppendLine("await callbackTask.ConfigureAwait(false);");
+                            }
+                            else
+                            {
+                                cb.AppendLine("var result = await callbackTask.ConfigureAwait(false);");
+                                string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "result" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(result)";
+                                cb.AppendLine($"ret.returnValue = {loweredExpr};");
+                            }
+                            cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.SUCCESS;");
+                        }
+                        if (m.Throws != null)
+                        {
+                            using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
+                            {
+                                using (cb.Block("try"))
+                                {
+                                    cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.ERROR;");
+                                    cb.AppendLine($"ret.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
+                                }
+                                using (cb.Block("catch"))
+                                {
+                                    cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
+                                }
+                            }
+                        }
+                        using (cb.Block("catch (OperationCanceledException) when (futureHandle.IsDropped)"))
+                        {
+                            cb.AppendLine("return;");
+                        }
+                        using (cb.Block("catch (Exception ex)"))
+                        {
+                            cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
                             using (cb.Block("try"))
                             {
-                                if (m.ReturnType == null)
-                                {
-                                    cb.AppendLine("#if NET6_0_OR_GREATER");
-                                    cb.AppendLine($"await {callExpr}.WaitAsync(futureHandle.Cts.Token);");
-                                    cb.AppendLine("#else");
-                                    cb.AppendLine($"await {callExpr};");
-                                    cb.AppendLine("#endif");
-                                }
-                                else
-                                {
-                                    cb.AppendLine("#if NET6_0_OR_GREATER");
-                                    cb.AppendLine($"var result = await {callExpr}.WaitAsync(futureHandle.Cts.Token);");
-                                    cb.AppendLine("#else");
-                                    cb.AppendLine($"var result = await {callExpr};");
-                                    cb.AppendLine("#endif");
-                                    string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "result" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(result)";
-                                    cb.AppendLine($"ret.returnValue = {loweredExpr};");
-                                }
-                                cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.SUCCESS;");
+                                cb.AppendLine("ret.callStatus.error_buf = FfiConverterString.INSTANCE.Lower(ex.Message);");
                             }
-                            if (m.Throws != null)
-                            {
-                                using (cb.Block($"catch ({TypeHelper.ToCSharpType(m.Throws, crateNorm, namespaceResolver)} ex)"))
-                                {
-                                    using (cb.Block("try"))
-                                    {
-                                        cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.ERROR;");
-                                        cb.AppendLine($"ret.callStatus.error_buf = {TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver)}.Lower(ex);");
-                                    }
-                                    using (cb.Block("catch"))
-                                    {
-                                        cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                                    }
-                                }
-                            }
-                            using (cb.Block("catch (OperationCanceledException) when (futureHandle.Cts.IsCancellationRequested)"))
-                            {
-                                cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                                using (cb.Block("try"))
-                                {
-                                    cb.AppendLine("ret.callStatus.error_buf = FfiConverterString.INSTANCE.Lower(\"Future cancelled\");");
-                                }
-                                using (cb.Block("catch")) { }
-                            }
-                            using (cb.Block("catch (Exception ex)"))
-                            {
-                                cb.AppendLine("ret.callStatus.code = UniffiCallbackResponseStatus.UNEXPECTED_ERROR;");
-                                using (cb.Block("try"))
-                                {
-                                    cb.AppendLine("ret.callStatus.error_buf = FfiConverterString.INSTANCE.Lower(ex.Message);");
-                                }
-                                using (cb.Block("catch")) { }
-                            }
-                            cb.AppendLine();
-                            cb.AppendLine($"var cb = (delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback;");
-                            cb.AppendLine("futureHandle.InvokeCallbackOnce(() => cb(uniffiCallbackData, ret));");
+                            using (cb.Block("catch")) { }
                         }
-                        using (cb.Block("finally"))
+
+                        using (cb.Block("if (futureHandle.TryClaimCallback())"))
                         {
-                            cb.AppendLine("futureHandle.Dispose();");
+                            using (cb.Block("unsafe"))
+                            {
+                                cb.AppendLine($"((delegate* unmanaged[Cdecl]<ulong, {resultStruct}, void>)uniffiFutureCallback)(uniffiCallbackData, ret);");
+                            }
                         }
+                    }
+                    using (cb.Block("catch"))
+                    {
+                    }
+                    using (cb.Block("finally"))
+                    {
+                        cb.AppendLine("_UniFFIAsync.ForeignFuturesMap.Remove(foreignHandle, out _);");
+                        cb.AppendLine("futureHandle.Dispose();");
                     }
                 }
                 cb.AppendLine();
@@ -1142,7 +1395,21 @@ public static class CodeGenerator
                 ffiParams.Add("IntPtr uniffiOutReturn");
                 ffiParams.Add("UniffiRustCallStatus* callStatus");
 
+                var devirtParams = new List<string> { $"{ifaceName} target" };
+                for (int argIdx = 0; argIdx < m.Inputs.Count; argIdx++)
+                {
+                    devirtParams.Add($"{TypeHelper.ToCSharpType(m.Inputs[argIdx].Type, crateNorm, namespaceResolver)} {TypeHelper.EscapeIdentifier(TypeHelper.ToCamelCase(m.Inputs[argIdx].Name))}");
+                }
+                if (m.ReturnType != null)
+                {
+                    devirtParams.Add($"ref {TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver)} result");
+                }
+                devirtParams.Add("ref bool handled");
+                cb.AppendLine($"static partial void TryDevirtualize_{cbiName}_{i}({string.Join(", ", devirtParams)});");
+                cb.AppendLine();
+
                 cb.AppendLine("[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"private static unsafe void CallbackMethod_{cbiName}_{i}({string.Join(", ", ffiParams)})"))
                 {
                     using (cb.Block($"if (!FfiConverterType{cbiName}.handleMap.TryGet(uniffiHandle, out var obj) || obj == null)"))
@@ -1153,15 +1420,52 @@ public static class CodeGenerator
                     }
                     using (cb.Block("try"))
                     {
-                        string callExpr = $"obj.{methodName}({string.Join(", ", callArgs)})";
-
+                        string callArgsJoined = string.Join(", ", callArgs);
                         if (m.ReturnType == null)
                         {
-                            cb.AppendLine($"{callExpr};");
+                            cb.AppendLine("bool handled = false;");
+                            string devirtArgs = callArgs.Count > 0 ? $"obj, {callArgsJoined}, ref handled" : "obj, ref handled";
+                            cb.AppendLine($"TryDevirtualize_{cbiName}_{i}({devirtArgs});");
+                            using (cb.Block("if (!handled)"))
+                            {
+                                if (matchedImplementations != null && matchedImplementations.Count > 0)
+                                {
+                                    for (int implIdx = 0; implIdx < matchedImplementations.Count; implIdx++)
+                                    {
+                                        string prefix = implIdx == 0 ? "if" : "else if";
+                                        cb.AppendLine($"{prefix} (obj is {matchedImplementations[implIdx].FullyQualifiedTypeName} direct{implIdx}) direct{implIdx}.{methodName}({callArgsJoined});");
+                                    }
+                                    cb.AppendLine($"else obj.{methodName}({callArgsJoined});");
+                                }
+                                else
+                                {
+                                    cb.AppendLine($"obj.{methodName}({callArgsJoined});");
+                                }
+                            }
                         }
                         else
                         {
-                            cb.AppendLine($"var res = {callExpr};");
+                            string csRetType = TypeHelper.ToCSharpType(m.ReturnType, crateNorm, namespaceResolver);
+                            cb.AppendLine("bool handled = false;");
+                            cb.AppendLine($"{csRetType} res = default!;");
+                            string devirtArgs = callArgs.Count > 0 ? $"obj, {callArgsJoined}, ref res, ref handled" : "obj, ref res, ref handled";
+                            cb.AppendLine($"TryDevirtualize_{cbiName}_{i}({devirtArgs});");
+                            using (cb.Block("if (!handled)"))
+                            {
+                                if (matchedImplementations != null && matchedImplementations.Count > 0)
+                                {
+                                    for (int implIdx = 0; implIdx < matchedImplementations.Count; implIdx++)
+                                    {
+                                        string prefix = implIdx == 0 ? "if" : "else if";
+                                        cb.AppendLine($"{prefix} (obj is {matchedImplementations[implIdx].FullyQualifiedTypeName} direct{implIdx}) res = direct{implIdx}.{methodName}({callArgsJoined});");
+                                    }
+                                    cb.AppendLine($"else res = obj.{methodName}({callArgsJoined});");
+                                }
+                                else
+                                {
+                                    cb.AppendLine($"res = obj.{methodName}({callArgsJoined});");
+                                }
+                            }
                             string ffiRet = TypeHelper.ToFfiType(m.ReturnType);
                             string loweredExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res" : $"{TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lower(res)";
                             using (cb.Block("unsafe"))
@@ -1333,6 +1637,7 @@ public static class CodeGenerator
             }
             else
             {
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override int AllocationSize({recordName} value)"))
                 {
                     cb.AppendLine($"int size = {staticSize};");
@@ -1346,21 +1651,23 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override void Write({recordName} value, ref BigEndianStream stream)"))
             {
                 foreach (var field in rec.Fields)
                 {
                     string prop = $"value.{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(field.Name))}";
-                    cb.AppendLine($"{TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Write({prop}, ref stream);");
+                    cb.AppendLine($"{TypeHelper.ConverterWriteExpr(field.Type, prop, "stream", crateNorm, namespaceResolver)};");
                 }
             }
             cb.AppendLine();
 
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block($"public override {recordName} Read(ref BigEndianStream stream)"))
             {
                 foreach (var field in rec.Fields)
                 {
-                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(field.Type, crateNorm, namespaceResolver)}.Read(ref stream);");
+                    cb.AppendLine($"var _{TypeHelper.ToCamelCase(field.Name).TrimStart('@')} = {TypeHelper.ConverterReadExpr(field.Type, "stream", crateNorm, namespaceResolver)};");
                 }
                 cb.AppendLine($"return new {recordName}(");
                 cb.Indent();
@@ -1377,7 +1684,7 @@ public static class CodeGenerator
         cb.AppendLine();
     }
 
-    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm, string crateNorm, Func<string, string>? namespaceResolver = null, CodeGeneratorOptions? options = null)
+    private static void GenerateEnum(CSharpCodeBuilder cb, EnumMetadata enm, string crateNorm, ComponentInterface ci, Func<string, string>? namespaceResolver = null, CodeGeneratorOptions? options = null)
     {
         options ??= new CodeGeneratorOptions();
         string enumName = TypeHelper.ToPascalCase(enm.Name);
@@ -1568,6 +1875,7 @@ public static class CodeGenerator
                 cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
                 cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override int AllocationSize({enumName} value)"))
                 {
                     cb.AppendLine("int size = 4;");
@@ -1579,10 +1887,19 @@ public static class CodeGenerator
                             string vName = TypeHelper.ToPascalCase(v.Name);
                             using (cb.Block($"case {enumName}.{vName} v:"))
                             {
+                                int fixedSum = 0;
                                 foreach (var f in v.Fields)
                                 {
-                                    cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    if (TypeHelper.TryGetFixedAllocationSize(f.Type, ci, out int fSize))
+                                    {
+                                        fixedSum += fSize;
+                                    }
+                                    else
+                                    {
+                                        cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                    }
                                 }
+                                if (fixedSum > 0) cb.AppendLine($"size += {fixedSum};");
                                 cb.AppendLine("break;");
                             }
                         }
@@ -1590,6 +1907,7 @@ public static class CodeGenerator
                     cb.AppendLine("return size;");
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("switch (value)"))
@@ -1613,7 +1931,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, ref stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterWriteExpr(f.Type, $"v.{TypeHelper.ToPascalCase(f.Name)}", "stream", crateNorm, namespaceResolver)};");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1622,6 +1940,7 @@ public static class CodeGenerator
                     }
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
@@ -1642,7 +1961,7 @@ public static class CodeGenerator
                                     var argReads = new List<string>();
                                     foreach (var f in v.Fields)
                                     {
-                                        argReads.Add($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(ref stream)");
+                                        argReads.Add(TypeHelper.ConverterReadExpr(f.Type, "stream", crateNorm, namespaceResolver));
                                     }
                                     cb.AppendLine($"return new {enumName}.{vName}({string.Join(", ", argReads)});");
                                 }
@@ -1728,10 +2047,10 @@ public static class CodeGenerator
                 cb.AppendLine("public override RustBuffer Alloc(int size) => _UniFFILib.Alloc(size);");
                 cb.AppendLine("public override void Free(RustBuffer buffer) => _UniFFILib.Free(buffer);");
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override int AllocationSize({enumName} value)"))
                 {
-                    cb.AppendLine("int size = 4;");
-                    using (cb.Block("switch (value)"))
+                    using (cb.Block("return value switch", ";"))
                     {
                         for (int i = 0; i < enm.Variants.Count; i++)
                         {
@@ -1739,27 +2058,32 @@ public static class CodeGenerator
                             string vName = TypeHelper.ToPascalCase(v.Name);
                             if (v.Fields.Count == 0)
                             {
-                                using (cb.Block($"case {enumName}.{vName}:"))
-                                {
-                                    cb.AppendLine("break;");
-                                }
+                                cb.AppendLine($"{enumName}.{vName} => 4,");
                             }
                             else
                             {
-                                using (cb.Block($"case {enumName}.{vName} v:"))
+                                int fixedSum = 4;
+                                var dynTerms = new List<string>();
+                                foreach (var f in v.Fields)
                                 {
-                                    foreach (var f in v.Fields)
+                                    if (TypeHelper.TryGetFixedAllocationSize(f.Type, ci, out int fSize))
                                     {
-                                        cb.AppendLine($"size += {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)});");
+                                        fixedSum += fSize;
                                     }
-                                    cb.AppendLine("break;");
+                                    else
+                                    {
+                                        dynTerms.Add($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.AllocationSize(v.{TypeHelper.ToPascalCase(f.Name)})");
+                                    }
                                 }
+                                string expr = dynTerms.Count == 0 ? fixedSum.ToString() : $"{fixedSum} + {string.Join(" + ", dynTerms)}";
+                                cb.AppendLine($"{enumName}.{vName} v => {expr},");
                             }
                         }
+                        cb.AppendLine("_ => 4");
                     }
-                    cb.AppendLine("return size;");
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override void Write({enumName} value, ref BigEndianStream stream)"))
                 {
                     using (cb.Block("switch (value)"))
@@ -1783,7 +2107,7 @@ public static class CodeGenerator
                                     cb.AppendLine($"stream.WriteInt32({i + 1});");
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"{TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Write(v.{TypeHelper.ToPascalCase(f.Name)}, ref stream);");
+                                        cb.AppendLine($"{TypeHelper.ConverterWriteExpr(f.Type, $"v.{TypeHelper.ToPascalCase(f.Name)}", "stream", crateNorm, namespaceResolver)};");
                                     }
                                     cb.AppendLine("break;");
                                 }
@@ -1792,6 +2116,7 @@ public static class CodeGenerator
                     }
                 }
                 cb.AppendLine();
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public override {enumName} Read(ref BigEndianStream stream)"))
                 {
                     cb.AppendLine("int tag = stream.ReadInt32();");
@@ -1819,7 +2144,7 @@ public static class CodeGenerator
                                     var orderedFields = v.Fields.OrderBy(f => f.DefaultValue != null ? 1 : 0).ToList();
                                     foreach (var f in v.Fields)
                                     {
-                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterInstance(f.Type, crateNorm, namespaceResolver)}.Read(ref stream);");
+                                        cb.AppendLine($"var _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')} = {TypeHelper.ConverterReadExpr(f.Type, "stream", crateNorm, namespaceResolver)};");
                                     }
                                     var namedArgs = orderedFields.Select(f => $"{TypeHelper.EscapeIdentifier(TypeHelper.ToPascalCase(f.Name))}: _{TypeHelper.ToCamelCase(f.Name).TrimStart('@')}");
                                     if (options.EffectiveUseNativeUnions)
@@ -1893,21 +2218,29 @@ public static class CodeGenerator
         AppendDocComment(cb, obj.Docstring);
         using (cb.Block($"public partial class {objName} : {ifaceName}"))
         {
+            // Bit 0: destroyed flag (1), Bit 1: freed flag (2), Bits 2+: active/owner refcount step (4)
             cb.AppendLine("protected IntPtr _pointer;");
-            cb.AppendLine("private int _wasDestroyed = 0;");
-            cb.AppendLine("private long _callCounter = 1;");
+            cb.AppendLine("private long _state = 4L;");
             cb.AppendLine();
             cb.AppendLine($"internal {objName}(IntPtr pointer, bool isInternal)");
             using (cb.Block(""))
             {
                 cb.AppendLine("_pointer = pointer;");
-                cb.AppendLine("_callCounter = 1;");
-                cb.AppendLine("_wasDestroyed = 0;");
+                cb.AppendLine("_state = 4L;");
             }
             cb.AppendLine($"internal static {objName} CreateInternal(IntPtr pointer) => new {objName}(pointer, true);");
             cb.AppendLine("internal IntPtr Pointer => _pointer;");
             cb.AppendLine();
 
+            cb.AppendLine("[System.Diagnostics.CodeAnalysis.DoesNotReturn]");
+            cb.AppendLine("[MethodImpl(MethodImplOptions.NoInlining)]");
+            using (cb.Block("private static void ThrowDisposed()"))
+            {
+                cb.AppendLine($"throw new ObjectDisposedException(nameof({objName}));");
+            }
+            cb.AppendLine();
+
+            cb.AppendLine("[SkipLocalsInit]");
             using (cb.Block("protected void FreeRustArcPtr()"))
             {
                 cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -1916,9 +2249,11 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
+            cb.AppendLine("[SkipLocalsInit]");
+            cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
             using (cb.Block("protected IntPtr CloneRustArcPtr()"))
             {
-                cb.AppendLine($"if (_pointer == IntPtr.Zero) throw new ObjectDisposedException(nameof({objName}));");
+                cb.AppendLine("if (_pointer == IntPtr.Zero) ThrowDisposed();");
                 cb.AppendLine("var status = new UniffiRustCallStatus();");
                 cb.AppendLine($"var res = _UniFFILib.uniffi_{crateNorm}_fn_clone_{objLower}(_pointer, ref status);");
                 cb.AppendLine("if (!status.IsSuccess()) UniffiHelpers.ThrowCallStatus(ref status);");
@@ -1928,11 +2263,15 @@ public static class CodeGenerator
 
             using (cb.Block("public void Destroy()"))
             {
-                using (cb.Block("if (Interlocked.CompareExchange(ref _wasDestroyed, 1, 0) == 0)"))
+                using (cb.Block("while (true)"))
                 {
-                    using (cb.Block("if (Interlocked.Decrement(ref _callCounter) == 0)"))
+                    cb.AppendLine("long cur = Volatile.Read(ref _state);");
+                    cb.AppendLine("if ((cur & 1L) != 0) return;");
+                    cb.AppendLine("long next = (cur == 4L) ? 3L : ((cur - 4L) | 1L);");
+                    using (cb.Block("if (Interlocked.CompareExchange(ref _state, next, cur) == cur)"))
                     {
-                        cb.AppendLine("FreeRustArcPtr();");
+                        cb.AppendLine("if (next == 3L) FreeRustArcPtr();");
+                        cb.AppendLine("return;");
                     }
                 }
             }
@@ -1945,21 +2284,23 @@ public static class CodeGenerator
             }
             cb.AppendLine();
 
+            cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
             using (cb.Block("private void IncrementCallCounter()"))
             {
-                cb.AppendLine($"if (Volatile.Read(ref _wasDestroyed) != 0) throw new ObjectDisposedException(nameof({objName}));");
-                cb.AppendLine("Interlocked.Increment(ref _callCounter);");
-                using (cb.Block($"if (Volatile.Read(ref _wasDestroyed) != 0)"))
+                cb.AppendLine("long state = Interlocked.Add(ref _state, 4L);");
+                using (cb.Block("if ((state & 1L) != 0)"))
                 {
                     cb.AppendLine("DecrementCallCounter();");
-                    cb.AppendLine($"throw new ObjectDisposedException(nameof({objName}));");
+                    cb.AppendLine("ThrowDisposed();");
                 }
             }
             cb.AppendLine();
 
+            cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
             using (cb.Block("private void DecrementCallCounter()"))
             {
-                using (cb.Block("if (Interlocked.Decrement(ref _callCounter) == 0)"))
+                cb.AppendLine("long state = Interlocked.Add(ref _state, -4L);");
+                using (cb.Block("if (state == 1L && (Interlocked.Or(ref _state, 2L) & 2L) == 0L)"))
                 {
                     cb.AppendLine("FreeRustArcPtr();");
                 }
@@ -2041,28 +2382,29 @@ public static class CodeGenerator
                 {
                     string asyncCtorName = ctor.Name == "new" ? $"{objName}Async" : (ctorName.EndsWith("Async") ? ctorName : $"{ctorName}Async");
                     var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
-                    using (cb.Block($"public static async Task<{objName}> {asyncCtorName}({string.Join(", ", asyncParamDecls)})"))
+                    cb.AppendLine("[SkipLocalsInit]");
+                    using (cb.Block($"public static Task<{objName}> {asyncCtorName}({string.Join(", ", asyncParamDecls)})"))
                     {
                         cb.AppendLine($"ulong futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_constructor_{objLower}_{ctorLower}({string.Join(", ", callArgs)});");
-                        cb.AppendLine($"var ptr = await _UniFFIAsync.UniffiRustCallAsync(");
+                        cb.AppendLine("return _UniFFIAsync.UniffiRustCallAsync(");
                         cb.Indent();
                         cb.AppendLine("futureHandle,");
-                        cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_u64(f, cb, d),");
-                        cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => (IntPtr)_UniFFILib.ffi_{crateNorm}_rust_future_complete_u64(f, ref s),");
-                        cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_u64(f),");
-                        cb.AppendLine("res => res,");
+                        cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_u64(f, cb, d),");
+                        cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => (IntPtr)_UniFFILib.ffi_{crateNorm}_rust_future_complete_u64(f, ref s),");
+                        cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_u64(f),");
+                        cb.AppendLine("static res => CreateInternal(res),");
                         cb.AppendLine($"{errorHandler},");
-                        cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_u64(f),");
+                        cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_u64(f),");
                         cb.AppendLine("cancellationToken");
                         cb.Unindent();
                         cb.AppendLine(");");
-                        cb.AppendLine($"return CreateInternal(ptr);");
                     }
                 }
                 else if (ctor.Name == "new")
                 {
                     callArgs.Add("ref status");
                     cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
+                    cb.AppendLine("[SkipLocalsInit]");
                     using (cb.Block($"public {objName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -2074,6 +2416,7 @@ public static class CodeGenerator
                 {
                     callArgs.Add("ref status");
                     cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
+                    cb.AppendLine("[SkipLocalsInit]");
                     using (cb.Block($"public static {objName} {ctorName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");
@@ -2119,63 +2462,114 @@ public static class CodeGenerator
                 string mLower = TypeHelper.SanitizeIdentifier(m.Name.ToLowerInvariant());
                 string methodName = TypeHelper.ToPascalCase(m.Name);
                 if (m.IsAsync && !methodName.EndsWith("Async")) methodName += "Async";
+                bool isPartialMethod = false;
+                if (options.MethodConfigs != null)
+                {
+                    if ((options.MethodConfigs.TryGetValue($"{objName}.{methodName}", out var mCfg) ||
+                         options.MethodConfigs.TryGetValue($"{objName}.{TypeHelper.ToPascalCase(m.Name)}", out mCfg) ||
+                         options.MethodConfigs.TryGetValue(methodName, out mCfg) ||
+                         options.MethodConfigs.TryGetValue(m.Name, out mCfg)) && mCfg.IsPartial)
+                    {
+                        isPartialMethod = true;
+                    }
+                }
+                string partialMod = isPartialMethod ? "partial " : "";
                 string errorHandler = m.Throws != null ? TypeHelper.ConverterInstance(m.Throws, crateNorm, namespaceResolver) : "NullCallStatusErrorHandler.INSTANCE";
                 string argsPrefix = callArgs.Count > 0 ? ", " + string.Join(", ", callArgs) : "";
+                bool isStreamNext = streamDesc != null && ReferenceEquals(streamDesc.NextMethod, m);
 
                 if (m.IsAsync)
                 {
                     string suffix = TypeHelper.FutureSuffix(m.ReturnType);
                     var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
-                    using (cb.Block($"public async {retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
+                    if (isStreamNext)
                     {
-                        foreach (var stmt in preLowerStmts) cb.AppendLine(stmt);
-                        cb.AppendLine("IncrementCallCounter();");
-                        cb.AppendLine("ulong futureHandle;");
-                        using (cb.Block("try"))
+                        cb.AppendLine("[SkipLocalsInit]");
+                        using (cb.Block($"private ValueTask<{rawRetType}> {methodName}ValueTask(CancellationToken cancellationToken = default)"))
                         {
-                            cb.AppendLine("var selfPtr = CloneRustArcPtr();");
-                            cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr{argsPrefix});");
-                        }
-                        using (cb.Block("finally"))
-                        {
-                            cb.AppendLine("DecrementCallCounter();");
-                        }
-                        if (m.ReturnType == null)
-                        {
-                            cb.AppendLine("await _UniFFIAsync.UniffiRustCallAsync(");
+                            cb.AppendLine("IncrementCallCounter();");
+                            cb.AppendLine("ulong futureHandle;");
+                            using (cb.Block("try"))
+                            {
+                                cb.AppendLine("var selfPtr = CloneRustArcPtr();");
+                                cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr);");
+                            }
+                            using (cb.Block("finally"))
+                            {
+                                cb.AppendLine("DecrementCallCounter();");
+                            }
+                            cb.AppendLine("return _UniFFIAsync.UniffiRustCallValueTaskAsync(");
                             cb.Indent();
                             cb.AppendLine("futureHandle,");
-                            cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
-                            cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            cb.AppendLine($"{errorHandler},");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
-                            cb.AppendLine("cancellationToken");
-                            cb.Unindent();
-                            cb.AppendLine(");");
-                        }
-                        else
-                        {
-                            cb.AppendLine("return await _UniFFIAsync.UniffiRustCallAsync(");
-                            cb.Indent();
-                            cb.AppendLine("futureHandle,");
-                            cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
-                            cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
+                            cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
+                            cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
+                            string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType!) ? "static res => res" : $"static res => {TypeHelper.ConverterInstance(m.ReturnType!, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
                             cb.AppendLine($"{errorHandler},");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
                             cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
+                        }
+                        cb.AppendLine();
+                        cb.AppendLine($"public {partialMod}{retType} {methodName}({string.Join(", ", asyncParamDecls)}) => {methodName}ValueTask(cancellationToken).AsTask();");
+                    }
+                    else
+                    {
+                        cb.AppendLine("[SkipLocalsInit]");
+                        using (cb.Block($"public {partialMod}{retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
+                        {
+                            foreach (var stmt in preLowerStmts) cb.AppendLine(stmt);
+                            cb.AppendLine("IncrementCallCounter();");
+                            cb.AppendLine("ulong futureHandle;");
+                            using (cb.Block("try"))
+                            {
+                                cb.AppendLine("var selfPtr = CloneRustArcPtr();");
+                                cb.AppendLine($"futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_method_{objLower}_{mLower}(selfPtr{argsPrefix});");
+                            }
+                            using (cb.Block("finally"))
+                            {
+                                cb.AppendLine("DecrementCallCounter();");
+                            }
+                            if (m.ReturnType == null)
+                            {
+                                cb.AppendLine("return _UniFFIAsync.UniffiRustCallAsync(");
+                                cb.Indent();
+                                cb.AppendLine("futureHandle,");
+                                cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
+                                cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
+                                cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
+                                cb.AppendLine($"{errorHandler},");
+                                cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                                cb.AppendLine("cancellationToken");
+                                cb.Unindent();
+                                cb.AppendLine(");");
+                            }
+                            else
+                            {
+                                cb.AppendLine("return _UniFFIAsync.UniffiRustCallAsync(");
+                                cb.Indent();
+                                cb.AppendLine("futureHandle,");
+                                cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
+                                cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
+                                cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
+                                string liftExpr = TypeHelper.IsFfiPrimitive(m.ReturnType) ? "static res => res" : $"static res => {TypeHelper.ConverterInstance(m.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
+                                cb.AppendLine($"{liftExpr},");
+                                cb.AppendLine($"{errorHandler},");
+                                cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                                cb.AppendLine("cancellationToken");
+                                cb.Unindent();
+                                cb.AppendLine(");");
+                            }
                         }
                     }
                 }
                 else
                 {
                     cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                    using (cb.Block($"public {retType} {methodName}({string.Join(", ", paramDecls)})"))
+                    cb.AppendLine("[SkipLocalsInit]");
+                    using (cb.Block($"public {partialMod}{retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         foreach (var stmt in preLowerStmts) cb.AppendLine(stmt);
                         cb.AppendLine("IncrementCallCounter();");
@@ -2220,11 +2614,12 @@ public static class CodeGenerator
                 cb.AppendLine($"/// Returns an async enumerator that iterates through the {streamDesc.CSharpItemType} stream.");
                 cb.AppendLine("/// </summary>");
                 cb.AppendLine("/// <param name=\"cancellationToken\">A token that may be used to cancel the read operation.</param>");
+                cb.AppendLine("[SkipLocalsInit]");
                 using (cb.Block($"public async IAsyncEnumerator<{streamDesc.CSharpItemType}> GetAsyncEnumerator(CancellationToken cancellationToken = default)"))
                 {
                     using (cb.Block("while (!cancellationToken.IsCancellationRequested)"))
                     {
-                        cb.AppendLine($"var item = await {nextMethodName}(cancellationToken).ConfigureAwait(false);");
+                        cb.AppendLine($"var item = await {nextMethodName}ValueTask(cancellationToken).ConfigureAwait(false);");
                         if (streamDesc.IsValueType)
                         {
                             using (cb.Block("if (!item.HasValue)"))
@@ -2333,35 +2728,36 @@ public static class CodeGenerator
                 {
                     string suffix = TypeHelper.FutureSuffix(fn.ReturnType);
                     var asyncParamDecls = new List<string>(paramDecls) { "CancellationToken cancellationToken = default" };
-                    using (cb.Block($"public static {partialMod}async {retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
+                    cb.AppendLine("[SkipLocalsInit]");
+                    using (cb.Block($"public static {partialMod}{retType} {methodName}({string.Join(", ", asyncParamDecls)})"))
                     {
                         cb.AppendLine($"ulong futureHandle = _UniFFILib.uniffi_{crateNorm}_fn_func_{fnLower}({string.Join(", ", callArgs)});");
                         if (fn.ReturnType == null)
                         {
-                            cb.AppendLine("await _UniFFIAsync.UniffiRustCallAsync(");
+                            cb.AppendLine("return _UniFFIAsync.UniffiRustCallAsync(");
                             cb.Indent();
                             cb.AppendLine("futureHandle,");
-                            cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
-                            cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
+                            cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
+                            cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
                             cb.AppendLine($"{errorHandler},");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
                             cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
                         }
                         else
                         {
-                            cb.AppendLine("return await _UniFFIAsync.UniffiRustCallAsync(");
+                            cb.AppendLine("return _UniFFIAsync.UniffiRustCallAsync(");
                             cb.Indent();
                             cb.AppendLine("futureHandle,");
-                            cb.AppendLine($"(f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
-                            cb.AppendLine($"(ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
-                            string liftExpr = TypeHelper.IsFfiPrimitive(fn.ReturnType) ? "res => res" : $"res => {TypeHelper.ConverterInstance(fn.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
+                            cb.AppendLine($"static (f, cb, d) => _UniFFILib.ffi_{crateNorm}_rust_future_poll_{suffix}(f, cb, d),");
+                            cb.AppendLine($"static (ulong f, ref UniffiRustCallStatus s) => _UniFFILib.ffi_{crateNorm}_rust_future_complete_{suffix}(f, ref s),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_free_{suffix}(f),");
+                            string liftExpr = TypeHelper.IsFfiPrimitive(fn.ReturnType) ? "static res => res" : $"static res => {TypeHelper.ConverterInstance(fn.ReturnType, crateNorm, namespaceResolver)}.Lift(res)";
                             cb.AppendLine($"{liftExpr},");
                             cb.AppendLine($"{errorHandler},");
-                            cb.AppendLine($"(ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
+                            cb.AppendLine($"static (ulong f) => _UniFFILib.ffi_{crateNorm}_rust_future_cancel_{suffix}(f),");
                             cb.AppendLine("cancellationToken");
                             cb.Unindent();
                             cb.AppendLine(");");
@@ -2372,6 +2768,7 @@ public static class CodeGenerator
                 {
                     callArgs.Add("ref status");
                     cb.AppendLine("[MethodImpl(MethodImplOptions.AggressiveInlining)]");
+                    cb.AppendLine("[SkipLocalsInit]");
                     using (cb.Block($"public static {partialMod}{retType} {methodName}({string.Join(", ", paramDecls)})"))
                     {
                         cb.AppendLine("var status = new UniffiRustCallStatus();");

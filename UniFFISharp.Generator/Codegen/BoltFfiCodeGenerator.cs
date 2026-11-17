@@ -32,7 +32,8 @@ public static class BoltFfiCodeGenerator
         IReadOnlyDictionary<string, string>? typeToNamespace = null,
         CodeGeneratorOptions? options = null,
         IReadOnlyList<Arbitration.CallbackImplementationInfo>? callbackImplementations = null,
-        HashSet<string>? uniffiDefinedErrorEnums = null)
+        HashSet<string>? uniffiDefinedErrorEnums = null,
+        IReadOnlyList<BoltFfiDecl>? declsOverride = null)
     {
         var native = envelope.Bindings.Native;
         if (native == null) return string.Empty;
@@ -44,7 +45,10 @@ public static class BoltFfiCodeGenerator
         s_currentUniffiDefinedErrorEnums = uniffiDefinedErrorEnums;
         try
         {
-            return GenerateInternal(envelope, native, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings, options);
+            var decls = declsOverride != null
+                ? (declsOverride as List<BoltFfiDecl> ?? new List<BoltFfiDecl>(declsOverride))
+                : native.Decls;
+            return GenerateInternal(envelope, decls, libraryFileName, targetNamespace, methodConfigs, suppressTypeDefinitions, additionalUsings, options);
         }
         finally
         {
@@ -59,7 +63,7 @@ public static class BoltFfiCodeGenerator
 
     private static string GenerateInternal(
         BoltFfiMetadataEnvelope envelope,
-        BoltFfiNativeBindings native,
+        List<BoltFfiDecl> decls,
         string libraryFileName,
         string targetNamespace,
         Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs,
@@ -130,7 +134,7 @@ public static class BoltFfiCodeGenerator
         }
 
         var errorTypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var decl in native.Decls)
+        foreach (var decl in decls)
         {
             if (decl.Kind == BoltFfiDeclKind.Function && decl.Function?.HasError == true && !string.IsNullOrEmpty(decl.Function.ErrorType?.CustomTypeName))
             {
@@ -152,7 +156,7 @@ public static class BoltFfiCodeGenerator
         }
         s_currentErrorTypes = errorTypeNames;
 
-        foreach (var decl in native.Decls.OrderBy(GetDeclPriority))
+        foreach (var decl in decls.OrderBy(GetDeclPriority))
         {
             if (suppressTypeDefinitions != null && !string.IsNullOrEmpty(decl.DeclName) &&
                 suppressTypeDefinitions.Contains(decl.DeclName))
@@ -202,10 +206,10 @@ public static class BoltFfiCodeGenerator
         }
 
         // 4. Native Methods P/Invoke
-        EmitNativeMethods(sb, native.Decls, libraryFileName);
+        EmitNativeMethods(sb, decls, libraryFileName, methodConfigs);
 
         // 5. Public Friendly Methods Class (Functions, Streams, Constants)
-        EmitPublicMethods(sb, native.Decls, cratePascal, methodConfigs);
+        EmitPublicMethods(sb, decls, cratePascal, methodConfigs);
 
         sb.AppendLine("}"); // end namespace
 
@@ -239,6 +243,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
 
         // Decode
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
         sb.AppendLine("        internal static " + recordName + " Decode(ref WireReader reader)");
         sb.AppendLine("        {");
         if (record.IsDirect)
@@ -254,8 +259,29 @@ public static class BoltFfiCodeGenerator
         }
         sb.AppendLine("        }");
 
+        sb.AppendLine();
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine($"        internal static global::System.Collections.Generic.List<{recordName}> DecodeList(ref WireReader reader)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            int count = checked((int)reader.ReadU32());");
+        sb.AppendLine($"            if (count == 0) return new global::System.Collections.Generic.List<{recordName}>(0);");
+        sb.AppendLine("            if (count > reader.Length - reader.Position)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                throw new global::System.IO.EndOfStreamException($\"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {reader.Length - reader.Position}\");");
+        sb.AppendLine("            }");
+        sb.AppendLine($"            var list = new global::System.Collections.Generic.List<{recordName}>(count);");
+        sb.AppendLine("            global::System.Runtime.InteropServices.CollectionsMarshal.SetCount(list, count);");
+        sb.AppendLine("            var dest = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);");
+        sb.AppendLine("            for (int i = 0; i < dest.Length; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine(record.IsDirect ? $"                dest[i] = reader.ReadUnmanaged<{recordName}>();" : "                dest[i] = Decode(ref reader);");
+        sb.AppendLine("            }");
+        sb.AppendLine("            return list;");
+        sb.AppendLine("        }");
+
         // Encode
         sb.AppendLine();
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
         sb.AppendLine("        internal void Encode(WireWriter writer)");
         sb.AppendLine("        {");
         if (record.IsDirect)
@@ -266,6 +292,22 @@ public static class BoltFfiCodeGenerator
             {
                 string fName = ToPascal(f.Name);
                 sb.AppendLine($"            {WireWriteStatement(f.Type, fName)};");
+            }
+        }
+        sb.AppendLine("        }");
+
+        sb.AppendLine();
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine("        internal void Encode(ref ValueWireWriter writer)");
+        sb.AppendLine("        {");
+        if (record.IsDirect)
+            sb.AppendLine("            writer.WriteUnmanaged(in this);");
+        else
+        {
+            foreach (var f in record.Fields)
+            {
+                string fName = ToPascal(f.Name);
+                sb.AppendLine($"            {WireWriteStatement(f.Type, fName, "writer", isValueWriter: true)};");
             }
         }
         sb.AppendLine("        }");
@@ -307,6 +349,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("    {");
 
             // Decode
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
             sb.AppendLine("            reader.ReadU32() switch");
             sb.AppendLine("            {");
@@ -334,7 +377,28 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine("            };");
             sb.AppendLine();
 
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+            sb.AppendLine($"        internal static global::System.Collections.Generic.List<{enumName}> DecodeList(ref WireReader reader)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            int count = checked((int)reader.ReadU32());");
+            sb.AppendLine($"            if (count == 0) return new global::System.Collections.Generic.List<{enumName}>(0);");
+            sb.AppendLine("            if (count > reader.Length - reader.Position)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                throw new global::System.IO.EndOfStreamException($\"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {reader.Length - reader.Position}\");");
+            sb.AppendLine("            }");
+            sb.AppendLine($"            var list = new global::System.Collections.Generic.List<{enumName}>(count);");
+            sb.AppendLine("            global::System.Runtime.InteropServices.CollectionsMarshal.SetCount(list, count);");
+            sb.AppendLine("            var dest = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);");
+            sb.AppendLine("            for (int i = 0; i < dest.Length; i++)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                dest[i] = Decode(ref reader);");
+            sb.AppendLine("            }");
+            sb.AppendLine("            return list;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
             // Encode
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine("        internal void Encode(WireWriter writer)");
             sb.AppendLine("        {");
             sb.AppendLine("            switch (this)");
@@ -358,6 +422,40 @@ public static class BoltFfiCodeGenerator
                     foreach (var f in v.PayloadFields)
                     {
                         sb.AppendLine($"                    {WireWriteStatement(f.Type, $"v.{ToPascal(f.Name)}")};");
+                    }
+                    sb.AppendLine("                    break;");
+                }
+            }
+            sb.AppendLine("                default:");
+            sb.AppendLine($"                    throw new global::System.InvalidOperationException($\"Unknown {enumName} variant\");");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+            sb.AppendLine("        internal void Encode(ref ValueWireWriter writer)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (this)");
+            sb.AppendLine("            {");
+            tagIndex = 0;
+            foreach (var v in enumDecl.Variants)
+            {
+                long tag = v.Discriminant ?? tagIndex;
+                tagIndex = tag + 1;
+                string vName = ToPascal(v.Name);
+                if (v.PayloadFields.Count == 0)
+                {
+                    sb.AppendLine($"                case {vName}:");
+                    sb.AppendLine($"                    writer.WriteU32({tag});");
+                    sb.AppendLine("                    break;");
+                }
+                else
+                {
+                    sb.AppendLine($"                case {vName} v:");
+                    sb.AppendLine($"                    writer.WriteU32({tag});");
+                    foreach (var f in v.PayloadFields)
+                    {
+                        sb.AppendLine($"                    {WireWriteStatement(f.Type, $"v.{ToPascal(f.Name)}", "writer", isValueWriter: true)};");
                     }
                     sb.AppendLine("                    break;");
                 }
@@ -403,6 +501,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("    {");
 
         // Decode
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
         sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
         sb.AppendLine("            reader.ReadU32() switch");
         sb.AppendLine("            {");
@@ -430,8 +529,29 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("            };");
         sb.AppendLine();
 
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine($"        internal static global::System.Collections.Generic.List<{enumName}> DecodeList(ref WireReader reader)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            int count = checked((int)reader.ReadU32());");
+        sb.AppendLine($"            if (count == 0) return new global::System.Collections.Generic.List<{enumName}>(0);");
+        sb.AppendLine("            if (count > reader.Length - reader.Position)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                throw new global::System.IO.EndOfStreamException($\"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {reader.Length - reader.Position}\");");
+        sb.AppendLine("            }");
+        sb.AppendLine($"            var list = new global::System.Collections.Generic.List<{enumName}>(count);");
+        sb.AppendLine("            global::System.Runtime.InteropServices.CollectionsMarshal.SetCount(list, count);");
+        sb.AppendLine("            var dest = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);");
+        sb.AppendLine("            for (int i = 0; i < dest.Length; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                dest[i] = Decode(ref reader);");
+        sb.AppendLine("            }");
+        sb.AppendLine("            return list;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+
         // Encode abstract method
         sb.AppendLine("        internal abstract void Encode(WireWriter writer);");
+        sb.AppendLine("        internal abstract void Encode(ref ValueWireWriter writer);");
         sb.AppendLine();
 
         // Variant child records
@@ -447,7 +567,10 @@ public static class BoltFfiCodeGenerator
             {
                 sb.AppendLine($"        public sealed partial record {vName}() : {enumName}");
                 sb.AppendLine("        {");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
                 sb.AppendLine($"            internal override void Encode(WireWriter writer) => writer.WriteU32({tag});");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+                sb.AppendLine($"            internal override void Encode(ref ValueWireWriter writer) => writer.WriteU32({tag});");
                 sb.AppendLine("        }");
             }
             else
@@ -464,12 +587,22 @@ public static class BoltFfiCodeGenerator
                 }
                 sb.AppendLine($"        public sealed partial record {vName}({string.Join(", ", paramList)}) : {enumName}");
                 sb.AppendLine("        {");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
                 sb.AppendLine("            internal override void Encode(WireWriter writer)");
                 sb.AppendLine("            {");
                 sb.AppendLine($"                writer.WriteU32({tag});");
                 foreach (var f in v.PayloadFields)
                 {
                     sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name))};");
+                }
+                sb.AppendLine("            }");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+                sb.AppendLine("            internal override void Encode(ref ValueWireWriter writer)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                writer.WriteU32({tag});");
+                foreach (var f in v.PayloadFields)
+                {
+                    sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name), "writer", isValueWriter: true)};");
                 }
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
@@ -493,6 +626,7 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
 
         // Decode
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
         sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
         sb.AppendLine("            reader.ReadU32() switch");
         sb.AppendLine("            {");
@@ -521,8 +655,29 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine("            };");
         sb.AppendLine();
 
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine($"        internal static global::System.Collections.Generic.List<{enumName}> DecodeList(ref WireReader reader)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            int count = checked((int)reader.ReadU32());");
+        sb.AppendLine($"            if (count == 0) return new global::System.Collections.Generic.List<{enumName}>(0);");
+        sb.AppendLine("            if (count > reader.Length - reader.Position)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                throw new global::System.IO.EndOfStreamException($\"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {reader.Length - reader.Position}\");");
+        sb.AppendLine("            }");
+        sb.AppendLine($"            var list = new global::System.Collections.Generic.List<{enumName}>(count);");
+        sb.AppendLine("            global::System.Runtime.InteropServices.CollectionsMarshal.SetCount(list, count);");
+        sb.AppendLine("            var dest = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);");
+        sb.AppendLine("            for (int i = 0; i < dest.Length; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                dest[i] = Decode(ref reader);");
+        sb.AppendLine("            }");
+        sb.AppendLine("            return list;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+
         // Encode abstract method
         sb.AppendLine("        internal abstract void Encode(WireWriter writer);");
+        sb.AppendLine("        internal abstract void Encode(ref ValueWireWriter writer);");
         sb.AppendLine();
 
         // Variant child classes
@@ -540,7 +695,10 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine("        {");
                 sb.AppendLine($"            public {vName}() : base(\"{vName}\") {{ }}");
                 sb.AppendLine($"            public {vName}(string message) : base(message) {{ }}");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
                 sb.AppendLine($"            internal override void Encode(WireWriter writer) => writer.WriteU32({tag});");
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+                sb.AppendLine($"            internal override void Encode(ref ValueWireWriter writer) => writer.WriteU32({tag});");
                 sb.AppendLine("        }");
             }
             else
@@ -571,12 +729,23 @@ public static class BoltFfiCodeGenerator
                 }
                 sb.AppendLine("            }");
                 sb.AppendLine();
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
                 sb.AppendLine("            internal override void Encode(WireWriter writer)");
                 sb.AppendLine("            {");
                 sb.AppendLine($"                writer.WriteU32({tag});");
                 foreach (var f in v.PayloadFields)
                 {
                     sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name))};");
+                }
+                sb.AppendLine("            }");
+                sb.AppendLine();
+                sb.AppendLine("            [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+                sb.AppendLine("            internal override void Encode(ref ValueWireWriter writer)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                writer.WriteU32({tag});");
+                foreach (var f in v.PayloadFields)
+                {
+                    sb.AppendLine($"                {WireWriteStatement(f.Type, ToPascal(f.Name), "writer", isValueWriter: true)};");
                 }
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
@@ -595,6 +764,7 @@ public static class BoltFfiCodeGenerator
 
         sb.AppendLine($"    public partial class {enumName}");
         sb.AppendLine("    {");
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
         sb.AppendLine($"        internal static {enumName} Decode(ref WireReader reader) =>");
         sb.AppendLine("            reader.ReadU32() switch");
         sb.AppendLine("            {");
@@ -621,6 +791,25 @@ public static class BoltFfiCodeGenerator
         }
         sb.AppendLine($"                uint tag => throw new global::System.InvalidOperationException($\"Invalid {enumName} tag: {{tag}}\")");
         sb.AppendLine("            };");
+        sb.AppendLine();
+        sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
+        sb.AppendLine($"        internal static global::System.Collections.Generic.List<{enumName}> DecodeList(ref WireReader reader)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            int count = checked((int)reader.ReadU32());");
+        sb.AppendLine($"            if (count == 0) return new global::System.Collections.Generic.List<{enumName}>(0);");
+        sb.AppendLine("            if (count > reader.Length - reader.Position)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                throw new global::System.IO.EndOfStreamException($\"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {reader.Length - reader.Position}\");");
+        sb.AppendLine("            }");
+        sb.AppendLine($"            var list = new global::System.Collections.Generic.List<{enumName}>(count);");
+        sb.AppendLine("            global::System.Runtime.InteropServices.CollectionsMarshal.SetCount(list, count);");
+        sb.AppendLine("            var dest = global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list);");
+        sb.AppendLine("            for (int i = 0; i < dest.Length; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                dest[i] = Decode(ref reader);");
+        sb.AppendLine("            }");
+        sb.AppendLine("            return list;");
+        sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
     }
@@ -738,6 +927,10 @@ public static class BoltFfiCodeGenerator
                 else if (p.Type.Kind == BoltFfiTypeKind.Callback && !string.IsNullOrEmpty(p.Type.CustomTypeName))
                 {
                     callArgs.Add($"{ToPascal(p.Type.CustomTypeName)}Bridge.Create({pName})");
+                }
+                else if (p.Type.Kind == BoltFfiTypeKind.Bool)
+                {
+                    callArgs.Add($"({pName} ? (byte)1 : (byte)0)");
                 }
                 else
                 {
@@ -974,9 +1167,14 @@ public static class BoltFfiCodeGenerator
                     mArgs.Add($"(nint){name.TrimStart('@')}_ptr");
                     mArgs.Add($"(nuint){name.TrimStart('@')}_writer.Length");
                 }
+                else if (p.Type.Kind == BoltFfiTypeKind.Bool)
+                {
+                    mArgs.Add($"({name} ? (byte)1 : (byte)0)");
+                }
                 else mArgs.Add(name);
             }
             string vtableMethod = ToCamel(m.Name.ToPascalCase()).TrimStart('@');
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine($"        public {retType} {mName}({string.Join(", ", mParams)})");
             sb.AppendLine("        {");
             sb.AppendLine($"            if (handle.IsNull) throw new global::System.ObjectDisposedException(nameof({proxyName}));");
@@ -984,8 +1182,9 @@ public static class BoltFfiCodeGenerator
             {
                 string name = ToCamel(p.Name);
                 string writer = name.TrimStart('@') + "_writer";
-                sb.AppendLine($"            var {writer} = WireWriter.Rent();");
-                sb.AppendLine($"            {WireWriteStatement(p.Type, name, writer)};");
+                sb.AppendLine($"            Span<byte> {writer}_stack = stackalloc byte[256];");
+                sb.AppendLine($"            var {writer} = new ValueWireWriter({writer}_stack);");
+                sb.AppendLine($"            {WireWriteStatement(p.Type, name, writer, isValueWriter: true)};");
             }
             if (wireParams.Count > 0)
             {
@@ -994,13 +1193,17 @@ public static class BoltFfiCodeGenerator
                 foreach (var p in wireParams)
                 {
                     string name = ToCamel(p.Name).TrimStart('@');
-                    sb.AppendLine($"                fixed (byte* {name}_ptr = {name}_writer.Buffer)");
+                    sb.AppendLine($"                fixed (byte* {name}_ptr = {name}_writer.RawBufferSpan)");
                 }
                 sb.AppendLine("                {");
             }
             if (retType == "void")
             {
                 sb.AppendLine($"            vtable.{vtableMethod}({string.Join(", ", mArgs)});");
+            }
+            else if (m.ReturnType.Kind == BoltFfiTypeKind.Bool)
+            {
+                sb.AppendLine($"            return vtable.{vtableMethod}({string.Join(", ", mArgs)}) != 0;");
             }
             else
             {
@@ -1013,7 +1216,7 @@ public static class BoltFfiCodeGenerator
                 sb.AppendLine("            finally");
                 sb.AppendLine("            {");
                 foreach (var p in wireParams)
-                    sb.AppendLine($"                WireWriter.Return({ToCamel(p.Name).TrimStart('@')}_writer);");
+                    sb.AppendLine($"                {ToCamel(p.Name).TrimStart('@')}_writer.Dispose();");
                 sb.AppendLine("            }");
             }
             sb.AppendLine("        }");
@@ -1112,6 +1315,8 @@ public static class BoltFfiCodeGenerator
             string mName = ToPascal(m.Name);
             string cleanMName = m.Name.ToPascalCase().TrimStart('@');
             string retType = MapNativeType(m.ReturnType);
+            string csRetType = MapType(m.ReturnType);
+            bool boolRet = m.ReturnType.Kind == BoltFfiTypeKind.Bool;
             var fnParams = new List<string> { "ulong handle" };
             var callArgs = new List<string>();
             var devirtParams = new List<string> { $"{ifaceName} target" };
@@ -1122,9 +1327,13 @@ public static class BoltFfiCodeGenerator
                 {
                     fnParams.Add($"nint {name.TrimStart('@')}_ptr");
                     fnParams.Add($"nuint {name.TrimStart('@')}_len");
+                    callArgs.Add(name);
                 }
-                else fnParams.Add($"{MapNativeType(p.Type)} {name}");
-                callArgs.Add(name);
+                else
+                {
+                    fnParams.Add($"{MapNativeType(p.Type)} {name}");
+                    callArgs.Add(p.Type.Kind == BoltFfiTypeKind.Bool ? $"({name} != 0)" : name);
+                }
                 devirtParams.Add($"{MapType(p.Type)} {name}");
             }
             if (m.ReturnType.Kind == BoltFfiTypeKind.Void)
@@ -1134,12 +1343,13 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                devirtParams.Add($"ref {retType} result");
+                devirtParams.Add($"ref {csRetType} result");
                 devirtParams.Add("ref bool handled");
                 sb.AppendLine($"        static partial void TryDevirtualize{cleanMName}({string.Join(", ", devirtParams)});");
             }
             sb.AppendLine();
             sb.AppendLine("        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]");
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine($"        private static {retType} {cleanMName}Impl({string.Join(", ", fnParams)})");
             sb.AppendLine("        {");
             sb.AppendLine("            try");
@@ -1188,9 +1398,11 @@ public static class BoltFfiCodeGenerator
                 devirtCallArgs.Add("ref result");
                 devirtCallArgs.Add("ref handled");
                 sb.AppendLine("                    bool handled = false;");
-                sb.AppendLine($"                    {retType} result = default!;");
+                sb.AppendLine($"                    {csRetType} result = default!;");
                 sb.AppendLine($"                    TryDevirtualize{cleanMName}({string.Join(", ", devirtCallArgs)});");
-                sb.AppendLine("                    if (handled) return result;");
+                sb.AppendLine(boolRet
+                    ? "                    if (handled) return (byte)(result ? 1 : 0);"
+                    : "                    if (handled) return result;");
                 if (matchedImplementations != null && matchedImplementations.Count > 0)
                 {
                     for (int i = 0; i < matchedImplementations.Count; i++)
@@ -1198,11 +1410,17 @@ public static class BoltFfiCodeGenerator
                         var impl = matchedImplementations[i];
                         sb.AppendLine($"                    if (cb is {impl.FullyQualifiedTypeName} direct{i})");
                         sb.AppendLine("                    {");
-                        sb.AppendLine($"                        return direct{i}.{mName}({string.Join(", ", callArgs)});");
+                        string callExpr = $"direct{i}.{mName}({string.Join(", ", callArgs)})";
+                        sb.AppendLine(boolRet
+                            ? $"                        return (byte)({callExpr} ? 1 : 0);"
+                            : $"                        return {callExpr};");
                         sb.AppendLine("                    }");
                     }
                 }
-                sb.AppendLine($"                    return cb.{mName}({string.Join(", ", callArgs)});");
+                string fallbackCall = $"cb.{mName}({string.Join(", ", callArgs)})";
+                sb.AppendLine(boolRet
+                    ? $"                    return (byte)({fallbackCall} ? 1 : 0);"
+                    : $"                    return {fallbackCall};");
                 sb.AppendLine("                }");
                 sb.AppendLine("                return default!;");
                 sb.AppendLine("            }");
@@ -1219,10 +1437,33 @@ public static class BoltFfiCodeGenerator
         sb.AppendLine();
     }
 
+    private static bool ShouldSuppressGCTransition(
+        Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs,
+        string? className,
+        BoltFfiCanonicalName name,
+        bool isAsync)
+    {
+        if (methodConfigs == null || isAsync) return false;
+        string pascal = name.ToPascalCase();
+        string snake = name.ToSnakeCase();
+        if (!string.IsNullOrEmpty(className))
+        {
+            if (methodConfigs.TryGetValue($"{className}.{pascal}", out var qcfg) && qcfg.SuppressGCTransition)
+                return true;
+        }
+        if ((methodConfigs.TryGetValue(pascal, out var cfg) ||
+             methodConfigs.TryGetValue(snake, out cfg)) && cfg.SuppressGCTransition)
+        {
+            return true;
+        }
+        return false;
+    }
+
     private static void EmitNativeMethods(
         StringBuilder sb,
         List<BoltFfiDecl> decls,
-        string libraryFileName)
+        string libraryFileName,
+        Dictionary<string, Arbitration.MethodEmissionConfig>? methodConfigs = null)
     {
         string libStem = Path.GetFileNameWithoutExtension(libraryFileName);
         if (libStem.StartsWith("lib", StringComparison.OrdinalIgnoreCase))
@@ -1245,20 +1486,24 @@ public static class BoltFfiCodeGenerator
         {
             if (decl.Kind == BoltFfiDeclKind.Function && decl.Function != null)
             {
-                EmitNativeFunction(sb, decl.Function, emittedSymbols);
+                bool suppressGc = ShouldSuppressGCTransition(methodConfigs, null, decl.Function.Name, decl.Function.IsAsync);
+                EmitNativeFunction(sb, decl.Function, emittedSymbols, suppressGc);
             }
             else if (decl.Kind == BoltFfiDeclKind.Class && decl.Class != null)
             {
+                string clsName = decl.Class.Name.ToPascalCase();
                 // Initializers
                 foreach (var init in decl.Class.Initializers)
                 {
-                    EmitNativeClassInitializer(sb, init, emittedSymbols);
+                    bool suppressGc = ShouldSuppressGCTransition(methodConfigs, clsName, init.Name, init.IsAsync);
+                    EmitNativeClassInitializer(sb, init, emittedSymbols, suppressGc);
                 }
 
                 // Instance Methods
                 foreach (var m in decl.Class.Methods)
                 {
-                    EmitNativeClassMethod(sb, m, emittedSymbols);
+                    bool suppressGc = ShouldSuppressGCTransition(methodConfigs, clsName, m.Name, m.IsAsync);
+                    EmitNativeClassMethod(sb, m, emittedSymbols, suppressGc);
                 }
 
                 // Release
@@ -1333,7 +1578,8 @@ public static class BoltFfiCodeGenerator
     private static void EmitNativeFunction(
         StringBuilder sb,
         BoltFfiFunctionDecl func,
-        HashSet<string> emittedSymbols)
+        HashSet<string> emittedSymbols,
+        bool suppressGCTransition = false)
     {
         if (string.IsNullOrEmpty(func.Symbol) || !emittedSymbols.Add(func.Symbol))
         {
@@ -1353,8 +1599,7 @@ public static class BoltFfiCodeGenerator
                 }
                 else
                 {
-                    string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                    nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                    nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
                 }
             }
 
@@ -1382,8 +1627,6 @@ public static class BoltFfiCodeGenerator
                 }
                 else
                 {
-                    if (func.ReturnType.Kind == BoltFfiTypeKind.Bool)
-                        sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
                     sb.AppendLine($"        internal static extern {retType} {func.AsyncCompleteSymbol}(nint future, out FfiStatus status);");
                 }
                 sb.AppendLine();
@@ -1419,8 +1662,7 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                syncParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                syncParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
@@ -1433,9 +1675,9 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
+        if (suppressGCTransition)
+            sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
-        if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
-            sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", syncParams)});");
         sb.AppendLine();
     }
@@ -1443,7 +1685,8 @@ public static class BoltFfiCodeGenerator
     private static void EmitNativeClassInitializer(
         StringBuilder sb,
         BoltFfiFunctionDecl func,
-        HashSet<string> emittedSymbols)
+        HashSet<string> emittedSymbols,
+        bool suppressGCTransition = false)
     {
         if (string.IsNullOrEmpty(func.Symbol) || !emittedSymbols.Add(func.Symbol))
         {
@@ -1462,8 +1705,7 @@ public static class BoltFfiCodeGenerator
                 }
                 else
                 {
-                    string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                    asyncParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                    asyncParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
                 }
             }
 
@@ -1515,11 +1757,12 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
+        if (suppressGCTransition)
+            sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
         sb.AppendLine($"        internal static extern nint {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
@@ -1528,7 +1771,8 @@ public static class BoltFfiCodeGenerator
     private static void EmitNativeClassMethod(
         StringBuilder sb,
         BoltFfiFunctionDecl func,
-        HashSet<string> emittedSymbols)
+        HashSet<string> emittedSymbols,
+        bool suppressGCTransition = false)
     {
         if (string.IsNullOrEmpty(func.Symbol) || !emittedSymbols.Add(func.Symbol))
         {
@@ -1547,8 +1791,7 @@ public static class BoltFfiCodeGenerator
                 }
                 else
                 {
-                    string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                    asyncParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                    asyncParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
                 }
             }
 
@@ -1576,8 +1819,6 @@ public static class BoltFfiCodeGenerator
                 }
                 else
                 {
-                    if (func.ReturnType.Kind == BoltFfiTypeKind.Bool)
-                        sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
                     sb.AppendLine($"        internal static extern {retType} {completeSymbol}(nint future, out FfiStatus status);");
                 }
                 sb.AppendLine();
@@ -1612,8 +1853,7 @@ public static class BoltFfiCodeGenerator
             }
             else
             {
-                string marshal = p.Type.Kind == BoltFfiTypeKind.Bool ? "[MarshalAs(UnmanagedType.U1)] " : string.Empty;
-                nativeParams.Add($"{marshal}{MapNativeType(p.Type)} {ToCamel(p.Name)}");
+                nativeParams.Add($"{MapNativeType(p.Type)} {ToCamel(p.Name)}");
             }
         }
 
@@ -1626,9 +1866,9 @@ public static class BoltFfiCodeGenerator
             nativeRet = "FfiBuf";
         }
 
+        if (suppressGCTransition)
+            sb.AppendLine("        [SuppressGCTransition]");
         sb.AppendLine($"        [DllImport(NativeLib, EntryPoint = \"{func.Symbol}\", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]");
-        if (func.ReturnType.Kind == BoltFfiTypeKind.Bool && !func.HasError)
-            sb.AppendLine("        [return: MarshalAs(UnmanagedType.U1)]");
         sb.AppendLine($"        internal static extern {nativeRet} {func.Symbol}({string.Join(", ", nativeParams)});");
         sb.AppendLine();
     }
@@ -1661,54 +1901,30 @@ public static class BoltFfiCodeGenerator
             string cleanParam = pName.TrimStart('@');
             if (p.Type.Kind == BoltFfiTypeKind.String)
             {
-                if (isAsync)
-                {
-                    preStmts.Add($"int {cleanParam}_utf8Len = global::System.Text.Encoding.UTF8.GetByteCount({pName} ?? string.Empty);");
-                    preStmts.Add($"byte[] {cleanParam}_wire = new byte[4 + {cleanParam}_utf8Len];");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_wire, (uint){cleanParam}_utf8Len);");
-                    preStmts.Add($"global::System.Text.Encoding.UTF8.GetBytes({pName} ?? string.Empty, 0, ({pName} ?? string.Empty).Length, {cleanParam}_wire, 4);");
-                    fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_wire"));
-                    callArgs.Add($"{cleanParam}_ptr_nint");
-                    callArgs.Add($"(nuint)(4 + {cleanParam}_utf8Len)");
-                }
-                else
-                {
-                    preStmts.Add($"int {cleanParam}_len = {pName}?.Length ?? 0;");
-                    preStmts.Add($"int {cleanParam}_maxBytes = {cleanParam}_len <= 680 ? 4 + {cleanParam}_len * 3 : 0;");
-                    preStmts.Add($"byte[]? {cleanParam}_rented = null;");
-                    preStmts.Add($"Span<byte> {cleanParam}_span = {cleanParam}_maxBytes > 0 ? stackalloc byte[{cleanParam}_maxBytes] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(checked(4 + {cleanParam}_len * 3))).AsSpan(0, checked(4 + {cleanParam}_len * 3));");
-                    preStmts.Add($"int {cleanParam}_utf8Len = {cleanParam}_len == 0 ? 0 : global::System.Text.Encoding.UTF8.GetBytes({pName}.AsSpan(), {cleanParam}_span.Slice(4));");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_span, (uint){cleanParam}_utf8Len);");
-                    postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
-                    fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_span"));
-                    callArgs.Add($"{cleanParam}_ptr_nint");
-                    callArgs.Add($"(nuint)(4 + {cleanParam}_utf8Len)");
-                }
+                string wireVar = isAsync ? $"{cleanParam}_wire" : $"{cleanParam}_span";
+                preStmts.Add($"int {cleanParam}_len = {pName}?.Length ?? 0;");
+                preStmts.Add($"int {cleanParam}_maxBytes = {cleanParam}_len <= 680 ? 4 + {cleanParam}_len * 3 : 0;");
+                preStmts.Add($"byte[]? {cleanParam}_rented = null;");
+                preStmts.Add($"Span<byte> {wireVar} = {cleanParam}_maxBytes > 0 ? stackalloc byte[{cleanParam}_maxBytes] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(checked(4 + {cleanParam}_len * 3))).AsSpan(0, checked(4 + {cleanParam}_len * 3));");
+                preStmts.Add($"int {cleanParam}_utf8Len = {cleanParam}_len == 0 ? 0 : global::System.Text.Encoding.UTF8.GetBytes({pName}.AsSpan(), {wireVar}.Slice(4));");
+                preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({wireVar}, (uint){cleanParam}_utf8Len);");
+                postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
+                fixedVars.Add(("byte", $"{cleanParam}_ptr", wireVar));
+                callArgs.Add($"{cleanParam}_ptr_nint");
+                callArgs.Add($"(nuint)(4 + {cleanParam}_utf8Len)");
             }
             else if (p.Type.Kind == BoltFfiTypeKind.Bytes)
             {
-                if (isAsync)
-                {
-                    preStmts.Add($"int {cleanParam}_len = {pName} != null ? {pName}.Length : 0;");
-                    preStmts.Add($"byte[] {cleanParam}_wire = new byte[4 + {cleanParam}_len];");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_wire, (uint){cleanParam}_len);");
-                    preStmts.Add($"if ({pName} != null && {cleanParam}_len > 0) global::System.Array.Copy({pName}, 0, {cleanParam}_wire, 4, {cleanParam}_len);");
-                    fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_wire"));
-                    callArgs.Add($"{cleanParam}_ptr_nint");
-                    callArgs.Add($"(nuint)(4 + {cleanParam}_len)");
-                }
-                else
-                {
-                    preStmts.Add($"int {cleanParam}_len = {pName} != null ? {pName}.Length : 0;");
-                    preStmts.Add($"byte[]? {cleanParam}_rented = null;");
-                    preStmts.Add($"Span<byte> {cleanParam}_span = {cleanParam}_len <= 2044 ? stackalloc byte[4 + {cleanParam}_len] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(4 + {cleanParam}_len)).AsSpan(0, 4 + {cleanParam}_len);");
-                    preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({cleanParam}_span, (uint){cleanParam}_len);");
-                    preStmts.Add($"if ({pName} != null && {cleanParam}_len > 0) {pName}.AsSpan().CopyTo({cleanParam}_span.Slice(4));");
-                    postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
-                    fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_span"));
-                    callArgs.Add($"{cleanParam}_ptr_nint");
-                    callArgs.Add($"(nuint)(4 + {cleanParam}_len)");
-                }
+                string wireVar = isAsync ? $"{cleanParam}_wire" : $"{cleanParam}_span";
+                preStmts.Add($"int {cleanParam}_len = {pName} != null ? {pName}.Length : 0;");
+                preStmts.Add($"byte[]? {cleanParam}_rented = null;");
+                preStmts.Add($"Span<byte> {wireVar} = {cleanParam}_len <= 2044 ? stackalloc byte[4 + {cleanParam}_len] : ({cleanParam}_rented = global::System.Buffers.ArrayPool<byte>.Shared.Rent(4 + {cleanParam}_len)).AsSpan(0, 4 + {cleanParam}_len);");
+                preStmts.Add($"global::System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian({wireVar}, (uint){cleanParam}_len);");
+                preStmts.Add($"if ({pName} != null && {cleanParam}_len > 0) {pName}.AsSpan().CopyTo({wireVar}.Slice(4));");
+                postStmts.Add($"if ({cleanParam}_rented != null) global::System.Buffers.ArrayPool<byte>.Shared.Return({cleanParam}_rented);");
+                fixedVars.Add(("byte", $"{cleanParam}_ptr", wireVar));
+                callArgs.Add($"{cleanParam}_ptr_nint");
+                callArgs.Add($"(nuint)(4 + {cleanParam}_len)");
             }
             else if (p.Type.IsDirectVec)
             {
@@ -1732,10 +1948,11 @@ public static class BoltFfiCodeGenerator
             }
             else if (NeedsWireBuffer(p.Type))
             {
-                preStmts.Add($"var {cleanParam}_writer = WireWriter.Rent();");
-                preStmts.Add($"{WireWriteStatement(p.Type, pName, $"{cleanParam}_writer")};");
-                postStmts.Add($"WireWriter.Return({cleanParam}_writer);");
-                fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_writer.Buffer"));
+                preStmts.Add($"Span<byte> {cleanParam}_stack = stackalloc byte[256];");
+                preStmts.Add($"var {cleanParam}_writer = new ValueWireWriter({cleanParam}_stack);");
+                preStmts.Add($"{WireWriteStatement(p.Type, pName, $"{cleanParam}_writer", isValueWriter: true)};");
+                postStmts.Add($"{cleanParam}_writer.Dispose();");
+                fixedVars.Add(("byte", $"{cleanParam}_ptr", $"{cleanParam}_writer.RawBufferSpan"));
                 callArgs.Add($"{cleanParam}_ptr_nint");
                 callArgs.Add($"(nuint){cleanParam}_writer.Length");
             }
@@ -1746,6 +1963,10 @@ public static class BoltFfiCodeGenerator
             else if (p.Type.Kind == BoltFfiTypeKind.Callback && !string.IsNullOrEmpty(p.Type.CustomTypeName))
             {
                 callArgs.Add($"{ToPascal(p.Type.CustomTypeName)}Bridge.Create({pName})");
+            }
+            else if (p.Type.Kind == BoltFfiTypeKind.Bool)
+            {
+                callArgs.Add($"({pName} ? (byte)1 : (byte)0)");
             }
             else
             {
@@ -1789,11 +2010,13 @@ public static class BoltFfiCodeGenerator
         {
             var asyncParams = new List<string>(publicParams) { "CancellationToken cancellationToken = default" };
             string taskRet = (retType == "void") ? "Task" : $"Task<{retType}>";
+            sb.AppendLine($"{curIndent}[global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine($"{curIndent}{accessibility} {staticMod}{partialMod}{taskRet} {methodName}({string.Join(", ", asyncParams)})");
         }
         else
         {
             sb.AppendLine($"{curIndent}[MethodImpl(MethodImplOptions.AggressiveInlining)]");
+            sb.AppendLine($"{curIndent}[global::System.Runtime.CompilerServices.SkipLocalsInit]");
             sb.AppendLine($"{curIndent}{accessibility} {staticMod}{partialMod}{retType} {methodName}({string.Join(", ", publicParams)})");
         }
         sb.AppendLine($"{curIndent}{{");
@@ -1858,7 +2081,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}    }}");
             sb.AppendLine($"{curIndent}    finally");
             sb.AppendLine($"{curIndent}    {{");
-            sb.AppendLine($"{curIndent}        NativeMethods.boltffi_free_buf(errBuf);");
+            sb.AppendLine($"{curIndent}        if (errBuf.ptr != 0) NativeMethods.boltffi_free_buf(errBuf);");
             sb.AppendLine($"{curIndent}    }}");
             sb.AppendLine($"{curIndent}}}");
             if (retType != "void")
@@ -1878,9 +2101,13 @@ public static class BoltFfiCodeGenerator
                         string targetCls = !string.IsNullOrEmpty(func.ReturnType.CustomTypeName) ? ToPascal(func.ReturnType.CustomTypeName) : retType;
                         sb.AppendLine($"{curIndent}return new {targetCls}(outNativeVal, true);");
                     }
+                    else if (func.ReturnType.Kind == BoltFfiTypeKind.Bool)
+                    {
+                        sb.AppendLine($"{curIndent}return outNativeVal != 0;");
+                    }
                     else if (NeedsWireBuffer(func.ReturnType))
                     {
-                        sb.AppendLine($"{curIndent}try {{ var outReader = new WireReader(outNativeVal); return {WireReadExpr(func.ReturnType, "outReader")}; }} finally {{ NativeMethods.boltffi_free_buf(outNativeVal); }}");
+                        sb.AppendLine($"{curIndent}try {{ var outReader = new WireReader(outNativeVal); return {WireReadExpr(func.ReturnType, "outReader")}; }} finally {{ if (outNativeVal.ptr != 0) NativeMethods.boltffi_free_buf(outNativeVal); }}");
                     }
                     else
                     {
@@ -1906,7 +2133,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}}}");
             sb.AppendLine($"{curIndent}finally");
             sb.AppendLine($"{curIndent}{{");
-            sb.AppendLine($"{curIndent}    NativeMethods.boltffi_free_buf(retBuf);");
+            sb.AppendLine($"{curIndent}    if (retBuf.ptr != 0) NativeMethods.boltffi_free_buf(retBuf);");
             sb.AppendLine($"{curIndent}}}");
         }
         else if (func.ReturnType.Kind == BoltFfiTypeKind.Bytes)
@@ -1918,7 +2145,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}}}");
             sb.AppendLine($"{curIndent}finally");
             sb.AppendLine($"{curIndent}{{");
-            sb.AppendLine($"{curIndent}    NativeMethods.boltffi_free_buf(retBuf);");
+            sb.AppendLine($"{curIndent}    if (retBuf.ptr != 0) NativeMethods.boltffi_free_buf(retBuf);");
             sb.AppendLine($"{curIndent}}}");
         }
         else if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
@@ -1928,6 +2155,10 @@ public static class BoltFfiCodeGenerator
                 : "object";
             sb.AppendLine($"{curIndent}nint handle = {callExpr};");
             sb.AppendLine($"{curIndent}return new {clsName}(handle, true);");
+        }
+        else if (func.ReturnType.Kind == BoltFfiTypeKind.Bool)
+        {
+            sb.AppendLine($"{curIndent}return {callExpr} != 0;");
         }
         else if (NeedsWireBuffer(func.ReturnType))
         {
@@ -1939,7 +2170,7 @@ public static class BoltFfiCodeGenerator
             sb.AppendLine($"{curIndent}}}");
             sb.AppendLine($"{curIndent}finally");
             sb.AppendLine($"{curIndent}{{");
-            sb.AppendLine($"{curIndent}    NativeMethods.boltffi_free_buf(retBuf);");
+            sb.AppendLine($"{curIndent}    if (retBuf.ptr != 0) NativeMethods.boltffi_free_buf(retBuf);");
             sb.AppendLine($"{curIndent}}}");
         }
         else
@@ -1981,8 +2212,8 @@ public static class BoltFfiCodeGenerator
             string callMethod = isVoid ? "CallAsyncVoid" : $"CallAsync<{retType}>";
             sb.AppendLine($"{ai}return BoltFfiAsync.{callMethod}(");
             sb.AppendLine($"{ai}    asyncFutureHandle,");
-            sb.AppendLine($"{ai}    (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
-            sb.AppendLine($"{ai}    (future) =>");
+            sb.AppendLine($"{ai}    static (future, cbData, cb) => NativeMethods.{func.AsyncPollSymbol}(future, cbData, cb),");
+            sb.AppendLine($"{ai}    static (future, cancellationToken) =>");
             sb.AppendLine($"{ai}    {{");
             if (func.HasError)
             {
@@ -2001,7 +2232,7 @@ public static class BoltFfiCodeGenerator
                 else sb.AppendLine($"{ai}                throw new UniFFISharp.Exceptions.UniffiException(errBuf.ReadString());");
                 sb.AppendLine($"{ai}            }}");
                 sb.AppendLine($"{ai}        }}");
-                sb.AppendLine($"{ai}        finally {{ NativeMethods.boltffi_free_buf(errBuf); }}");
+                sb.AppendLine($"{ai}        finally {{ if (errBuf.ptr != 0) NativeMethods.boltffi_free_buf(errBuf); }}");
             }
             else
             {
@@ -2012,14 +2243,16 @@ public static class BoltFfiCodeGenerator
             if (!isVoid)
             {
                 if (NeedsWireBuffer(func.ReturnType))
-                    sb.AppendLine($"{ai}        try {{ var reader = new WireReader(retVal); return {WireReadExpr(func.ReturnType)}; }} finally {{ NativeMethods.boltffi_free_buf(retVal); }}");
+                    sb.AppendLine($"{ai}        try {{ var reader = new WireReader(retVal); return {WireReadExpr(func.ReturnType)}; }} finally {{ if (retVal.ptr != 0) NativeMethods.boltffi_free_buf(retVal); }}");
                 else if (func.ReturnType.Kind == BoltFfiTypeKind.Class)
                     sb.AppendLine($"{ai}        return new {retType}(retVal, true);");
+                else if (func.ReturnType.Kind == BoltFfiTypeKind.Bool)
+                    sb.AppendLine($"{ai}        return retVal != 0;");
                 else sb.AppendLine($"{ai}        return retVal;");
             }
             sb.AppendLine($"{ai}    }},");
-            sb.AppendLine($"{ai}    (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
-            sb.AppendLine($"{ai}    (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
+            sb.AppendLine($"{ai}    static (future) => NativeMethods.{func.AsyncCancelSymbol}(future),");
+            sb.AppendLine($"{ai}    static (future) => NativeMethods.{func.AsyncFreeSymbol}(future),");
             sb.AppendLine($"{ai}    cancellationToken);");
         }
 
@@ -2110,29 +2343,47 @@ public static class BoltFfiCodeGenerator
         {
             string mName = stream.Name.ToPascalCase();
             string itemType = MapType(stream.ItemType);
+            string decodeArrayExpr;
+            if (IsBlittablePrimitive(stream.ItemType))
+            {
+                decodeArrayExpr = $"reader.ReadUnmanagedArray<{itemType}>()";
+            }
+            else if (stream.ItemType.Kind == BoltFfiTypeKind.String)
+            {
+                decodeArrayExpr = "reader.ReadStringArray()";
+            }
+            else if (stream.ItemType.Kind == BoltFfiTypeKind.Record && stream.ItemType.IsDirectRecord)
+            {
+                decodeArrayExpr = $"reader.ReadUnmanagedArray<{QualifyType(stream.ItemType)}>()";
+            }
+            else
+            {
+                decodeArrayExpr = $"reader.ReadArray(static (ref WireReader r) => {WireReadExpr(stream.ItemType, "r")})";
+            }
+
             AppendDocComment(sb, stream.DocComment, "        ");
             AppendParamComment(sb, "cancellationToken", "A token to monitor for cancellation requests.", "        ");
             sb.AppendLine($"        public static IAsyncEnumerable<{itemType}> {mName}(CancellationToken cancellationToken = default)");
             sb.AppendLine("        {");
             sb.AppendLine("            return BoltFfiStreamHelper.ReadAll(");
-            sb.AppendLine($"                () => NativeMethods.{stream.SubscribeSymbol}(),");
-            sb.AppendLine("                (sub, max) =>");
+            sb.AppendLine($"                static () => NativeMethods.{stream.SubscribeSymbol}(),");
+            sb.AppendLine("                static (sub, max) =>");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var buf = NativeMethods.{stream.PopBatchSymbol}(sub, max);");
             sb.AppendLine("                    try");
             sb.AppendLine("                    {");
             sb.AppendLine("                        var reader = new WireReader(buf);");
-            sb.AppendLine($"                        return reader.ReadArray((ref WireReader r) => {WireReadExpr(stream.ItemType, "r")});");
+            sb.AppendLine($"                        return {decodeArrayExpr};");
             sb.AppendLine("                    }");
             sb.AppendLine("                    finally");
             sb.AppendLine("                    {");
-            sb.AppendLine("                        NativeMethods.boltffi_free_buf(buf);");
+            sb.AppendLine("                        if (buf.ptr != 0) NativeMethods.boltffi_free_buf(buf);");
             sb.AppendLine("                    }");
             sb.AppendLine("                },");
-            sb.AppendLine($"                (sub, timeout) => NativeMethods.{stream.WaitSymbol}(sub, timeout),");
-            sb.AppendLine($"                (sub) => NativeMethods.{stream.UnsubscribeSymbol}(sub),");
-            sb.AppendLine($"                (sub) => NativeMethods.{stream.FreeSymbol}(sub),");
-            sb.AppendLine("                batchSize: 16,");
+            sb.AppendLine($"                static (sub, timeout) => NativeMethods.{stream.WaitSymbol}(sub, timeout),");
+            sb.AppendLine($"                static (sub) => NativeMethods.{stream.UnsubscribeSymbol}(sub),");
+            sb.AppendLine($"                static (sub) => NativeMethods.{stream.FreeSymbol}(sub),");
+            sb.AppendLine("                batchSize: 64,");
             sb.AppendLine("                waitTimeoutMs: 100,");
             sb.AppendLine("                cancellationToken: cancellationToken);");
             sb.AppendLine("        }");
@@ -2187,9 +2438,12 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"({QualifyType(ty)}){readerVar}.ReadI32()" : $"{QualifyType(ty)}.Decode(ref {readerVar})",
             BoltFfiTypeKind.Sequence when ty.IsDirectVec => $"{readerVar}.ReadDirectList<{ty.InnerType?.Kind switch { BoltFfiTypeKind.Record or BoltFfiTypeKind.Enum => QualifyType(ty.InnerType), _ => MapType(ty.InnerType ?? BoltFfiType.Void) }}>()",
             BoltFfiTypeKind.Sequence when IsBlittablePrimitive(ty.InnerType) => $"{readerVar}.ReadUnmanagedList<{MapType(ty.InnerType!)}>()",
-            BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
-            BoltFfiTypeKind.Map => $"{readerVar}.ReadMap((ref WireReader {keyVar}) => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), keyVar)}, (ref WireReader {valVar}) => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, valVar)})",
-            BoltFfiTypeKind.Set => $"{readerVar}.ReadSet((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
+            BoltFfiTypeKind.Sequence when ty.InnerType?.Kind == BoltFfiTypeKind.String => $"{readerVar}.ReadStringList()",
+            BoltFfiTypeKind.Sequence when ty.InnerType?.Kind == BoltFfiTypeKind.Record => $"{QualifyType(ty.InnerType)}.DecodeList(ref {readerVar})",
+            BoltFfiTypeKind.Sequence when ty.InnerType?.Kind == BoltFfiTypeKind.Enum && !(ty.InnerType.IsCStyleEnum && !IsErrorType(ty.InnerType)) => $"{QualifyType(ty.InnerType)}.DecodeList(ref {readerVar})",
+            BoltFfiTypeKind.Sequence => $"{readerVar}.ReadList(static (ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
+            BoltFfiTypeKind.Map => $"{readerVar}.ReadMap(static (ref WireReader {keyVar}) => {WireReadExpr(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), keyVar)}, static (ref WireReader {valVar}) => {WireReadExpr(ty.ValueType ?? BoltFfiType.Void, valVar)})",
+            BoltFfiTypeKind.Set => $"{readerVar}.ReadSet(static (ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
             {
                 BoltFfiTypeKind.Bool => $"{readerVar}.ReadOptionBool()",
@@ -2208,9 +2462,9 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.Duration => $"{readerVar}.ReadOptionDuration()",
                 BoltFfiTypeKind.DateTime => $"{readerVar}.ReadOptionDateTime()",
                 BoltFfiTypeKind.Guid => $"{readerVar}.ReadOptionGuid()",
-                BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
-                BoltFfiTypeKind.Enum when ty.InnerType != null && ((ty.InnerType.IsCStyleEnum && !IsErrorType(ty.InnerType)) || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType, elemVar)})",
-                _ => $"{readerVar}.ReadOption((ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})"
+                BoltFfiTypeKind.Record => $"{readerVar}.ReadOptionValue(static (ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && ((ty.InnerType.IsCStyleEnum && !IsErrorType(ty.InnerType)) || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{readerVar}.ReadOptionValue(static (ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType, elemVar)})",
+                _ => $"{readerVar}.ReadOption(static (ref WireReader {elemVar}) => {WireReadExpr(ty.InnerType ?? BoltFfiType.Void, elemVar)})"
             },
             _ => $"{readerVar}.ReadI32()"
         };
@@ -2230,8 +2484,26 @@ public static class BoltFfiCodeGenerator
         };
     }
 
-    private static string WireWriteStatement(BoltFfiType ty, string expr, string writerVar = "writer")
+    private static string WireWriteStatement(BoltFfiType ty, string expr, string writerVar = "writer", bool isValueWriter = false)
     {
+        string suffix = writerVar.StartsWith("w") && !string.Equals(writerVar, "writer", StringComparison.Ordinal) && !writerVar.EndsWith("_writer", StringComparison.Ordinal)
+            ? writerVar.Substring(1) + "_"
+            : string.Empty;
+        string wVar = "w" + suffix;
+        string itemVar = "item" + suffix;
+        string keyVar = "k" + suffix;
+        string valVar = "v" + suffix;
+        string optVar = "val" + suffix;
+
+        BoltFfiType innerTy = ty.InnerType ?? BoltFfiType.Void;
+        BoltFfiType keyTy = ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String);
+        BoltFfiType valueTy = ty.ValueType ?? BoltFfiType.Void;
+
+        string BuildLambda(BoltFfiType argTy, string argName, string body) =>
+            isValueWriter
+                ? $"static (ref ValueWireWriter {wVar}, {MapType(argTy)} {argName}) => {body}"
+                : $"({wVar}, {argName}) => {body}";
+
         return ty.Kind switch
         {
             BoltFfiTypeKind.Bool => $"{writerVar}.WriteBool({expr})",
@@ -2251,11 +2523,14 @@ public static class BoltFfiCodeGenerator
             BoltFfiTypeKind.DateTime => $"{writerVar}.WriteDateTime({expr})",
             BoltFfiTypeKind.Guid => $"{writerVar}.WriteGuid({expr})",
             BoltFfiTypeKind.Uri => $"{writerVar}.WriteUri({expr})",
-            BoltFfiTypeKind.Record => $"({expr}).Encode({writerVar})",
-            BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty)) ? $"{writerVar}.WriteI32((int)({expr}))" : $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Record => isValueWriter ? $"({expr}).Encode(ref {writerVar})" : $"({expr}).Encode({writerVar})",
+            BoltFfiTypeKind.Enum => (ty.IsCStyleEnum && !IsErrorType(ty))
+                ? $"{writerVar}.WriteI32((int)({expr}))"
+                : (isValueWriter ? $"({expr}).Encode(ref {writerVar})" : $"({expr}).Encode({writerVar})"),
             BoltFfiTypeKind.Sequence when IsBlittablePrimitive(ty.InnerType) => $"{writerVar}.WriteUnmanagedList({expr})",
-            BoltFfiTypeKind.Sequence => $"{writerVar}.WriteList({expr}, (w, item) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "item", "w")})",
-            BoltFfiTypeKind.Map => $"{writerVar}.WriteMap({expr}, (w, k) => {WireWriteStatement(ty.KeyType ?? BoltFfiType.Primitive(BoltFfiTypeKind.String), "k", "w")}, (w, v) => {WireWriteStatement(ty.ValueType ?? BoltFfiType.Void, "v", "w")})",
+            BoltFfiTypeKind.Sequence => $"{writerVar}.WriteList({expr}, {BuildLambda(innerTy, itemVar, WireWriteStatement(innerTy, itemVar, wVar, isValueWriter))})",
+            BoltFfiTypeKind.Map => $"{writerVar}.WriteMap({expr}, {BuildLambda(keyTy, keyVar, WireWriteStatement(keyTy, keyVar, wVar, isValueWriter))}, {BuildLambda(valueTy, valVar, WireWriteStatement(valueTy, valVar, wVar, isValueWriter))})",
+            BoltFfiTypeKind.Set => $"{writerVar}.WriteSet({expr}, {BuildLambda(innerTy, itemVar, WireWriteStatement(innerTy, itemVar, wVar, isValueWriter))})",
             BoltFfiTypeKind.Option => ty.InnerType?.Kind switch
             {
                 BoltFfiTypeKind.Bool => $"{writerVar}.WriteOptionBool({expr})",
@@ -2274,9 +2549,9 @@ public static class BoltFfiCodeGenerator
                 BoltFfiTypeKind.Duration => $"{writerVar}.WriteOptionDuration({expr})",
                 BoltFfiTypeKind.DateTime => $"{writerVar}.WriteOptionDateTime({expr})",
                 BoltFfiTypeKind.Guid => $"{writerVar}.WriteOptionGuid({expr})",
-                BoltFfiTypeKind.Record => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})",
-                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{writerVar}.WriteOptionValue({expr}, (w, val) => {WireWriteStatement(ty.InnerType, "val", "w")})",
-                _ => $"{writerVar}.WriteOption({expr}, (w, val) => {WireWriteStatement(ty.InnerType ?? BoltFfiType.Void, "val", "w")})"
+                BoltFfiTypeKind.Record => $"{writerVar}.WriteOptionValue({expr}, {BuildLambda(innerTy, optVar, WireWriteStatement(innerTy, optVar, wVar, isValueWriter))})",
+                BoltFfiTypeKind.Enum when ty.InnerType != null && (ty.InnerType.IsCStyleEnum || (s_currentOptions?.EffectiveUseNativeUnions == true)) => $"{writerVar}.WriteOptionValue({expr}, {BuildLambda(innerTy, optVar, WireWriteStatement(innerTy, optVar, wVar, isValueWriter))})",
+                _ => $"{writerVar}.WriteOption({expr}, {BuildLambda(innerTy, optVar, WireWriteStatement(innerTy, optVar, wVar, isValueWriter))})"
             },
             _ => $"{writerVar}.WriteI32({expr})"
         };
@@ -2320,6 +2595,7 @@ public static class BoltFfiCodeGenerator
     {
         return ty.Kind switch
         {
+            BoltFfiTypeKind.Bool => "byte",
             BoltFfiTypeKind.String or BoltFfiTypeKind.Bytes => "FfiBuf",
             BoltFfiTypeKind.Class => "nint",
             BoltFfiTypeKind.Callback => "BoltFFICallbackHandle",

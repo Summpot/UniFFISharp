@@ -217,14 +217,66 @@ public unsafe ref struct WireReader
         if (count == 0) return new List<T>(0);
         if (count > span.Length - position)
         {
-            throw new EndOfStreamException($"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {span.Length - position}");
+            ThrowCorruptWireBuffer($"Corrupt wire buffer: list count {count} exceeds remaining buffer bytes {span.Length - position}");
         }
         var list = new List<T>(count);
-        for (int i = 0; i < count; i++)
+        CollectionsMarshal.SetCount(list, count);
+        var dest = CollectionsMarshal.AsSpan(list);
+        for (int i = 0; i < dest.Length; i++)
         {
-            list.Add(elementReader(ref this));
+            dest[i] = elementReader(ref this);
         }
         return list;
+    }
+
+    public List<string> ReadStringList()
+    {
+        int count = checked((int)ReadU32());
+        if (count == 0) return new List<string>(0);
+        if ((long)count * 4 > span.Length - position)
+        {
+            ThrowCorruptWireBuffer($"Corrupt wire buffer: string list count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
+        var list = new List<string>(count);
+        CollectionsMarshal.SetCount(list, count);
+        var dest = CollectionsMarshal.AsSpan(list);
+        for (int i = 0; i < dest.Length; i++)
+        {
+            dest[i] = ReadString();
+        }
+        return list;
+    }
+
+    public string[] ReadStringArray()
+    {
+        int count = checked((int)ReadU32());
+        if (count == 0) return Array.Empty<string>();
+        if ((long)count * 4 > span.Length - position)
+        {
+            ThrowCorruptWireBuffer($"Corrupt wire buffer: string array count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
+        var items = new string[count];
+        for (int i = 0; i < items.Length; i++)
+        {
+            items[i] = ReadString();
+        }
+        return items;
+    }
+
+    public T[] ReadUnmanagedArray<T>() where T : unmanaged
+    {
+        int count = checked((int)ReadU32());
+        if (count == 0) return Array.Empty<T>();
+        int elemSize = Unsafe.SizeOf<T>();
+        long bytesNeeded = (long)count * elemSize;
+        if (bytesNeeded > span.Length - position)
+        {
+            ThrowCorruptWireBuffer($"Corrupt wire buffer: array count {count} exceeds remaining buffer bytes {span.Length - position}");
+        }
+        var items = new T[count];
+        span.Slice(position, (int)bytesNeeded).CopyTo(MemoryMarshal.AsBytes(items.AsSpan()));
+        position += (int)bytesNeeded;
+        return items;
     }
 
     public T ReadUnmanaged<T>() where T : unmanaged

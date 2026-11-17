@@ -182,10 +182,15 @@
   <!-- ===================================================================== -->
   <!-- Cargo build, then one registration of the resolved library            -->
   <!-- ===================================================================== -->
-  <Target Name="UniFFIBuildCargo"
-          BeforeTargets="UniFFIEmitInput;CoreCompile"
-          Condition="'$(UniFFIAutoBuildCargo)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
+  <ItemGroup Condition="'$(UniFFICargoFastUpToDate)' == 'true' and '$(UniFFICargoManifestDir)' != '' and '$(UniFFIInputLibrary)' != ''">
+    <_UniFFICargoFastInputs Include="$(UniFFICargoManifestPath)" Condition="Exists('$(UniFFICargoManifestPath)')" />
+    <_UniFFICargoFastInputs Include="$(UniFFICargoManifestDir)\Cargo.lock" Condition="Exists('$(UniFFICargoManifestDir)\Cargo.lock')" />
+    <_UniFFICargoFastInputs Include="$(UniFFICargoManifestDir)\build.rs" Condition="Exists('$(UniFFICargoManifestDir)\build.rs')" />
+    <_UniFFICargoFastInputs Include="$(UniFFICargoManifestDir)\uniffi.toml" Condition="Exists('$(UniFFICargoManifestDir)\uniffi.toml')" />
+    <_UniFFICargoFastInputs Include="$(UniFFICargoManifestDir)\src\**\*.rs" />
+  </ItemGroup>
 
+  <Target Name="_UniFFIRunCargoCore">
     <Error Condition="'$(UniFFIPackageName)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(UniFFIPackageName)', '^[A-Za-z0-9_-]+$'))"
            Text="[UniFFISharp] Invalid crate name '$(UniFFIPackageName)'. Package names must contain only alphanumeric characters, dashes, and underscores." />
 
@@ -216,6 +221,20 @@
           EnvironmentVariables="PATH=$(_UniFFIEnvPathEscaped);TARGET_TRIPLE=$(_UniFFITargetTriple)"
           StandardOutputImportance="Normal"
           StandardErrorImportance="Normal" />
+  </Target>
+
+  <Target Name="UniFFIBuildCargo"
+          BeforeTargets="UniFFIEmitInput;CoreCompile"
+          Condition="'$(UniFFICargoFastUpToDate)' != 'true' and '$(UniFFIAutoBuildCargo)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)')">
+    <CallTarget Targets="_UniFFIRunCargoCore" />
+  </Target>
+
+  <Target Name="UniFFIBuildCargoFast"
+          BeforeTargets="UniFFIEmitInput;CoreCompile"
+          Inputs="@(_UniFFICargoFastInputs)"
+          Outputs="$(UniFFIInputLibrary)"
+          Condition="'$(UniFFICargoFastUpToDate)' == 'true' and '$(UniFFIAutoBuildCargo)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true' and '$(UniFFICargoManifestPath)' != '' and Exists('$(UniFFICargoManifestPath)') and '$(UniFFIInputLibrary)' != ''">
+    <CallTarget Targets="_UniFFIRunCargoCore" />
   </Target>
 
   <Target Name="UniFFIEmitInput"

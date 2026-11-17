@@ -45,6 +45,16 @@ public class CodeGeneratorOptions
     /// </summary>
     public System.Collections.Generic.HashSet<string>? SuppressTypeDefinitions { get; set; }
 
+    /// <summary>
+    /// Optional resolved namespace override used during emission without mutating cached ComponentInterface metadata.
+    /// </summary>
+    public string? ResolvedNamespace { get; set; }
+
+    /// <summary>
+    /// When true, skips generating native per-function checksum verification calls in static constructors.
+    /// </summary>
+    public bool SkipChecksums { get; set; }
+
     public CodeGeneratorOptions Clone()
     {
         return new CodeGeneratorOptions
@@ -53,7 +63,9 @@ public class CodeGeneratorOptions
             HasUnionAttributeSupport = this.HasUnionAttributeSupport,
             UseNativeUnions = this.UseNativeUnions,
             MethodConfigs = this.MethodConfigs != null ? new System.Collections.Generic.Dictionary<string, Arbitration.MethodEmissionConfig>(this.MethodConfigs, System.StringComparer.OrdinalIgnoreCase) : null,
-            SuppressTypeDefinitions = this.SuppressTypeDefinitions != null ? new System.Collections.Generic.HashSet<string>(this.SuppressTypeDefinitions, System.StringComparer.OrdinalIgnoreCase) : null
+            SuppressTypeDefinitions = this.SuppressTypeDefinitions != null ? new System.Collections.Generic.HashSet<string>(this.SuppressTypeDefinitions, System.StringComparer.OrdinalIgnoreCase) : null,
+            ResolvedNamespace = this.ResolvedNamespace,
+            SkipChecksums = this.SkipChecksums
         };
     }
 }

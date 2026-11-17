@@ -82,8 +82,22 @@ public class BoltFfiCoexistenceTests
             "[{\"name\":{\"parts\":[\"value\"]},\"payload\":{\"Value\":{\"Direct\":{\"ty\":\"Bool\"}}}}]"));
         string source = BoltFfiCodeGenerator.Generate(envelope, "pixeval_native.dll", "Pixeval.Ffi");
         Assert.Contains("public static partial class PixevalNativeMethods", source);
-        Assert.Contains("[return: MarshalAs(UnmanagedType.U1)]", source);
-        Assert.Contains("[MarshalAs(UnmanagedType.U1)] bool value", source);
+        Assert.Contains("internal static extern byte boltffi_function_pixeval_native_invert(byte value);", source);
+        Assert.DoesNotContain("[MarshalAs(UnmanagedType.U1)]", source);
+        Assert.DoesNotContain("[return: MarshalAs(UnmanagedType.U1)]", source);
+        Assert.Contains("!= 0;", source);
+        Assert.Contains("value ? (byte)1 : (byte)0", source);
+
+        string directRecordJson = """
+            {"magic":"boltffi.bindings","format":{"major":0,"minor":1},"surface":"Native",
+             "package":{"name":{"parts":["pixeval_native"]}},
+             "bindings":{"Native":{"decls":[{"Record":{"Direct":{"name":{"parts":["flags"]},"fields":[
+                {"key":{"Named":{"parts":["enabled"]}},"ty":"Bool","default":null,"doc":null}
+             ],"doc":null}}}]}}}
+            """;
+        var recEnv = BoltFfiMetadataEnvelope.Parse(directRecordJson)!;
+        string recSource = BoltFfiCodeGenerator.Generate(recEnv, "pixeval_native.dll", "Pixeval.Ffi");
+        Assert.Contains("[field: MarshalAs(UnmanagedType.U1)] bool Enabled", recSource);
     }
 
     [Fact]

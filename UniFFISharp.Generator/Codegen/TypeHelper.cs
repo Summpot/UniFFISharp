@@ -224,6 +224,9 @@ public static class TypeHelper
         };
     }
 
+    public static bool IsStreamPrimitive(UniFFIType type)
+        => IsFfiPrimitive(type) || type.Kind == TypeKind.Boolean;
+
     public static bool TryGetFixedAllocationSize(UniFFIType type, out int size)
     {
         switch (type.Kind)
@@ -337,6 +340,20 @@ public static class TypeHelper
     public static string ConverterInstance(UniFFIType type, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
     {
         return $"{ConverterClassName(type, currentCrate, namespaceResolver)}.INSTANCE";
+    }
+
+    public static string ConverterReadExpr(UniFFIType type, string streamVar, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
+    {
+        return IsStreamPrimitive(type)
+            ? $"{ConverterClassName(type, currentCrate, namespaceResolver)}.ReadStatic(ref {streamVar})"
+            : $"{ConverterInstance(type, currentCrate, namespaceResolver)}.Read(ref {streamVar})";
+    }
+
+    public static string ConverterWriteExpr(UniFFIType type, string valueExpr, string streamVar, string? currentCrate = null, Func<string, string>? namespaceResolver = null)
+    {
+        return IsStreamPrimitive(type)
+            ? $"{ConverterClassName(type, currentCrate, namespaceResolver)}.WriteStatic({valueExpr}, ref {streamVar})"
+            : $"{ConverterInstance(type, currentCrate, namespaceResolver)}.Write({valueExpr}, ref {streamVar})";
     }
 
     public static string FutureSuffix(UniFFIType? returnType)

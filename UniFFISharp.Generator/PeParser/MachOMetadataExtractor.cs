@@ -212,13 +212,15 @@ public static class MachOMetadataExtractor
 
             if (n_strx == 0 || (long)st.stroff + n_strx >= data.Length) continue;
 
-            int nullPos = Array.IndexOf<byte>(data, 0, (int)st.stroff + (int)n_strx);
+            int strStart = (int)st.stroff + (int)n_strx;
+            int nullPos = Array.IndexOf<byte>(data, 0, strStart);
             if (nullPos < 0) continue;
 
-            string rawName = Encoding.ASCII.GetString(data, (int)st.stroff + (int)n_strx, nullPos - ((int)st.stroff + (int)n_strx));
-            string symName = rawName.StartsWith("_") ? rawName.Substring(1) : rawName;
+            int matchStart = data[strStart] == (byte)'_' ? strStart + 1 : strStart;
+            int matchLen = nullPos - matchStart;
+            if (!ArchiveMetadataExtractor.StartsWithUniffiMetaAscii(data, matchStart, matchLen)) continue;
 
-            if (symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
+            string symName = Encoding.ASCII.GetString(data, matchStart, matchLen);
             {
                 if (n_sect > 0 && n_sect <= sections.Count)
                 {

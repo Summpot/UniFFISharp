@@ -28,7 +28,7 @@ public abstract class FfiConverterRustBuffer<TCsType> : FfiConverter<TCsType, Ru
         {
             var stream = rbuf.AsWriteableStream();
             Write(value, ref stream);
-            rbuf.len = Convert.ToUInt64(stream.Position);
+            rbuf.len = checked((ulong)stream.Position);
             return rbuf;
         }
         catch

@@ -140,15 +140,41 @@ public abstract class JsonNode
 
     private static string ParseString(string json, ref int index)
     {
-        index++; // skip '"'
-        var sb = new StringBuilder();
-        while (index < json.Length)
+        int start = ++index; // skip opening '"'
+        int scan = start;
+        int len = json.Length;
+        while (scan < len)
+        {
+            char c = json[scan];
+            if (c == '"')
+            {
+                index = scan + 1;
+                return scan == start ? string.Empty : json.Substring(start, scan - start);
+            }
+            if (c == '\\') break;
+            scan++;
+        }
+
+        if (scan >= len)
+        {
+            index = len;
+            return scan == start ? string.Empty : json.Substring(start, scan - start);
+        }
+
+        var sb = new StringBuilder(scan - start + 16);
+        if (scan > start)
+        {
+            sb.Append(json, start, scan - start);
+        }
+
+        index = scan;
+        while (index < len)
         {
             char c = json[index++];
             if (c == '"') return sb.ToString();
             if (c == '\\')
             {
-                if (index >= json.Length) break;
+                if (index >= len) break;
                 char esc = json[index++];
                 switch (esc)
                 {
@@ -161,7 +187,7 @@ public abstract class JsonNode
                     case 'r': sb.Append('\r'); break;
                     case 't': sb.Append('\t'); break;
                     case 'u':
-                        if (index + 4 <= json.Length)
+                        if (index + 4 <= len)
                         {
                             string hex = json.Substring(index, 4);
                             if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp))

@@ -37,7 +37,7 @@ public sealed class WireWriter
             w.position = 0;
             return w;
         }
-        return new WireWriter(128);
+        return new WireWriter(256);
     }
 
     /// <summary>
@@ -250,13 +250,13 @@ public sealed class WireWriter
             return;
         }
         WriteU32((uint)items.Length);
-        foreach (var item in items)
+        for (int i = 0; i < items.Length; i++)
         {
-            elementWriter(this, item);
+            elementWriter(this, items[i]);
         }
     }
 
-    public void WriteList<T>(IReadOnlyList<T>? items, Action<WireWriter, T> elementWriter)
+    public void WriteList<T>(List<T>? items, Action<WireWriter, T> elementWriter)
     {
         if (items == null || items.Count == 0)
         {
@@ -264,7 +264,33 @@ public sealed class WireWriter
             return;
         }
         WriteU32((uint)items.Count);
-        for (int i = 0; i < items.Count; i++)
+        var span = CollectionsMarshal.AsSpan(items);
+        for (int i = 0; i < span.Length; i++)
+        {
+            elementWriter(this, span[i]);
+        }
+    }
+
+    public void WriteList<T>(IReadOnlyList<T>? items, Action<WireWriter, T> elementWriter)
+    {
+        if (items is List<T> list)
+        {
+            WriteList(list, elementWriter);
+            return;
+        }
+        if (items is T[] array)
+        {
+            WriteArray(array, elementWriter);
+            return;
+        }
+        if (items == null || items.Count == 0)
+        {
+            WriteU32(0);
+            return;
+        }
+        int count = items.Count;
+        WriteU32((uint)count);
+        for (int i = 0; i < count; i++)
         {
             elementWriter(this, items[i]);
         }
@@ -295,6 +321,11 @@ public sealed class WireWriter
             var src = MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(list));
             src.CopyTo(buffer.AsSpan(position, byteSize));
         }
+        else if (items is T[] array)
+        {
+            var src = MemoryMarshal.AsBytes(array.AsSpan());
+            src.CopyTo(buffer.AsSpan(position, byteSize));
+        }
         else
         {
             for (int i = 0; i < count; i++)
@@ -304,6 +335,22 @@ public sealed class WireWriter
             }
         }
         position += byteSize;
+    }
+
+    public void WriteMap<TKey, TValue>(Dictionary<TKey, TValue>? map, Action<WireWriter, TKey> keyWriter, Action<WireWriter, TValue> valueWriter)
+        where TKey : notnull
+    {
+        if (map == null || map.Count == 0)
+        {
+            WriteU32(0);
+            return;
+        }
+        WriteU32((uint)map.Count);
+        foreach (var kvp in map)
+        {
+            keyWriter(this, kvp.Key);
+            valueWriter(this, kvp.Value);
+        }
     }
 
     public void WriteMap<TKey, TValue>(IReadOnlyDictionary<TKey, TValue>? map, Action<WireWriter, TKey> keyWriter, Action<WireWriter, TValue> valueWriter)
@@ -321,8 +368,27 @@ public sealed class WireWriter
         }
     }
 
+    public void WriteSet<T>(HashSet<T>? items, Action<WireWriter, T> elementWriter)
+    {
+        if (items == null || items.Count == 0)
+        {
+            WriteU32(0);
+            return;
+        }
+        WriteU32((uint)items.Count);
+        foreach (var item in items)
+        {
+            elementWriter(this, item);
+        }
+    }
+
     public void WriteSet<T>(IReadOnlyCollection<T>? items, Action<WireWriter, T> elementWriter)
     {
+        if (items is HashSet<T> set)
+        {
+            WriteSet(set, elementWriter);
+            return;
+        }
         if (items == null || items.Count == 0)
         {
             WriteU32(0);

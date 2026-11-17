@@ -21,6 +21,22 @@ public static class ArchiveMetadataExtractor
     /// </summary>
     public static int MaxArchiveSymbols { get; set; } = 1_000_000;
 
+    internal static bool StartsWithUniffiMetaAscii(byte[] data, int offset, int length)
+    {
+        if (length < 11 || offset < 0 || offset + 11 > data.Length) return false;
+        return (data[offset + 0] | 0x20) == 'u' &&
+               (data[offset + 1] | 0x20) == 'n' &&
+               (data[offset + 2] | 0x20) == 'i' &&
+               (data[offset + 3] | 0x20) == 'f' &&
+               (data[offset + 4] | 0x20) == 'f' &&
+               (data[offset + 5] | 0x20) == 'i' &&
+               data[offset + 6] == (byte)'_' &&
+               (data[offset + 7] | 0x20) == 'm' &&
+               (data[offset + 8] | 0x20) == 'e' &&
+               (data[offset + 9] | 0x20) == 't' &&
+               (data[offset + 10] | 0x20) == 'a';
+    }
+
     public static bool IsArchive(byte[] data)
     {
         if (data == null || data.Length < 8) return false;
@@ -549,35 +565,30 @@ public static class ArchiveMetadataExtractor
             if (entryOffsetLong + 18 > objBytes.Length) break;
             int entryOffset = (int)entryOffsetLong;
 
-            uint nameZero = BitConverter.ToUInt32(objBytes, entryOffset);
-            string symName;
-            if (nameZero == 0)
-            {
-                uint strOffset = BitConverter.ToUInt32(objBytes, entryOffset + 4);
-                long fullStrOffset = strTableOffsetLong + (long)strOffset;
-                if (fullStrOffset >= 0 && fullStrOffset < objBytes.Length)
-                {
-                    int nullPos = Array.IndexOf<byte>(objBytes, 0, (int)fullStrOffset);
-                    if (nullPos < 0) nullPos = objBytes.Length;
-                    symName = Encoding.ASCII.GetString(objBytes, (int)fullStrOffset, nullPos - (int)fullStrOffset);
-                }
-                else
-                {
-                    symName = string.Empty;
-                }
-            }
-            else
-            {
-                symName = Encoding.ASCII.GetString(objBytes, entryOffset, 8).TrimEnd('\0');
-            }
-
-            uint symValue = BitConverter.ToUInt32(objBytes, entryOffset + 8);
-            short secNum = BitConverter.ToInt16(objBytes, entryOffset + 12);
             byte numAux = objBytes[entryOffset + 17];
             i += numAux; // skip aux entries
 
-            if (symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase) &&
-                !symName.StartsWith("__imp_", StringComparison.OrdinalIgnoreCase))
+            uint nameZero = BitConverter.ToUInt32(objBytes, entryOffset);
+            if (nameZero != 0)
+            {
+                // Short COFF symbol name is at most 8 bytes, so it cannot start with "UNIFFI_META" (11 chars).
+                continue;
+            }
+
+            uint strOffset = BitConverter.ToUInt32(objBytes, entryOffset + 4);
+            long fullStrOffset = strTableOffsetLong + (long)strOffset;
+            if (fullStrOffset < 0 || fullStrOffset >= objBytes.Length) continue;
+
+            int strStart = (int)fullStrOffset;
+            int nullPos = Array.IndexOf<byte>(objBytes, 0, strStart);
+            if (nullPos < 0) nullPos = objBytes.Length;
+            int strLen = nullPos - strStart;
+            if (!StartsWithUniffiMetaAscii(objBytes, strStart, strLen)) continue;
+
+            string symName = Encoding.ASCII.GetString(objBytes, strStart, strLen);
+            uint symValue = BitConverter.ToUInt32(objBytes, entryOffset + 8);
+            short secNum = BitConverter.ToInt16(objBytes, entryOffset + 12);
+
             {
                 if (secNum > 0 && secNum <= secHeaders.Length)
                 {
@@ -645,11 +656,11 @@ public static class ArchiveMetadataExtractor
 
                 if (st_name == 0 || (int)strsec.offset + (int)st_name >= objBytes.Length) continue;
 
-                int nullPos = Array.IndexOf<byte>(objBytes, 0, (int)strsec.offset + (int)st_name);
-                if (nullPos < 0) continue;
-                string symName = Encoding.ASCII.GetString(objBytes, (int)strsec.offset + (int)st_name, nullPos - ((int)strsec.offset + (int)st_name));
+                int strStart = (int)strsec.offset + (int)st_name;
+                int nullPos = Array.IndexOf<byte>(objBytes, 0, strStart);
+                if (nullPos < 0 || !StartsWithUniffiMetaAscii(objBytes, strStart, nullPos - strStart)) continue;
+                string symName = Encoding.ASCII.GetString(objBytes, strStart, nullPos - strStart);
 
-                if (symName.StartsWith("UNIFFI_META", StringComparison.OrdinalIgnoreCase))
                 {
                     if (st_shndx < shnum)
                     {
